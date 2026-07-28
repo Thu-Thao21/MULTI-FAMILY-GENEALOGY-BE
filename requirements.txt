@@ -1,0 +1,5 @@
+fastapi==0.98.0
+uvicorn[standard]==0.22.0
+motor==4.2.0
+python-dotenv==1.0.0
+passlib[bcrypt]==1.7.4
