@@ -30,7 +30,7 @@ async def list_members(
     family_id: Optional[str] = Query(None, alias="family_id"),
     search: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(50, ge=1, le=1000),
     db: AsyncSession = Depends(get_db),
 ):
     """Danh sách thành viên có phân trang + tìm kiếm."""

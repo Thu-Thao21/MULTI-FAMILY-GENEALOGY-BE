@@ -9,13 +9,15 @@ from pydantic import BaseModel, Field
 # ─── Member List Item ───────────────────────────────────────────────
 class MemberOut(BaseModel):
     id: str
-    family_id: str = Field(alias="familyId")
+    family_id: Optional[str] = Field(None, alias="familyId")
     full_name: str = Field(alias="fullName")
     other_name: Optional[str] = Field(None, alias="otherName")
     gender: str
     birth_date: Optional[date] = Field(None, alias="birthDate")
     death_date: Optional[date] = Field(None, alias="deathDate")
     is_alive: bool = Field(alias="isAlive")
+    father_id: Optional[str] = Field(None, alias="fatherId")
+    mother_id: Optional[str] = Field(None, alias="motherId")
     branch: Optional[str] = None
     sub_branch: Optional[str] = Field(None, alias="subBranch")
     generation: int = 1

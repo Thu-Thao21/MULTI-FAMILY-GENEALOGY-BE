@@ -76,18 +76,25 @@ async def register(payload: RegisterSchema, db: AsyncSession = Depends(get_db)):
     display_name = payload.display_name.strip() if payload.display_name else payload.username.strip()
 
     # Check existing in members
-    stmt = select(Member).where(
-        or_(
-            Member.username == username_str,
-            Member.email == email_val,
-            Member.phone == phone_val,
-        )
-    )
+    conditions = [Member.username == username_str]
+    if email_val:
+        conditions.append(Member.email == email_val)
+    if phone_val:
+        conditions.append(Member.phone == phone_val)
+
+    stmt = select(Member).where(or_(*conditions))
     result = await db.execute(stmt)
-    if result.scalar_one_or_none():
+    existing_member = result.scalars().first()
+    if existing_member:
+        if existing_member.username == username_str:
+            detail_msg = "Tên đăng nhập này đã tồn tại trong hệ thống."
+        elif email_val and existing_member.email == email_val:
+            detail_msg = "Email này đã được đăng ký."
+        else:
+            detail_msg = "Số điện thoại này đã được đăng ký."
         raise HTTPException(
             status_code=400,
-            detail="Tài khoản Thành Viên này đã tồn tại trong hệ thống."
+            detail=detail_msg
         )
 
     member_obj = Member(

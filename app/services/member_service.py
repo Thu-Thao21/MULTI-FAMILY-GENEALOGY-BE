@@ -77,6 +77,8 @@ async def get_members(
             birthDate=m.birth_date,
             deathDate=m.death_date,
             isAlive=m.is_alive,
+            fatherId=m.father_id,
+            motherId=m.mother_id,
             branch=m.branch,
             subBranch=m.sub_branch,
             generation=m.generation,
