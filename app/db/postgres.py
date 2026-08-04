@@ -40,66 +40,47 @@ async def init_db() -> None:
         except Exception:
             pass  # Cột đã tồn tại
 
-    # Auto-seed default Admin if not exists
-    async with async_session_maker() as session:
-        res = await session.execute(select(Admin).where(Admin.username == 'admin'))
-        if not res.scalar_one_or_none():
-            pwd_hash = hash_password('12060805')
-            session.add(Admin(
-                id='admin_default_001',
-                username='admin',
-                email='thuthaor120608@gmail.com',
-                phone='0912345678',
-                full_name='Quản Trị Viên Hệ Thống',
-                password_hash=pwd_hash,
-                admin_code='ADM-001',
-                permissions_level='super_admin',
-                managed_scope='all_families',
-                role='admin',
-                status='active'
-            ))
-            res_acc = await session.execute(select(Account).where(Account.email == 'thuthaor120608@gmail.com'))
-            if not res_acc.scalar_one_or_none():
-                session.add(Account(
+    # Auto-seed default Admin & Family Head if not exists
+    try:
+        async with async_session_maker() as session:
+            res = await session.execute(select(Admin).where(Admin.username == 'admin'))
+            if not res.scalar_one_or_none():
+                pwd_hash = hash_password('12060805')
+                session.add(Admin(
                     id='admin_default_001',
-                    firebase_uid='admin_default_001',
                     username='admin',
                     email='thuthaor120608@gmail.com',
-                    display_name='Quản Trị Viên Hệ Thống',
+                    phone='0912345678',
+                    full_name='Quản Trị Viên Hệ Thống',
                     password_hash=pwd_hash,
-                    email_verified=True,
-                    status='active'
-                ))
-                await session.flush()
-                session.add(AccountRole(
-                    account_id='admin_default_001',
+                    admin_code='ADM-001',
+                    permissions_level='super_admin',
+                    managed_scope='all_families',
                     role='admin',
                     status='active'
                 ))
+                res_acc = await session.execute(select(Account).where(Account.email == 'thuthaor120608@gmail.com'))
+                if not res_acc.scalar_one_or_none():
+                    session.add(Account(
+                        id='admin_default_001',
+                        firebase_uid='admin_default_001',
+                        username='admin',
+                        email='thuthaor120608@gmail.com',
+                        display_name='Quản Trị Viên Hệ Thống',
+                        password_hash=pwd_hash,
+                        email_verified=True,
+                        status='active'
+                    ))
+                    await session.flush()
+                    session.add(AccountRole(
+                        account_id='admin_default_001',
+                        role='admin',
+                        status='active'
+                    ))
 
-        # Auto-seed default Family Head if not exists
-        res_fh = await session.execute(select(Account).where(Account.email == 'truongtoc@gmail.com'))
-        if not res_fh.scalar_one_or_none():
-            pwd_hash = hash_password('12060805')
-            fh_acc = Account(
-                id='family_head_default_001',
-                firebase_uid='family_head_default_001',
-                username='truongtoc',
-                email='truongtoc@gmail.com',
-                display_name='Trưởng Tộc Nguyễn Văn',
-                password_hash=pwd_hash,
-                email_verified=True,
-                status='active'
-            )
-            session.add(fh_acc)
-            await session.flush()
-            session.add(AccountRole(
-                account_id='family_head_default_001',
-                role='family_head',
-                status='active'
-            ))
-
-        await session.commit()
+            await session.commit()
+    except Exception as e:
+        print(f"[WARN] Auto-seed skipped/notice: {e}")
 
 
 

@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.db.postgres import init_db, close_db
-from app.routers import health, users, auth, members, networks, role_requests
+from app.routers import health, users, auth, members, networks
 
 app = FastAPI(title="Multi-family Genealogy API")
 
@@ -35,7 +35,6 @@ async def shutdown_event():
 app.include_router(health.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
-app.include_router(role_requests.router, prefix="/api")
 app.include_router(members.router, prefix="/api")
 app.include_router(networks.router, prefix="/api")
 

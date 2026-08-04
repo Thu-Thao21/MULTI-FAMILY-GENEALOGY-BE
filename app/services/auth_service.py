@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.postgres import Account, AccountRole
+from app.models.postgres import Account, AccountRole, Member
 from app.schemas.auth_schemas import AccountOut, RoleOut
 
 logger = logging.getLogger("mfg.auth_service")
@@ -71,32 +71,64 @@ async def bootstrap_account(
 
         await db.commit()
         await db.refresh(account)
-        return account
+    else:
+        # Create new account
+        account = Account(
+            firebase_uid=firebase_uid,
+            email=email,
+            email_verified=email_verified,
+            phone_e164=phone_e164,
+            phone_verified=True if phone_e164 else False,
+            display_name=display_name,
+            status="active",
+        )
+        db.add(account)
+        await db.flush()
 
-    # Create new account
-    account = Account(
-        firebase_uid=firebase_uid,
-        email=email,
-        email_verified=email_verified,
-        phone_e164=phone_e164,
-        phone_verified=True if phone_e164 else False,
-        display_name=display_name,
-        status="active",
-    )
-    db.add(account)
-    await db.flush()
+        # Determine default roles
+        default_role = "admin" if (email and email.lower() == "thuthaor120608@gmail.com") else "member"
 
-    # Determine default roles
-    default_role = "admin" if (email and email.lower() == "thuthaor120608@gmail.com") else "member"
+        role_obj = AccountRole(
+            account_id=account.id,
+            role=default_role,
+            status="active",
+        )
+        db.add(role_obj)
 
-    role_obj = AccountRole(
-        account_id=account.id,
-        role=default_role,
-        status="active",
-    )
-    db.add(role_obj)
+        await db.commit()
+        
+        # --- Sync to Member Table ---
+        member_conditions = []
+        if email:
+            member_conditions.append(Member.email == email)
+        if phone_e164:
+            member_conditions.append(Member.phone == phone_e164)
+            
+        member = None
+        if member_conditions:
+            stmt = select(Member).where(or_(*member_conditions))
+            res = await db.execute(stmt)
+            member = res.scalars().first()
+            
+        if not member:
+            # Use same ID as account for easy reference, but ensure it's a string
+            new_member = Member(
+                id=account.id,
+                email=email,
+                phone=phone_e164,
+                full_name=display_name,
+                username=None,  # Null is safe for unique constraint
+                role=default_role,
+                status="active"
+            )
+            db.add(new_member)
+            try:
+                await db.commit()
+            except Exception as e:
+                await db.rollback()
+                logger.warning(f"Could not sync Member for Account {account.id}: {e}")
+        # ---------------------------
 
-    await db.commit()
     return await get_account_by_firebase_uid(db, firebase_uid)
 
 
@@ -104,8 +136,6 @@ def calculate_primary_role(roles: List[AccountRole]) -> str:
     active_roles = [r.role.lower() for r in roles if r.status == "active"]
     if "admin" in active_roles:
         return "admin"
-    if "family_head" in active_roles:
-        return "family_head"
     return "member"
 
 

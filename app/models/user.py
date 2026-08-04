@@ -10,7 +10,7 @@ class User(BaseModel):
     password_hash: str
     phone: Optional[str] = None
     member_id: Optional[str] = None
-    role: str = "member"  # "admin", "family_head", "member"
+    role: str = "member"  # "admin", "member"
     status: str = "active"
     reset_token: Optional[str] = None
     reset_token_expires_at: Optional[datetime] = None

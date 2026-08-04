@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import hash_password, verify_password
 from app.db.postgres import get_db
-from app.models.postgres import Account, Admin, FamilyHead, Member, PasswordReset
+from app.models.postgres import Account, Admin, Member, PasswordReset
 from app.schemas.auth_schemas import AccountOut
 from app.services.auth_service import bootstrap_account, format_account_me, calculate_primary_role
 from app.dependencies.auth import get_current_account
@@ -45,13 +45,13 @@ class RegisterSchema(BaseModel):
     email_or_phone: str
     display_name: Optional[str] = None
     password: str
-    role: Optional[str] = "member"  # "family_head" hoặc "member"
+    role: Optional[str] = "member"  # "admin" hoặc "member"
 
 
 class LoginSchema(BaseModel):
     email_or_phone: str
     password: str
-    role: Optional[str] = "member"  # "admin", "family_head", "member"
+    role: Optional[str] = "member"  # "admin", "member"
 
 
 class RequestOTPSchema(BaseModel):
@@ -68,7 +68,6 @@ class ResetPasswordSchema(BaseModel):
 async def register(payload: RegisterSchema, db: AsyncSession = Depends(get_db)):
     input_str = payload.email_or_phone.strip().lower()
     username_str = payload.username.strip().lower()
-    user_role = payload.role if payload.role in ["family_head", "member"] else "member"
 
     is_email = "@" in input_str
     email_val = input_str if is_email else None
@@ -76,93 +75,48 @@ async def register(payload: RegisterSchema, db: AsyncSession = Depends(get_db)):
     now = datetime.now(timezone.utc)
     display_name = payload.display_name.strip() if payload.display_name else payload.username.strip()
 
-    if user_role == "family_head":
-        # Check existing in family_heads
-        stmt = select(FamilyHead).where(
-            or_(
-                FamilyHead.username == username_str,
-                FamilyHead.email == email_val,
-                FamilyHead.phone == phone_val,
-            )
+    # Check existing in members
+    stmt = select(Member).where(
+        or_(
+            Member.username == username_str,
+            Member.email == email_val,
+            Member.phone == phone_val,
         )
-        result = await db.execute(stmt)
-        if result.scalar_one_or_none():
-            raise HTTPException(
-                status_code=400,
-                detail="Tài khoản Trưởng Họ này đã tồn tại trong hệ thống."
-            )
-
-        head_obj = FamilyHead(
-            id=f"head_{int(now.timestamp() * 1000)}",
-            username=username_str,
-            email=email_val,
-            phone=phone_val,
-            full_name=display_name,
-            password_hash=hash_password(payload.password),
-            role="family_head",
-            status="active",
-            created_at=now,
-            updated_at=now,
+    )
+    result = await db.execute(stmt)
+    if result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=400,
+            detail="Tài khoản Thành Viên này đã tồn tại trong hệ thống."
         )
-        db.add(head_obj)
-        await db.commit()
-        await db.refresh(head_obj)
 
-        return {
-            "user": {
-                "id": head_obj.id,
-                "username": head_obj.username,
-                "displayName": head_obj.full_name,
-                "email": head_obj.email,
-                "phone": head_obj.phone,
-                "role": head_obj.role,
-            },
-            "message": "Đăng ký tài khoản Trưởng Họ thành công vào PostgreSQL.",
-        }
+    member_obj = Member(
+        id=f"member_{int(now.timestamp() * 1000)}",
+        username=username_str,
+        email=email_val,
+        phone=phone_val,
+        full_name=display_name,
+        password_hash=hash_password(payload.password),
+        role="member",
+        status="active",
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(member_obj)
+    await db.commit()
+    await db.refresh(member_obj)
 
-    else:
-        # Check existing in members
-        stmt = select(Member).where(
-            or_(
-                Member.username == username_str,
-                Member.email == email_val,
-                Member.phone == phone_val,
-            )
-        )
-        result = await db.execute(stmt)
-        if result.scalar_one_or_none():
-            raise HTTPException(
-                status_code=400,
-                detail="Tài khoản Thành Viên này đã tồn tại trong hệ thống."
-            )
-
-        member_obj = Member(
-            id=f"member_{int(now.timestamp() * 1000)}",
-            username=username_str,
-            email=email_val,
-            phone=phone_val,
-            full_name=display_name,
-            password_hash=hash_password(payload.password),
-            role="member",
-            status="active",
-            created_at=now,
-            updated_at=now,
-        )
-        db.add(member_obj)
-        await db.commit()
-        await db.refresh(member_obj)
-
-        return {
-            "user": {
-                "id": member_obj.id,
-                "username": member_obj.username,
-                "displayName": member_obj.full_name,
-                "email": member_obj.email,
-                "phone": member_obj.phone,
-                "role": member_obj.role,
-            },
-            "message": "Đăng ký tài khoản Thành Viên thành công vào PostgreSQL.",
-        }
+    return {
+        "user": {
+            "id": member_obj.id,
+            "username": member_obj.username,
+            "displayName": member_obj.full_name,
+            "email": member_obj.email,
+            "phone": member_obj.phone,
+            "role": member_obj.role,
+        },
+        "message": "Đăng ký tài khoản Thành Viên thành công vào PostgreSQL.",
+    }
 
 
 @router.post("/login")
@@ -185,17 +139,6 @@ async def login(payload: LoginSchema, db: AsyncSession = Depends(get_db)):
         account = result.scalar_one_or_none()
         target_role = "admin"
 
-    elif requested_role == "family_head":
-        stmt = select(FamilyHead).where(
-            or_(
-                FamilyHead.username == input_str,
-                FamilyHead.email == input_str,
-                FamilyHead.phone == input_str
-            )
-        )
-        result = await db.execute(stmt)
-        account = result.scalar_one_or_none()
-        target_role = "family_head"
 
     else:
         stmt = select(Member).where(
@@ -225,7 +168,7 @@ async def login(payload: LoginSchema, db: AsyncSession = Depends(get_db)):
             target_role = calculate_primary_role(acc.roles)
 
     if not account:
-        for ModelClass, r_name in [(Admin, "admin"), (FamilyHead, "family_head"), (Member, "member")]:
+        for ModelClass, r_name in [(Admin, "admin"), (Member, "member")]:
             stmt = select(ModelClass).where(
                 or_(
                     ModelClass.username == input_str,
@@ -299,7 +242,7 @@ async def request_otp(payload: RequestOTPSchema, db: AsyncSession = Depends(get_
 
     # 2. Fallback check in Admin, FamilyHead, Member tables
     if not account:
-        for ModelClass, r_name in [(Admin, "admin"), (FamilyHead, "family_head"), (Member, "member")]:
+        for ModelClass, r_name in [(Admin, "admin"), (Member, "member")]:
             stmt = select(ModelClass).where(
                 or_(
                     ModelClass.username == input_str,

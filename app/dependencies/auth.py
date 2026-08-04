@@ -33,11 +33,11 @@ async def get_current_account(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # 1. Handle Custom Backend Tokens (e.g. token_admin_admin_default_001 or token_family_head_family_head_default_001)
+    # 1. Handle Custom Backend Tokens (e.g. token_admin_admin_default_001)
     if id_token.startswith("token_"):
         raw = id_token[len("token_"):]
         account_id = None
-        for r in ["admin", "family_head", "member"]:
+        for r in ["admin", "member"]:
             if raw.startswith(f"{r}_"):
                 account_id = raw[len(f"{r}_"):]
                 break

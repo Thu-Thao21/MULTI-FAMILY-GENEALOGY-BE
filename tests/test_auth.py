@@ -11,13 +11,6 @@ def test_calculate_primary_role_admin():
     assert calculate_primary_role(roles) == "admin"
 
 
-def test_calculate_primary_role_family_head():
-    roles = [
-        AccountRole(role="member", status="active"),
-        AccountRole(role="family_head", status="active"),
-    ]
-    assert calculate_primary_role(roles) == "family_head"
-
 
 def test_calculate_primary_role_default_member():
     roles = [

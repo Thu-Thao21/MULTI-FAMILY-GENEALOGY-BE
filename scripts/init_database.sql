@@ -1,20 +1,18 @@
 -- ============================================================================
--- SCRIPT KHỞI TẠO TOÀN BỘ CƠ SỞ DỮ LIỆU GIA PHẢ LIÊN HỌ (31 BẢNG & 3 VIEWS)
+-- SCRIPT KHỞI TẠO TOÀN BỘ CƠ SỞ DỮ LIỆU GIA PHẢ LIÊN HỌ (30 BẢNG & 2 VIEWS)
 -- Multi-Family Genealogy - Complete Database Initialization DDL
 -- ============================================================================
 
 -- 1. Xóa các View và Bảng nếu đã tồn tại để làm sạch
 DROP VIEW IF EXISTS vw_admins CASCADE;
-DROP VIEW IF EXISTS vw_family_heads CASCADE;
 DROP VIEW IF EXISTS vw_members CASCADE;
-DROP TABLE IF EXISTS role_requests CASCADE;
 DROP TABLE IF EXISTS account_roles CASCADE;
 DROP TABLE IF EXISTS accounts CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
 
 -- 2. TẠO TOÀN BỘ CÁC BẢNG TRONG HỆ THỐNG
 
--- 2.0 Bảng Xác thực Tập trung & Phân quyền (accounts, account_roles, role_requests)
+-- 2.0 Bảng Xác thực Tập trung & Phân quyền (accounts, account_roles)
 CREATE TABLE IF NOT EXISTS accounts (
     id VARCHAR(36) PRIMARY KEY,
     firebase_uid VARCHAR(128) NOT NULL UNIQUE,
@@ -22,6 +20,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     email VARCHAR(255) UNIQUE,
     phone_e164 VARCHAR(30) UNIQUE,
     display_name VARCHAR(255),
+    password_hash TEXT,
     email_verified BOOLEAN DEFAULT FALSE NOT NULL,
     phone_verified BOOLEAN DEFAULT FALSE NOT NULL,
     status VARCHAR(32) DEFAULT 'active' NOT NULL,
@@ -32,23 +31,9 @@ CREATE TABLE IF NOT EXISTS accounts (
 CREATE TABLE IF NOT EXISTS account_roles (
     id VARCHAR(36) PRIMARY KEY,
     account_id VARCHAR(36) REFERENCES accounts(id) ON DELETE CASCADE NOT NULL,
-    role VARCHAR(50) NOT NULL,
-    family_id VARCHAR(36),
+    role VARCHAR(50) NOT NULL, -- 'admin' hoặc 'member'
+    family_id VARCHAR(36) REFERENCES families(id) ON DELETE SET NULL,
     status VARCHAR(32) DEFAULT 'active' NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS role_requests (
-    id VARCHAR(36) PRIMARY KEY,
-    account_id VARCHAR(36) REFERENCES accounts(id) ON DELETE CASCADE NOT NULL,
-    requested_role VARCHAR(50) NOT NULL,
-    family_id VARCHAR(36),
-    reason TEXT,
-    status VARCHAR(32) DEFAULT 'pending' NOT NULL,
-    reviewer_id VARCHAR(36),
-    reviewer_notes TEXT,
-    reviewed_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
@@ -76,7 +61,7 @@ CREATE TABLE IF NOT EXISTS families (
     name VARCHAR(255) NOT NULL UNIQUE,
     founder_name VARCHAR(255),
     founder_member_id VARCHAR(36),
-    family_head_id VARCHAR(36),
+    owner_id VARCHAR(36),
     origin_place TEXT,
     ancestral_house_address TEXT,
     history TEXT,
@@ -86,24 +71,6 @@ CREATE TABLE IF NOT EXISTS families (
     created_by VARCHAR(36),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
-);
-
--- 2.3 Bảng Trưởng Họ (family_heads)
-CREATE TABLE IF NOT EXISTS family_heads (
-    id VARCHAR(36) PRIMARY KEY,
-    username VARCHAR(150) NOT NULL UNIQUE,
-    email VARCHAR(255) UNIQUE,
-    phone VARCHAR(30) UNIQUE,
-    full_name VARCHAR(255) NOT NULL,
-    password_hash TEXT NOT NULL,
-    family_id VARCHAR(36) REFERENCES families(id) ON DELETE SET NULL,
-    appointment_date DATE,
-    term_title VARCHAR(100) NOT NULL DEFAULT 'Trưởng Họ',
-    role VARCHAR(32) NOT NULL DEFAULT 'family_head',
-    status VARCHAR(32) NOT NULL DEFAULT 'active',
-    notes TEXT,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- 2.4 Bảng Cây Gia Phả Dòng Họ (family_trees)
@@ -416,7 +383,7 @@ CREATE TABLE IF NOT EXISTS family_memberships (
     id VARCHAR(36) PRIMARY KEY,
     user_id VARCHAR(36) NOT NULL,
     family_id VARCHAR(36) REFERENCES families(id) ON DELETE CASCADE NOT NULL,
-    membership_role VARCHAR(80) DEFAULT 'member' NOT NULL,
+    membership_role VARCHAR(80) DEFAULT 'member' NOT NULL, -- 'owner', 'manager', 'member'
     status VARCHAR(32) DEFAULT 'active' NOT NULL,
     joined_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
@@ -459,46 +426,10 @@ VALUES (
 ) ON CONFLICT (id) DO NOTHING;
 
 
--- 3.2 Nạp tài khoản Trưởng Tộc vào bảng accounts & account_roles & family_heads
-INSERT INTO accounts (id, firebase_uid, username, email, display_name, password_hash, email_verified, status)
-VALUES (
-    'family_head_default_001',
-    'family_head_default_001',
-    'truongtoc',
-    'truongtoc@gmail.com',
-    'Trưởng Tộc Nguyễn Văn',
-    '$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeg6Lruj3vjPGga31lW',
-    TRUE,
-    'active'
-) ON CONFLICT (id) DO NOTHING;
-
-INSERT INTO account_roles (id, account_id, role, status)
-VALUES (
-    'role_fh_default_001',
-    'family_head_default_001',
-    'family_head',
-    'active'
-) ON CONFLICT (id) DO NOTHING;
-
-INSERT INTO family_heads (id, username, email, full_name, password_hash, status)
-VALUES (
-    'family_head_default_001',
-    'truongtoc',
-    'truongtoc@gmail.com',
-    'Trưởng Tộc Nguyễn Văn',
-    '$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeg6Lruj3vjPGga31lW',
-    'active'
-) ON CONFLICT (id) DO NOTHING;
-
--- 4. TẠO 3 VIEWS TRUY VẤN TRỰC QUAN TRONG PGADMIN 4
+-- 4. TẠO 2 VIEWS TRUY VẤN TRỰC QUAN TRONG PGADMIN 4
 CREATE OR REPLACE VIEW vw_admins AS
 SELECT id, username, full_name, email, phone, admin_code, permissions_level, managed_scope, status, created_at
 FROM admins;
-
-CREATE OR REPLACE VIEW vw_family_heads AS
-SELECT fh.id, fh.username, fh.full_name, fh.email, fh.phone, fh.family_id, f.name AS family_name, fh.term_title, fh.status, fh.created_at
-FROM family_heads fh
-LEFT JOIN families f ON fh.family_id = f.id;
 
 CREATE OR REPLACE VIEW vw_members AS
 SELECT m.id, m.username, m.full_name, m.email, m.phone, m.gender, m.generation, m.branch, m.family_id, f.name AS family_name, m.is_alive, m.status, m.created_at

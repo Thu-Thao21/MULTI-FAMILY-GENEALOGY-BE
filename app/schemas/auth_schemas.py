@@ -29,28 +29,3 @@ class AccountOut(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-
-class RoleRequestCreate(BaseModel):
-    requested_role: str = "family_head"
-    family_id: Optional[str] = None
-    reason: Optional[str] = None
-
-
-class RoleRequestReview(BaseModel):
-    status: str  # "approved" or "rejected"
-    reviewer_notes: Optional[str] = None
-
-
-class RoleRequestOut(BaseModel):
-    id: str
-    account_id: str
-    requested_role: str
-    family_id: Optional[str] = None
-    reason: Optional[str] = None
-    status: str
-    reviewer_id: Optional[str] = None
-    reviewer_notes: Optional[str] = None
-    reviewed_at: Optional[datetime] = None
-    created_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)

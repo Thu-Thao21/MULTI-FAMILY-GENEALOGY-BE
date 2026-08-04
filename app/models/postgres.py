@@ -53,22 +53,6 @@ class AccountRole(Base):
     account: Mapped[Account] = relationship(back_populates="roles")
 
 
-class RoleRequest(Base):
-    __tablename__ = "role_requests"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    account_id: Mapped[str] = mapped_column(String(36), ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False, index=True)
-    requested_role: Mapped[str] = mapped_column(String(50), nullable=False)
-    family_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("families.id", ondelete="SET NULL"), nullable=True, index=True)
-    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
-    reviewer_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    reviewer_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-
-
 class Admin(Base):
     __tablename__ = "admins"
 
@@ -87,25 +71,6 @@ class Admin(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
-class FamilyHead(Base):
-    __tablename__ = "family_heads"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    username: Mapped[str] = mapped_column(String(150), unique=True, index=True, nullable=False)
-    email: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, nullable=True)
-    phone: Mapped[str | None] = mapped_column(String(30), unique=True, index=True, nullable=True)
-    full_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    family_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("families.id", ondelete="SET NULL"), nullable=True, index=True)
-    appointment_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    term_title: Mapped[str] = mapped_column(String(100), default="Trưởng Họ", nullable=False)
-    role: Mapped[str] = mapped_column(String(32), default="family_head", nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="active", nullable=False)
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-
-    family: Mapped[Optional["Family"]] = relationship("Family")
 
 
 class PasswordReset(Base):
@@ -174,7 +139,7 @@ class Family(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     founder_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     founder_member_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    family_head_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     origin_place: Mapped[str | None] = mapped_column(Text, nullable=True)
     ancestral_house_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     history: Mapped[str | None] = mapped_column(Text, nullable=True)

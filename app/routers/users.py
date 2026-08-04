@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.postgres import get_db
-from app.models.postgres import Admin, FamilyHead, Member
+from app.models.postgres import Admin, Member
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -25,7 +25,7 @@ class UserOut(BaseModel):
 
 @router.get("/", response_model=List[UserOut])
 async def list_users(role: Optional[str] = None, db: AsyncSession = Depends(get_db)):
-    """Lấy danh sách tất cả tài khoản từ 3 bảng (admins, family_heads, members)."""
+    """Lấy danh sách tất cả tài khoản từ 2 bảng (admins, members)."""
     results: List[UserOut] = []
 
     if not role or role == "admin":
@@ -39,21 +39,6 @@ async def list_users(role: Optional[str] = None, db: AsyncSession = Depends(get_
                     email=item.email,
                     phone=item.phone,
                     role="admin",
-                    status=item.status,
-                )
-            )
-
-    if not role or role == "family_head":
-        res = await db.execute(select(FamilyHead))
-        for item in res.scalars().all():
-            results.append(
-                UserOut(
-                    id=item.id,
-                    username=item.username,
-                    full_name=item.full_name,
-                    email=item.email,
-                    phone=item.phone,
-                    role="family_head",
                     status=item.status,
                 )
             )
@@ -84,10 +69,3 @@ async def list_admins(db: AsyncSession = Depends(get_db)):
     admins = result.scalars().all()
     return admins
 
-
-@router.get("/family-heads")
-async def list_family_heads(db: AsyncSession = Depends(get_db)):
-    """Lấy danh sách tài khoản từ bảng family_heads."""
-    result = await db.execute(select(FamilyHead))
-    heads = result.scalars().all()
-    return heads
