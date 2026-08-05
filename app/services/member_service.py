@@ -180,7 +180,7 @@ async def get_member_detail(db: AsyncSession, member_id: str) -> MemberDetailOut
         id=member.id,
         familyId=member.family_id,
         familyName=family_name,
-        userId=member.user_id,
+        userId=member.account_id,
         fullName=member.full_name,
         otherName=member.other_name,
         gender=member.gender,

@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.db.postgres import init_db, close_db
-from app.routers import health, users, auth, members, networks
+from app.routers import health, users, auth, members, networks, member_profile
 
 app = FastAPI(title="Multi-family Genealogy API")
 
@@ -36,6 +36,7 @@ app.include_router(health.router, prefix="/api")
 app.include_router(users.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(members.router, prefix="/api")
+app.include_router(member_profile.router, prefix="/api")
 app.include_router(networks.router, prefix="/api")
 
 # To run: uvicorn app.main:app --reload --port 8001

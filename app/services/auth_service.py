@@ -134,8 +134,8 @@ async def bootstrap_account(
 
 def calculate_primary_role(roles: List[AccountRole]) -> str:
     active_roles = [r.role.lower() for r in roles if r.status == "active"]
-    if "admin" in active_roles:
-        return "admin"
+    if "family_head" in active_roles or "manager" in active_roles or "admin" in active_roles:
+        return "family_head"
     return "member"
 
 

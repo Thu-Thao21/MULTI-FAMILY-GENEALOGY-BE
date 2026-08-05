@@ -184,3 +184,63 @@ class MemberUpdateIn(BaseModel):
     bio: Optional[str] = None
     avatar_url: Optional[str] = None
     generation: Optional[int] = None
+    lunar_death_date: Optional[str] = None
+    burial_place: Optional[str] = None
+    burial_coordinates: Optional[dict] = None
+    contact: Optional[dict] = None
+    privacy_settings: Optional[dict] = None
+    contribution: Optional[dict] = None
+    gallery_photos: Optional[list[dict]] = None
+    career_history: Optional[list[dict]] = None
+
+# ─── Contact CRUD ──────────────────────────────────────────────────
+class ContactCreateIn(BaseModel):
+    contact_type: str = Field(alias="contactType")
+    contact_value: str = Field(alias="contactValue")
+    is_primary: bool = Field(False, alias="isPrimary")
+    is_public: bool = Field(True, alias="isPublic")
+    notes: Optional[str] = None
+
+class ContactUpdateIn(BaseModel):
+    contact_type: Optional[str] = Field(None, alias="contactType")
+    contact_value: Optional[str] = Field(None, alias="contactValue")
+    is_primary: Optional[bool] = Field(None, alias="isPrimary")
+    is_public: Optional[bool] = Field(None, alias="isPublic")
+    notes: Optional[str] = None
+
+# ─── Life Event CRUD ────────────────────────────────────────────────
+class LifeEventCreateIn(BaseModel):
+    event_type: str = Field("other", alias="eventType")
+    title: str
+    event_date: Optional[date] = Field(None, alias="eventDate")
+    description: Optional[str] = None
+    location: Optional[str] = None
+
+class LifeEventUpdateIn(BaseModel):
+    event_type: Optional[str] = Field(None, alias="eventType")
+    title: Optional[str] = None
+    event_date: Optional[date] = Field(None, alias="eventDate")
+    description: Optional[str] = None
+    location: Optional[str] = None
+
+# ─── Media CRUD ─────────────────────────────────────────────────────
+class MediaCreateIn(BaseModel):
+    media_type: str = Field("image", alias="mediaType")
+    media_url: str = Field(alias="mediaUrl")
+    caption: Optional[str] = None
+    sort_order: int = Field(0, alias="sortOrder")
+
+class MediaUpdateIn(BaseModel):
+    media_type: Optional[str] = Field(None, alias="mediaType")
+    media_url: Optional[str] = Field(None, alias="mediaUrl")
+    caption: Optional[str] = None
+    sort_order: Optional[int] = Field(None, alias="sortOrder")
+
+# ─── Skill CRUD ─────────────────────────────────────────────────────
+class SkillCreateIn(BaseModel):
+    skill_name: str = Field(alias="skillName")
+    category: Optional[str] = None
+    proficiency_level: str = Field("basic", alias="proficiencyLevel")
+
+class SkillUpdateIn(BaseModel):
+    proficiency_level: str = Field(alias="proficiencyLevel")

@@ -28,16 +28,6 @@ CREATE TABLE IF NOT EXISTS accounts (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS account_roles (
-    id VARCHAR(36) PRIMARY KEY,
-    account_id VARCHAR(36) REFERENCES accounts(id) ON DELETE CASCADE NOT NULL,
-    role VARCHAR(50) NOT NULL, -- 'admin' hoặc 'member'
-    family_id VARCHAR(36) REFERENCES families(id) ON DELETE SET NULL,
-    status VARCHAR(32) DEFAULT 'active' NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
-);
-
 -- 2.1 Bảng Quản trị viên (admins)
 CREATE TABLE IF NOT EXISTS admins (
     id VARCHAR(36) PRIMARY KEY,
@@ -72,6 +62,16 @@ CREATE TABLE IF NOT EXISTS families (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
+-- 2.3 Bảng Phân Quyền Vai Trò Tài Khoản (account_roles)
+CREATE TABLE IF NOT EXISTS account_roles (
+    id VARCHAR(36) PRIMARY KEY,
+    account_id VARCHAR(36) REFERENCES accounts(id) ON DELETE CASCADE NOT NULL,
+    role VARCHAR(50) NOT NULL, -- 'admin' hoặc 'member'
+    family_id VARCHAR(36) REFERENCES families(id) ON DELETE SET NULL,
+    status VARCHAR(32) DEFAULT 'active' NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
 
 -- 2.4 Bảng Cây Gia Phả Dòng Họ (family_trees)
 CREATE TABLE IF NOT EXISTS family_trees (
@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS family_branches (
 CREATE TABLE IF NOT EXISTS members (
     id VARCHAR(36) PRIMARY KEY,
     family_id VARCHAR(36) REFERENCES families(id) ON DELETE CASCADE,
+    account_id VARCHAR(36) REFERENCES accounts(id) ON DELETE SET NULL,
     username VARCHAR(150) UNIQUE,
     email VARCHAR(255) UNIQUE,
     phone VARCHAR(30) UNIQUE,
@@ -202,14 +203,16 @@ CREATE TABLE IF NOT EXISTS family_links (
 -- 2.13 Bảng Thông Tin Liên Hệ Thành Viên (member_contacts)
 CREATE TABLE IF NOT EXISTS member_contacts (
     id VARCHAR(36) PRIMARY KEY,
-    member_id VARCHAR(36) REFERENCES members(id) ON DELETE CASCADE NOT NULL UNIQUE,
-    phone VARCHAR(30),
-    email VARCHAR(255),
-    address TEXT,
-    social_links JSONB,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
+    member_id VARCHAR(36) NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    contact_type VARCHAR(50) NOT NULL,
+    contact_value VARCHAR(255) NOT NULL,
+    is_primary BOOLEAN DEFAULT FALSE,
+    is_public BOOLEAN DEFAULT TRUE,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX idx_member_contacts_member_id ON member_contacts(member_id);
 
 -- 2.14 Bảng Quyền Quyền Riêng Tư (member_privacy_rules)
 CREATE TABLE IF NOT EXISTS member_privacy_rules (
@@ -225,34 +228,43 @@ CREATE TABLE IF NOT EXISTS member_privacy_rules (
 -- 2.15 Bảng Hình Ảnh & Media (member_media)
 CREATE TABLE IF NOT EXISTS member_media (
     id VARCHAR(36) PRIMARY KEY,
-    member_id VARCHAR(36) REFERENCES members(id) ON DELETE CASCADE NOT NULL,
-    media_type VARCHAR(32) DEFAULT 'image' NOT NULL,
-    url TEXT NOT NULL,
+    member_id VARCHAR(36) NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    media_type VARCHAR(32) DEFAULT 'image',
+    media_url TEXT NOT NULL,
     caption TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
+    sort_order INT DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX idx_member_media_member_id ON member_media(member_id);
 
 -- 2.16 Bảng Sự Kiện Đời Người (member_life_events)
 CREATE TABLE IF NOT EXISTS member_life_events (
     id VARCHAR(36) PRIMARY KEY,
-    member_id VARCHAR(36) REFERENCES members(id) ON DELETE CASCADE NOT NULL,
-    event_name VARCHAR(255) NOT NULL,
+    member_id VARCHAR(36) NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    event_type VARCHAR(50) DEFAULT 'other',
+    title VARCHAR(255) NOT NULL,
     event_date DATE,
     description TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
+    location VARCHAR(255),
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+CREATE INDEX idx_member_life_events_member_id ON member_life_events(member_id);
 
 -- 2.17 Bảng Kỹ Năng / Nghề Nghiệp (skills & member_skills)
 CREATE TABLE IF NOT EXISTS skills (
     id VARCHAR(36) PRIMARY KEY,
-    name VARCHAR(120) NOT NULL UNIQUE
+    name VARCHAR(120) UNIQUE NOT NULL,
+    category VARCHAR(120)
 );
 
 CREATE TABLE IF NOT EXISTS member_skills (
     id VARCHAR(36) PRIMARY KEY,
-    member_id VARCHAR(36) REFERENCES members(id) ON DELETE CASCADE NOT NULL,
-    skill_id VARCHAR(36) REFERENCES skills(id) ON DELETE CASCADE NOT NULL
+    member_id VARCHAR(36) NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    skill_id VARCHAR(36) NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    proficiency_level VARCHAR(32) DEFAULT 'basic'
 );
+CREATE INDEX idx_member_skills_member_id ON member_skills(member_id);
+CREATE INDEX idx_member_skills_skill_id ON member_skills(skill_id);
 
 -- 2.18 Bảng Nhắc Nhở Ngày Giỗ (death_anniversary_reminders)
 CREATE TABLE IF NOT EXISTS death_anniversary_reminders (
