@@ -24,15 +24,15 @@ async def run_sql_script():
         sql_content = f.read()
 
     print("[*] Applying init_database.sql schema & views...")
-    async with engine.begin() as conn:
-        for statement in sql_content.split(";"):
-            stmt = statement.strip()
-            if stmt:
-                try:
+    for statement in sql_content.split(";"):
+        stmt = statement.strip()
+        if stmt:
+            try:
+                async with engine.begin() as conn:
                     await conn.exec_driver_sql(stmt)
-                except Exception as e:
-                    # Ignore notices or pre-existing constraint warnings
-                    pass
+            except Exception as e:
+                # Ignore notices or pre-existing constraint warnings
+                pass
     print("[+] Database schema, 33 tables & 3 views initialized successfully!")
 
 
