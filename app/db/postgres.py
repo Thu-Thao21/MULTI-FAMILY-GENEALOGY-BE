@@ -38,7 +38,15 @@ async def init_db() -> None:
         try:
             await conn.execute(text("ALTER TABLE accounts ADD COLUMN password_hash TEXT;"))
         except Exception:
-            pass  # Cột đã tồn tại
+            pass
+        try:
+            await conn.execute(text("ALTER TABLE families ADD COLUMN owner_id VARCHAR(36);"))
+        except Exception:
+            pass
+        try:
+            await conn.execute(text("ALTER TABLE families ADD COLUMN branches JSON DEFAULT '[]';"))
+        except Exception:
+            pass
 
     # Auto-seed default Admin & Family Head if not exists
     try:
