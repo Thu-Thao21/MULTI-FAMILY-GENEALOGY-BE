@@ -1,15 +1,17 @@
 from datetime import datetime, timedelta, timezone
+import secrets
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import hash_password, verify_password
 from app.db.postgres import get_db
-from app.models.postgres import Account, Admin, Member, PasswordReset
+from app.models.postgres import Account, AccountRole, Admin, Member, PasswordReset, UserSession
 from app.schemas.auth_schemas import AccountOut
 from app.services.auth_service import bootstrap_account, format_account_me, calculate_primary_role
 from app.dependencies.auth import get_current_account
@@ -45,13 +47,22 @@ class RegisterSchema(BaseModel):
     email_or_phone: str
     display_name: Optional[str] = None
     password: str
-    role: Optional[str] = "member"  # "admin" hoặc "member"
 
 
 class LoginSchema(BaseModel):
     email_or_phone: str
     password: str
-    role: Optional[str] = "member"  # "admin", "member"
+
+
+async def create_session(db: AsyncSession, account_id: str) -> str:
+    token = f"session_{secrets.token_urlsafe(32)}"
+    db.add(UserSession(
+        user_id=account_id,
+        session_token=token,
+        expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+    ))
+    await db.commit()
+    return token
 
 
 class RequestOTPSchema(BaseModel):
@@ -69,26 +80,32 @@ async def register(payload: RegisterSchema, db: AsyncSession = Depends(get_db)):
     input_str = payload.email_or_phone.strip().lower()
     username_str = payload.username.strip().lower()
 
+    if len(username_str) < 3:
+        raise HTTPException(status_code=400, detail="Tên đăng nhập phải có ít nhất 3 ký tự.")
+    if len(payload.password) < 6:
+        raise HTTPException(status_code=400, detail="Mật khẩu phải có ít nhất 6 ký tự.")
+
     is_email = "@" in input_str
     email_val = input_str if is_email else None
     phone_val = input_str if not is_email else None
     now = datetime.now(timezone.utc)
     display_name = payload.display_name.strip() if payload.display_name else payload.username.strip()
 
-    # Check existing in members
-    conditions = [Member.username == username_str]
+    # Account is the canonical authentication record. A genealogy Member profile
+    # can be linked later without making registration depend on its schema.
+    conditions = [Account.username == username_str]
     if email_val:
-        conditions.append(Member.email == email_val)
+        conditions.append(Account.email == email_val)
     if phone_val:
-        conditions.append(Member.phone == phone_val)
+        conditions.append(Account.phone_e164 == phone_val)
 
-    stmt = select(Member).where(or_(*conditions))
+    stmt = select(Account).where(or_(*conditions))
     result = await db.execute(stmt)
-    existing_member = result.scalars().first()
-    if existing_member:
-        if existing_member.username == username_str:
+    existing_account = result.scalars().first()
+    if existing_account:
+        if existing_account.username == username_str:
             detail_msg = "Tên đăng nhập này đã tồn tại trong hệ thống."
-        elif email_val and existing_member.email == email_val:
+        elif email_val and existing_account.email == email_val:
             detail_msg = "Email này đã được đăng ký."
         else:
             detail_msg = "Số điện thoại này đã được đăng ký."
@@ -97,129 +114,91 @@ async def register(payload: RegisterSchema, db: AsyncSession = Depends(get_db)):
             detail=detail_msg
         )
 
-    member_obj = Member(
-        id=f"member_{int(now.timestamp() * 1000)}",
+    account_id = f"account_{int(now.timestamp() * 1000)}"
+    account_obj = Account(
+        id=account_id,
+        firebase_uid=f"local_{account_id}",
         username=username_str,
         email=email_val,
-        phone=phone_val,
-        full_name=display_name,
+        phone_e164=phone_val,
+        display_name=display_name,
         password_hash=hash_password(payload.password),
-        role="member",
+        email_verified=False,
+        phone_verified=False,
         status="active",
         created_at=now,
         updated_at=now,
     )
-    db.add(member_obj)
-    await db.commit()
-    await db.refresh(member_obj)
+    db.add(account_obj)
+    db.add(AccountRole(account_id=account_id, role="member", status="active"))
+    try:
+        await db.commit()
+        await db.refresh(account_obj)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="Tên đăng nhập, email hoặc số điện thoại đã được sử dụng.",
+        )
 
+    session_token = await create_session(db, account_obj.id)
     return {
         "user": {
-            "id": member_obj.id,
-            "username": member_obj.username,
-            "displayName": member_obj.full_name,
-            "email": member_obj.email,
-            "phone": member_obj.phone,
-            "role": member_obj.role,
+            "id": account_obj.id,
+            "username": account_obj.username,
+            "displayName": account_obj.display_name,
+            "email": account_obj.email,
+            "phone": account_obj.phone_e164,
+            "role": "member",
         },
-        "message": "Đăng ký tài khoản Thành Viên thành công vào PostgreSQL.",
+        "token": session_token,
+        "message": "Đăng ký tài khoản Thành Viên thành công.",
     }
 
 
 @router.post("/login")
 async def login(payload: LoginSchema, db: AsyncSession = Depends(get_db)):
     input_str = payload.email_or_phone.strip().lower()
-    requested_role = (payload.role or "member").lower()
-
-    account = None
-    target_role = requested_role
-
-    if requested_role == "admin":
-        stmt = select(Admin).where(
-            or_(
-                Admin.username == input_str,
-                Admin.email == input_str,
-                Admin.phone == input_str
-            )
+    stmt = select(Account).options(selectinload(Account.roles)).where(
+        or_(
+            Account.username == input_str,
+            Account.email == input_str,
+            Account.phone_e164 == input_str,
         )
-        result = await db.execute(stmt)
-        account = result.scalar_one_or_none()
-        target_role = "admin"
-
-
-    else:
-        stmt = select(Member).where(
-            or_(
-                Member.username == input_str,
-                Member.email == input_str,
-                Member.phone == input_str
-            )
-        )
-        result = await db.execute(stmt)
-        account = result.scalar_one_or_none()
-        target_role = "member"
-
-    # Fallback search across Account and all role tables if not found in requested table
-    if not account:
-        stmt = select(Account).options(selectinload(Account.roles)).where(
-            or_(
-                Account.username == input_str,
-                Account.email == input_str,
-                Account.phone_e164 == input_str
-            )
-        )
-        res = await db.execute(stmt)
-        acc = res.scalars().first()
-        if acc:
-            account = acc
-            target_role = calculate_primary_role(acc.roles)
-
-    if not account:
-        for ModelClass, r_name in [(Admin, "admin"), (Member, "member")]:
-            stmt = select(ModelClass).where(
-                or_(
-                    ModelClass.username == input_str,
-                    ModelClass.email == input_str,
-                    ModelClass.phone == input_str
-                )
-            )
-            res = await db.execute(stmt)
-            acc = res.scalars().first()
-            if acc:
-                account = acc
-                target_role = r_name
-                break
-
-
+    )
+    result = await db.execute(stmt)
+    account = result.scalars().first()
     if not account:
         raise HTTPException(
             status_code=400,
             detail="Tài khoản hoặc Email/Số điện thoại chưa tồn tại trong hệ thống."
         )
 
-    is_valid = False
-    if account.password_hash:
-        try:
-            is_valid = verify_password(payload.password, account.password_hash)
-        except Exception:
-            is_valid = False
-
-    if not is_valid:
+    if not account.password_hash or not verify_password(payload.password, account.password_hash):
         raise HTTPException(
             status_code=400,
             detail="Mật khẩu không chính xác."
         )
 
+    if account.status != "active":
+        raise HTTPException(status_code=403, detail="Tài khoản đã bị khóa hoặc tạm ngưng hoạt động.")
+
+    if not any(role.status == "active" for role in account.roles):
+        raise HTTPException(status_code=403, detail="Tài khoản chưa được cấp quyền truy cập.")
+
+    target_role = calculate_primary_role(account.roles)
+    session_token = await create_session(db, account.id)
     return {
         "user": {
             "id": account.id,
-            "username": getattr(account, "username", input_str),
-            "displayName": getattr(account, "full_name", input_str),
-            "email": getattr(account, "email", None),
-            "phone": getattr(account, "phone", None),
+            "username": account.username,
+            "displayName": account.display_name or account.username,
+            "email": account.email,
+            "phone": account.phone_e164,
             "role": target_role,
         },
-        "token": f"token_{target_role}_{account.id}",
+        "account": format_account_me(account),
+        "token": session_token,
         "message": f"Đăng nhập thành công với vai trò {target_role.upper()}.",
     }
 
@@ -394,4 +373,3 @@ async def reset_password(payload: ResetPasswordSchema, db: AsyncSession = Depend
     return {
         "message": "Đặt lại mật khẩu thành công! Bạn có thể đăng nhập bằng mật khẩu mới."
     }
-

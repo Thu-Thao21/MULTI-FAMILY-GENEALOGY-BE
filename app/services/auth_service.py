@@ -33,13 +33,15 @@ async def bootstrap_account(
 ) -> Account:
     """
     Finds an existing account by firebase_uid or email, or creates a new Account with default 'member' role.
-    If the account email matches default super-admin, grants 'admin' role automatically.
+    New accounts start as members; privileged roles must be assigned explicitly.
     """
     firebase_uid = decoded_token.get("uid")
-    email = decoded_token.get("email")
+    token_email = decoded_token.get("email")
     email_verified = decoded_token.get("email_verified", False)
+    # An unverified provider email must not link to an existing privileged account.
+    email = token_email if email_verified else None
     phone_e164 = decoded_token.get("phone_number")
-    display_name = decoded_token.get("name") or decoded_token.get("email") or phone_e164 or "Thành viên gia phả"
+    display_name = decoded_token.get("name") or token_email or phone_e164 or "Thành viên gia phả"
 
     if not firebase_uid:
         raise ValueError("Firebase token không chứa UID.")
@@ -61,7 +63,7 @@ async def bootstrap_account(
             account.display_name = display_name
         
         if not account.roles:
-            default_role = "admin" if (email and email.lower() == "thuthaor120608@gmail.com") else "member"
+            default_role = "member"
             role_obj = AccountRole(
                 account_id=account.id,
                 role=default_role,
@@ -86,7 +88,7 @@ async def bootstrap_account(
         await db.flush()
 
         # Determine default roles
-        default_role = "admin" if (email and email.lower() == "thuthaor120608@gmail.com") else "member"
+        default_role = "member"
 
         role_obj = AccountRole(
             account_id=account.id,
@@ -134,7 +136,9 @@ async def bootstrap_account(
 
 def calculate_primary_role(roles: List[AccountRole]) -> str:
     active_roles = [r.role.lower() for r in roles if r.status == "active"]
-    if "family_head" in active_roles or "manager" in active_roles or "admin" in active_roles:
+    if "admin" in active_roles:
+        return "admin"
+    if "family_head" in active_roles or "manager" in active_roles:
         return "family_head"
     return "member"
 

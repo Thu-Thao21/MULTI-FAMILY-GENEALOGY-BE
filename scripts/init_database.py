@@ -38,7 +38,7 @@ async def run_sql_script():
 
 async def seed_admin_and_accounts():
     print("[*] Seeding default Admin and Family Head accounts with hashed passwords...")
-    pwd_hash = hash_password('admin')
+    pwd_hash = hash_password('admin123')
     
     async with async_session_maker() as session:
         # Seed Admin
@@ -61,12 +61,13 @@ async def seed_admin_and_accounts():
         else:
             existing_admin.password_hash = pwd_hash
             existing_admin.email = 'thuthaor120608@gmail.com'
+            existing_admin.status = 'active'
 
         # Seed Account for Admin
         res_acc = await session.execute(select(Account).where(Account.email == 'thuthaor120608@gmail.com'))
         existing_acc = res_acc.scalar_one_or_none()
         if not existing_acc:
-            session.add(Account(
+            existing_acc = Account(
                 id='admin_default_001',
                 firebase_uid='admin_default_001',
                 username='admin',
@@ -75,15 +76,27 @@ async def seed_admin_and_accounts():
                 password_hash=pwd_hash,
                 email_verified=True,
                 status='active'
-            ))
-            await session.flush()
+            )
+            session.add(existing_acc)
+        else:
+            existing_acc.password_hash = pwd_hash
+            existing_acc.username = 'admin'
+            existing_acc.status = 'active'
+            existing_acc.email_verified = True
+
+        await session.flush()
+        res_role = await session.execute(
+            select(AccountRole).where(
+                AccountRole.account_id == existing_acc.id,
+                AccountRole.role == 'admin',
+            )
+        )
+        if not res_role.scalars().first():
             session.add(AccountRole(
-                account_id='admin_default_001',
+                account_id=existing_acc.id,
                 role='admin',
                 status='active'
             ))
-        else:
-            existing_acc.password_hash = pwd_hash
 
         await session.commit()
     print("[+] Admin account seeded successfully!")

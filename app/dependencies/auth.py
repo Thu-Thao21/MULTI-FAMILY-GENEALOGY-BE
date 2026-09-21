@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Callable, List
 from fastapi import Depends, HTTPException, Header, status
 from sqlalchemy import or_, select
@@ -6,7 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.firebase import verify_firebase_token
 from app.db.postgres import get_db
-from app.models.postgres import Account
+from app.models.postgres import Account, UserSession
 from app.services.auth_service import bootstrap_account, calculate_primary_role, get_account_by_firebase_uid
 
 
@@ -33,18 +34,15 @@ async def get_current_account(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # 1. Handle Custom Backend Tokens (e.g. token_admin_admin_default_001)
-    if id_token.startswith("token_"):
-        raw = id_token[len("token_"):]
-        account_id = None
-        for r in ["admin", "member"]:
-            if raw.startswith(f"{r}_"):
-                account_id = raw[len(f"{r}_"):]
-                break
-        if not account_id:
-            account_id = raw
-
-        stmt = select(Account).options(selectinload(Account.roles)).where(Account.id == account_id)
+    # Local password sessions are opaque random tokens, not role or account IDs.
+    if id_token.startswith("session_"):
+        stmt = select(Account).join(UserSession, UserSession.user_id == Account.id).options(
+            selectinload(Account.roles)
+        ).where(
+            UserSession.session_token == id_token,
+            UserSession.expires_at > datetime.now(timezone.utc),
+            UserSession.revoked_at.is_(None),
+        )
         res = await db.execute(stmt)
         account = res.scalar_one_or_none()
 
