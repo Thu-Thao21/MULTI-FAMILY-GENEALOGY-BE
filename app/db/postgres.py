@@ -154,14 +154,14 @@ async def init_db() -> None:
             res_family_role = await session.execute(
                 select(AccountRole).where(
                     AccountRole.account_id == family_admin.id,
-                    AccountRole.role == 'family_head',
+                    AccountRole.role == 'manager',
                 )
             )
             family_role = res_family_role.scalars().first()
             if not family_role:
                 session.add(AccountRole(
                     account_id=family_admin.id,
-                    role='family_head',
+                    role='manager',
                     family_id=family.id,
                     status='active',
                 ))
