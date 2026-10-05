@@ -13,7 +13,7 @@ Every request:
 Roles are never read from the token; authorization lives in permissions.py and
 re-reads the database on every request.
 
-No Firebase here: ID-token exchange is Mốc D. No dependency on app.models.postgres.
+No Firebase here: ID-token exchange is Mốc D.
 """
 
 from __future__ import annotations

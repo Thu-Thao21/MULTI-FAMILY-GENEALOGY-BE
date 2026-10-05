@@ -9,13 +9,8 @@ if sys.platform.startswith("win"):
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import settings
-
-
-class Base(DeclarativeBase):
-    pass
 
 
 # settings.DATABASE_URL is already normalized to postgresql+psycopg://
