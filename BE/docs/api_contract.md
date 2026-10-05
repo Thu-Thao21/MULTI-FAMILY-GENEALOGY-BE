@@ -193,3 +193,28 @@ Schema nằm trong `app/schemas/business.py` và `app/schemas/users.py`.
 ## 5. Chưa nằm trong hợp đồng
 
 NEED_SUPPLEMENT và luồng nộp lại hồ sơ, cấp tài khoản Member hàng loạt, chuyển Owner, sửa gói đang dùng, tải tệp đính kèm. Các phần này cần chốt phạm vi trước khi thêm schema (mục 8 của kế hoạch).
+
+## 6. Giả định và quyết định
+
+### Đã chốt ở Mốc C2 (phân quyền)
+
+| # | Quyết định |
+| --- | --- |
+| 1 | SA và BO xét theo role code trong `user_roles` + `roles.code`. FA xét theo `family_admin_assignments` + `family_admin_permissions`. Không đọc và không seed `role_permissions` |
+| 2 | BO trong một clan cần đủ ba điều kiện: role `BUSINESS_OWNER` đang hiệu lực đúng `clan_id`, dòng `clan_ownership_history` có `ended_at IS NULL` của chính user, membership `ACTIVE` |
+| 3 | SA cần role `SYSTEM_ADMIN` đang hiệu lực với `clan_id IS NULL`. Role SA gắn với một clan không được tính. SA không tự động có quyền trong clan nào |
+| 4 | FA cần membership `ACTIVE`, assignment chưa thu hồi trong đúng clan có mã quyền action yêu cầu. Assignment có `branch_id` chỉ bao phủ tài nguyên đúng branch đó; assignment không có `branch_id` bao phủ cả clan. Chưa hỗ trợ kế thừa branch con vì bảng `branches` chưa được map |
+| 5 | Action theo clan yêu cầu `clans.status = ACTIVE`, nếu không trả `403 FORBIDDEN`. Không áp dụng cho `/auth/*` và action của SA |
+| 6 | Không có membership `ACTIVE` trong clan (kể cả clan không tồn tại) trả `404 NOT_FOUND`. Có membership nhưng thiếu quyền trả `403 FORBIDDEN`. Action chưa khai báo luôn bị từ chối |
+| 7 | User `PENDING` không có cờ đổi mật khẩu trả `403 ACCOUNT_BLOCKED`. **Xem lại sau khi chốt D03** |
+| 8 | `TEMPORARY_PASSWORD_EXPIRED` chỉ khi `must_change_password = true` và `temporary_password_expires_at` đã qua |
+| 9 | Phiên tạo trước `credential_metadata.password_changed_at` bị coi là `401 SESSION_INVALID` |
+| 10 | Khóa, tạm ngưng, disable hoặc thu hồi role SA không được để hệ thống còn 0 SA `ACTIVE`, kể cả khi SA tự khóa mình. Trả `409 STATE_CONFLICT`. Kiểm tra chạy trong cùng transaction với thao tác ghi và khóa các dòng `user_roles` SA bằng `SELECT ... FOR UPDATE` |
+| 11 | Phiên hạn chế chỉ dùng được `/auth/me`, `/auth/change-password`, `/auth/logout`. Mọi route khác trả `403 PASSWORD_CHANGE_REQUIRED` |
+
+### Chưa chốt (giả định từ Mốc C1)
+
+- `GET /auth/me`: `permissions` ở ngoài cùng là quyền cấp hệ thống; quyền theo clan nằm trong `memberships[]`.
+- Mã theo dõi hồ sơ sai trả `404`; gói không hợp lệ khi đăng ký trả `422`.
+- Mọi field khi cấp Owner là tùy chọn, mặc định lấy người đại diện trên hồ sơ.
+- API xem provisioning job cần migration bảng job trước khi cài.

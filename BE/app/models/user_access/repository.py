@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user_access.entities import (
@@ -17,6 +17,28 @@ from app.models.user_access.entities import (
     UserRole,
     UserSession,
 )
+
+
+SYSTEM_ADMIN_ROLE = "SYSTEM_ADMIN"
+
+
+def active_system_admin_roles_for_update_stmt() -> Select[tuple[uuid.UUID]]:
+    """Row-lock every active system-scope SYSTEM_ADMIN grant (FOR UPDATE OF user_roles).
+
+    Serializes concurrent lock/disable/revoke operations on System Admins so the
+    "last active SA" check cannot be raced. Must run inside the caller's transaction.
+    """
+    return (
+        select(UserRole.user_role_id)
+        .join(Role, Role.role_id == UserRole.role_id)
+        .where(
+            Role.code == SYSTEM_ADMIN_ROLE,
+            UserRole.clan_id.is_(None),
+            UserRole.revoked_at.is_(None),
+        )
+        .order_by(UserRole.user_role_id)
+        .with_for_update(of=UserRole)
+    )
 
 
 class UserAccessRepository:
@@ -126,3 +148,64 @@ class UserAccessRepository:
             .limit(limit)
         )
         return list((await self._session.execute(stmt)).scalars().all())
+
+    # ----- Authorization helpers (C2) -----
+
+    async def has_active_role(
+        self,
+        user_id: uuid.UUID,
+        role_code: str,
+        *,
+        clan_id: uuid.UUID | None,
+    ) -> bool:
+        """Active (revoked_at IS NULL) grant of role_code. clan_id=None means system scope."""
+        stmt = (
+            select(UserRole.user_role_id)
+            .join(Role, Role.role_id == UserRole.role_id)
+            .where(
+                UserRole.user_id == user_id,
+                Role.code == role_code,
+                UserRole.revoked_at.is_(None),
+                UserRole.clan_id.is_(None) if clan_id is None else UserRole.clan_id == clan_id,
+            )
+            .limit(1)
+        )
+        return (await self._session.execute(stmt)).first() is not None
+
+    async def list_active_role_grants(
+        self, user_id: uuid.UUID
+    ) -> list[tuple[str, uuid.UUID | None]]:
+        """(role_code, clan_id) for every active grant of the user."""
+        stmt = (
+            select(Role.code, UserRole.clan_id)
+            .join(Role, Role.role_id == UserRole.role_id)
+            .where(UserRole.user_id == user_id, UserRole.revoked_at.is_(None))
+        )
+        return [(row[0], row[1]) for row in (await self._session.execute(stmt)).all()]
+
+    async def lock_active_system_admin_roles(self) -> None:
+        """SELECT ... FOR UPDATE on active SA grants. Caller owns the transaction."""
+        await self._session.execute(active_system_admin_roles_for_update_stmt())
+
+    async def count_active_system_admins(
+        self, *, exclude_user_id: uuid.UUID | None = None
+    ) -> int:
+        """Distinct ACTIVE users holding an active system-scope SYSTEM_ADMIN grant.
+
+        Run after lock_active_system_admin_roles() as a separate statement so that,
+        under READ COMMITTED, it sees changes committed by the transaction it waited on.
+        """
+        stmt = (
+            select(func.count(func.distinct(UserRole.user_id)))
+            .join(Role, Role.role_id == UserRole.role_id)
+            .join(User, User.user_id == UserRole.user_id)
+            .where(
+                Role.code == SYSTEM_ADMIN_ROLE,
+                UserRole.clan_id.is_(None),
+                UserRole.revoked_at.is_(None),
+                User.status == "ACTIVE",
+            )
+        )
+        if exclude_user_id is not None:
+            stmt = stmt.where(UserRole.user_id != exclude_user_id)
+        return int((await self._session.execute(stmt)).scalar_one())

@@ -407,3 +407,28 @@ class FamilyRepository:
             .order_by(EmailDeliveryAttempt.attempt_number.asc())
         )
         return list((await self._session.execute(stmt)).scalars().all())
+
+    # ----- Authorization helpers (C2) -----
+
+    async def list_active_fa_grants(
+        self, clan_id: uuid.UUID, user_id: uuid.UUID
+    ) -> list[tuple[uuid.UUID, uuid.UUID | None, str]]:
+        """(assignment_id, branch_id, permission_code) for the user's non-revoked FA
+        assignments in this clan. branch_id=None means the assignment covers the clan."""
+        stmt = (
+            select(
+                FamilyAdminAssignment.assignment_id,
+                FamilyAdminAssignment.branch_id,
+                FamilyAdminPermission.permission_code,
+            )
+            .join(
+                FamilyAdminPermission,
+                FamilyAdminPermission.assignment_id == FamilyAdminAssignment.assignment_id,
+            )
+            .where(
+                FamilyAdminAssignment.clan_id == clan_id,
+                FamilyAdminAssignment.user_id == user_id,
+                FamilyAdminAssignment.revoked_at.is_(None),
+            )
+        )
+        return [(r[0], r[1], r[2]) for r in (await self._session.execute(stmt)).all()]

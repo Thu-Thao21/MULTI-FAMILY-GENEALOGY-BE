@@ -1,108 +1,185 @@
+"""Authentication dependency: application session -> Principal (plan section 5).
+
+Every request:
+  1. Bearer token -> SHA-256 -> user_sessions.token_jti_hash.
+  2. Session must exist, not be revoked, not be expired, and must have been
+     created after the last password change.
+  3. users.status: LOCKED / SUSPENDED / DISABLED -> ACCOUNT_BLOCKED.
+  4. credential_metadata.must_change_password AND temporary_password_expires_at
+     in the past -> TEMPORARY_PASSWORD_EXPIRED.
+  5. users.first_login_required OR credential_metadata.must_change_password
+     -> restricted session (only /auth/me, /auth/change-password, /auth/logout).
+
+Roles are never read from the token; authorization lives in permissions.py and
+re-reads the database on every request.
+
+No Firebase here: ID-token exchange is Mốc D. No dependency on app.models.postgres.
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable, List
-from fastapi import Depends, HTTPException, Header, status
-from sqlalchemy import or_, select
+from typing import Protocol
+
+from fastapi import Depends, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
-from app.core.firebase import verify_firebase_token
+from app.core.errors import AppError
+from app.core.tokens import hash_session_token
 from app.db.postgres import get_db
-from app.models.postgres import Account, UserSession
-from app.services.auth_service import bootstrap_account, calculate_primary_role, get_account_by_firebase_uid
+from app.models.user_access.entities import CredentialMetadata, User, UserSession
+from app.models.user_access.repository import UserAccessRepository
+from app.schemas.errors import ErrorCode
+
+API_PREFIX = "/api/v1"
+
+# Restricted sessions may only reach these routes. get_principal_allow_restricted
+# must be attached to exactly these three routes; the path check below is an
+# extra defensive layer, not the primary control.
+RESTRICTED_ALLOWED_PATHS: frozenset[str] = frozenset(
+    {
+        f"{API_PREFIX}/auth/me",
+        f"{API_PREFIX}/auth/change-password",
+        f"{API_PREFIX}/auth/logout",
+    }
+)
+
+BLOCKED_STATUSES: frozenset[str] = frozenset({"LOCKED", "SUSPENDED", "DISABLED"})
+USABLE_STATUSES: frozenset[str] = frozenset({"ACTIVE", "PENDING"})
+
+_WWW_AUTH = {"WWW-Authenticate": "Bearer"}
+
+_bearer = HTTPBearer(auto_error=False, description="Application session token")
 
 
-async def get_current_account(
-    authorization: str = Header(None, description="Bearer <Token>"),
+class AuthRepository(Protocol):
+    """What authentication needs from storage (real repo or test fake)."""
+
+    async def get_session_by_token_hash(self, token_jti_hash: str) -> UserSession | None: ...
+
+    async def get_user_by_id(self, user_id: uuid.UUID) -> User | None: ...
+
+    async def get_credential_metadata(self, user_id: uuid.UUID) -> CredentialMetadata | None: ...
+
+
+@dataclass(frozen=True)
+class Principal:
+    """Authenticated caller. Carries identity only, never roles or permissions."""
+
+    user_id: uuid.UUID
+    session_id: uuid.UUID
+    status: str
+    requires_password_change: bool
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _session_invalid() -> AppError:
+    return AppError(ErrorCode.SESSION_INVALID, headers=_WWW_AUTH)
+
+
+async def resolve_principal(
+    token: str,
+    repo: AuthRepository,
+    *,
+    now: datetime | None = None,
+) -> Principal:
+    """Pure session -> Principal resolution. Raises AppError; never returns partial data."""
+    now = now or _now()
+
+    session = await repo.get_session_by_token_hash(hash_session_token(token))
+    if session is None or session.revoked_at is not None or session.expires_at <= now:
+        raise _session_invalid()
+
+    user = await repo.get_user_by_id(session.user_id)
+    if user is None:
+        raise _session_invalid()
+
+    if user.status in BLOCKED_STATUSES or user.status not in USABLE_STATUSES:
+        # Unknown statuses are denied too (default deny).
+        raise AppError(ErrorCode.ACCOUNT_BLOCKED)
+
+    cred = await repo.get_credential_metadata(user.user_id)
+
+    # A session issued before the latest password change is dead, even if the
+    # explicit revoke after change/reset was missed.
+    if (
+        cred is not None
+        and cred.password_changed_at is not None
+        and cred.password_changed_at > session.created_at
+    ):
+        raise _session_invalid()
+
+    must_change = bool(cred is not None and cred.must_change_password)
+    requires_password_change = bool(user.first_login_required) or must_change
+
+    if (
+        must_change
+        and cred is not None
+        and cred.temporary_password_expires_at is not None
+        and cred.temporary_password_expires_at <= now
+    ):
+        raise AppError(ErrorCode.TEMPORARY_PASSWORD_EXPIRED)
+
+    # PENDING is only usable as a restricted session (temporary password flow).
+    # TODO(D03): revisit once the activation rule is decided.
+    if user.status == "PENDING" and not requires_password_change:
+        raise AppError(ErrorCode.ACCOUNT_BLOCKED)
+
+    return Principal(
+        user_id=user.user_id,
+        session_id=session.session_id,
+        status=user.status,
+        requires_password_change=requires_password_change,
+    )
+
+
+def _extract_token(credentials: HTTPAuthorizationCredentials | None) -> str:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise AppError(ErrorCode.UNAUTHENTICATED, headers=_WWW_AUTH)
+    token = credentials.credentials.strip()
+    if not token or len(token) > 512:
+        raise _session_invalid()
+    return token
+
+
+def _normalize_path(path: str) -> str:
+    return path.rstrip("/") or "/"
+
+
+async def get_user_access_repo(
     db: AsyncSession = Depends(get_db),
-) -> Account:
-    """
-    Extracts Bearer token (Firebase ID Token or Custom Backend Token),
-    loads Account from PostgreSQL DB and verifies active status.
-    """
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Thiếu Authorization header dạng Bearer <token>.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    id_token = authorization.split("Bearer ")[1].strip()
-    if not id_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token không hợp lệ.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    # Local password sessions are opaque random tokens, not role or account IDs.
-    if id_token.startswith("session_"):
-        stmt = select(Account).join(UserSession, UserSession.user_id == Account.id).options(
-            selectinload(Account.roles)
-        ).where(
-            UserSession.session_token == id_token,
-            UserSession.expires_at > datetime.now(timezone.utc),
-            UserSession.revoked_at.is_(None),
-        )
-        res = await db.execute(stmt)
-        account = res.scalar_one_or_none()
-
-        if account:
-            if account.status != "active":
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Tài khoản của bạn đã bị khóa hoặc tạm ngưng hoạt động.",
-                )
-            return account
-
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Tài khoản không tồn tại hoặc token không hợp lệ.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    # 2. Handle Firebase Auth Tokens
-    try:
-        decoded_token = verify_firebase_token(id_token)
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Token không hợp lệ hoặc đã hết hạn: {str(e)}",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    firebase_uid = decoded_token.get("uid")
-    account = await get_account_by_firebase_uid(db, firebase_uid)
-
-    if not account:
-        account = await bootstrap_account(db, decoded_token)
-
-    if account.status != "active":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Tài khoản của bạn đã bị khóa hoặc tạm ngưng hoạt động.",
-        )
-
-    return account
+) -> UserAccessRepository:
+    return UserAccessRepository(db)
 
 
-def require_roles(allowed_roles: List[str]) -> Callable:
-    """
-    FastAPI Role Guard Dependency Factory.
-    Ensures current authenticated account has at least one of allowed_roles in PostgreSQL.
-    """
-    async def role_checker(account: Account = Depends(get_current_account)) -> Account:
-        user_roles = [r.role.lower() for r in account.roles if r.status == "active"]
-        
-        # Super admin always bypasses specific role checks
-        if "admin" in user_roles:
-            return account
+async def get_principal_allow_restricted(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    repo: UserAccessRepository = Depends(get_user_access_repo),
+) -> Principal:
+    """Attach ONLY to /auth/me, /auth/change-password, /auth/logout."""
+    principal = await resolve_principal(_extract_token(credentials), repo)
+    if (
+        principal.requires_password_change
+        and _normalize_path(request.url.path) not in RESTRICTED_ALLOWED_PATHS
+    ):
+        # Defensive: the dependency was attached to a route it should not be on.
+        raise AppError(ErrorCode.PASSWORD_CHANGE_REQUIRED)
+    return principal
 
-        has_permission = any(role.lower() in user_roles for role in allowed_roles)
-        if not has_permission:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Bạn không có quyền truy cập tính năng này. Yêu cầu một trong các quyền: {', '.join(allowed_roles)}.",
-            )
-        return account
 
-    return role_checker
+async def get_principal(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    repo: UserAccessRepository = Depends(get_user_access_repo),
+) -> Principal:
+    """Default for every authenticated route: restricted sessions are rejected."""
+    principal = await resolve_principal(_extract_token(credentials), repo)
+    if principal.requires_password_change:
+        raise AppError(ErrorCode.PASSWORD_CHANGE_REQUIRED)
+    return principal
