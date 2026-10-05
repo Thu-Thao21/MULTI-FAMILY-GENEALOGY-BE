@@ -9,6 +9,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -124,6 +125,10 @@ class UserSession(Base):
     """Maps public.user_sessions (Neon inspect)."""
 
     __tablename__ = "user_sessions"
+    __table_args__ = (
+        Index("idx_user_sessions_active", "user_id", "revoked_at", "expires_at"),
+        Index("idx_user_sessions_user", "user_id"),
+    )
 
     session_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -154,6 +159,9 @@ class LoginHistory(Base):
     """Maps public.login_history (Neon inspect)."""
 
     __tablename__ = "login_history"
+    __table_args__ = (
+        Index("idx_login_history_user_time", "user_id", text("occurred_at DESC")),
+    )
 
     login_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -181,6 +189,10 @@ class AuditLog(Base):
     """Maps public.audit_logs (Neon inspect)."""
 
     __tablename__ = "audit_logs"
+    __table_args__ = (
+        Index("idx_audit_logs_actor_time", "actor_id", text("occurred_at DESC")),
+        Index("idx_audit_logs_clan_time", "clan_id", text("occurred_at DESC")),
+    )
 
     log_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -267,6 +279,16 @@ class UserRole(Base):
     """Maps public.user_roles (Neon inspect)."""
 
     __tablename__ = "user_roles"
+    __table_args__ = (
+        Index(
+            "uq_active_user_role_scope",
+            "user_id",
+            "role_id",
+            "clan_id",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
+    )
 
     user_role_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
