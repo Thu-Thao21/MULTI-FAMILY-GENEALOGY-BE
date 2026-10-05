@@ -1,7 +1,3 @@
-__pycache__/
-venv/
-*.pyc
-.env
-*.sqlite3
+
 *service-account*.json
 *firebase-adminsdk*.json
