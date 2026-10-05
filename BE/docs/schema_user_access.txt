@@ -1,0 +1,187 @@
+MFGMS AI — user_access schema inspect (read-only)
+database=mfgms_ai  schema=public
+NOTE: connection string and row data are intentionally omitted.
+
+========================================================================
+TABLE users
+- columns (name | data_type | udt_name | max_len | is_nullable | column_default)
+  user_id | uuid | uuid | max_len=- | nullable=NO | default=gen_random_uuid()
+  firebase_uid | character varying | varchar | max_len=255 | nullable=YES | default=
+  username | character varying | varchar | max_len=150 | nullable=YES | default=
+  email | character varying | varchar | max_len=255 | nullable=NO | default=
+  phone | character varying | varchar | max_len=30 | nullable=YES | default=
+  display_name | character varying | varchar | max_len=255 | nullable=NO | default=
+  status | character varying | varchar | max_len=30 | nullable=NO | default='ACTIVE'::character varying
+  email_verified | boolean | bool | max_len=- | nullable=NO | default=false
+  phone_verified | boolean | bool | max_len=- | nullable=NO | default=false
+  first_login_required | boolean | bool | max_len=- | nullable=NO | default=false
+  last_login_at | timestamp with time zone | timestamptz | max_len=- | nullable=YES | default=
+  created_at | timestamp with time zone | timestamptz | max_len=- | nullable=NO | default=CURRENT_TIMESTAMP
+  updated_at | timestamp with time zone | timestamptz | max_len=- | nullable=NO | default=CURRENT_TIMESTAMP
+- primary key
+  user_id (constraint=users_pkey)
+- foreign keys
+  (none)
+- check constraints
+  users_status_check: CHECK (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'ACTIVE'::character varying, 'LOCKED'::character varying, 'SUSPENDED'::character varying, 'DISABLED'::character varying])::text[])))
+- unique constraints
+  users_email_key: (email)
+  users_firebase_uid_key: (firebase_uid)
+  users_username_key: (username)
+
+========================================================================
+TABLE credential_metadata
+- columns (name | data_type | udt_name | max_len | is_nullable | column_default)
+  user_id | uuid | uuid | max_len=- | nullable=NO | default=
+  auth_provider | character varying | varchar | max_len=30 | nullable=NO | default='FIREBASE'::character varying
+  password_changed_at | timestamp with time zone | timestamptz | max_len=- | nullable=YES | default=
+  temporary_password_issued_at | timestamp with time zone | timestamptz | max_len=- | nullable=YES | default=
+  temporary_password_expires_at | timestamp with time zone | timestamptz | max_len=- | nullable=YES | default=
+  must_change_password | boolean | bool | max_len=- | nullable=NO | default=false
+  failed_login_count | integer | int4 | max_len=- | nullable=NO | default=0
+  locked_until | timestamp with time zone | timestamptz | max_len=- | nullable=YES | default=
+  updated_at | timestamp with time zone | timestamptz | max_len=- | nullable=NO | default=CURRENT_TIMESTAMP
+- primary key
+  user_id (constraint=credential_metadata_pkey)
+- foreign keys
+  user_id -> users.user_id (constraint=credential_metadata_user_id_fkey)
+- check constraints
+  credential_metadata_failed_login_count_check: CHECK ((failed_login_count >= 0))
+- unique constraints
+  (none)
+
+========================================================================
+TABLE user_sessions
+- columns (name | data_type | udt_name | max_len | is_nullable | column_default)
+  session_id | uuid | uuid | max_len=- | nullable=NO | default=gen_random_uuid()
+  user_id | uuid | uuid | max_len=- | nullable=NO | default=
+  token_jti_hash | character varying | varchar | max_len=255 | nullable=YES | default=
+  ip_address | inet | inet | max_len=- | nullable=YES | default=
+  user_agent | text | text | max_len=- | nullable=YES | default=
+  created_at | timestamp with time zone | timestamptz | max_len=- | nullable=NO | default=CURRENT_TIMESTAMP
+  expires_at | timestamp with time zone | timestamptz | max_len=- | nullable=NO | default=
+  revoked_at | timestamp with time zone | timestamptz | max_len=- | nullable=YES | default=
+  revoke_reason | character varying | varchar | max_len=255 | nullable=YES | default=
+- primary key
+  session_id (constraint=user_sessions_pkey)
+- foreign keys
+  user_id -> users.user_id (constraint=user_sessions_user_id_fkey)
+- check constraints
+  (none)
+- unique constraints
+  (none)
+
+========================================================================
+TABLE login_history
+- columns (name | data_type | udt_name | max_len | is_nullable | column_default)
+  login_id | uuid | uuid | max_len=- | nullable=NO | default=gen_random_uuid()
+  user_id | uuid | uuid | max_len=- | nullable=YES | default=
+  identifier | character varying | varchar | max_len=255 | nullable=YES | default=
+  success | boolean | bool | max_len=- | nullable=NO | default=
+  failure_reason | character varying | varchar | max_len=255 | nullable=YES | default=
+  ip_address | inet | inet | max_len=- | nullable=YES | default=
+  user_agent | text | text | max_len=- | nullable=YES | default=
+  occurred_at | timestamp with time zone | timestamptz | max_len=- | nullable=NO | default=CURRENT_TIMESTAMP
+- primary key
+  login_id (constraint=login_history_pkey)
+- foreign keys
+  user_id -> users.user_id (constraint=login_history_user_id_fkey)
+- check constraints
+  (none)
+- unique constraints
+  (none)
+
+========================================================================
+TABLE audit_logs
+- columns (name | data_type | udt_name | max_len | is_nullable | column_default)
+  log_id | uuid | uuid | max_len=- | nullable=NO | default=gen_random_uuid()
+  clan_id | uuid | uuid | max_len=- | nullable=YES | default=
+  actor_id | uuid | uuid | max_len=- | nullable=YES | default=
+  action | character varying | varchar | max_len=100 | nullable=NO | default=
+  entity_type | character varying | varchar | max_len=100 | nullable=NO | default=
+  entity_id | uuid | uuid | max_len=- | nullable=YES | default=
+  old_data | jsonb | jsonb | max_len=- | nullable=YES | default=
+  new_data | jsonb | jsonb | max_len=- | nullable=YES | default=
+  reason | text | text | max_len=- | nullable=YES | default=
+  ip_address | inet | inet | max_len=- | nullable=YES | default=
+  occurred_at | timestamp with time zone | timestamptz | max_len=- | nullable=NO | default=CURRENT_TIMESTAMP
+- primary key
+  log_id (constraint=audit_logs_pkey)
+- foreign keys
+  actor_id -> users.user_id (constraint=audit_logs_actor_id_fkey)
+  clan_id -> clans.clan_id (constraint=audit_logs_clan_id_fkey)
+- check constraints
+  (none)
+- unique constraints
+  (none)
+
+========================================================================
+TABLE roles
+- columns (name | data_type | udt_name | max_len | is_nullable | column_default)
+  role_id | uuid | uuid | max_len=- | nullable=NO | default=gen_random_uuid()
+  code | character varying | varchar | max_len=50 | nullable=NO | default=
+  name | character varying | varchar | max_len=100 | nullable=NO | default=
+  description | text | text | max_len=- | nullable=YES | default=
+  is_system_role | boolean | bool | max_len=- | nullable=NO | default=true
+- primary key
+  role_id (constraint=roles_pkey)
+- foreign keys
+  (none)
+- check constraints
+  (none)
+- unique constraints
+  roles_code_key: (code)
+
+========================================================================
+TABLE permissions
+- columns (name | data_type | udt_name | max_len | is_nullable | column_default)
+  permission_id | uuid | uuid | max_len=- | nullable=NO | default=gen_random_uuid()
+  code | character varying | varchar | max_len=100 | nullable=NO | default=
+  module | character varying | varchar | max_len=100 | nullable=NO | default=
+  description | text | text | max_len=- | nullable=YES | default=
+- primary key
+  permission_id (constraint=permissions_pkey)
+- foreign keys
+  (none)
+- check constraints
+  (none)
+- unique constraints
+  permissions_code_key: (code)
+
+========================================================================
+TABLE role_permissions
+- columns (name | data_type | udt_name | max_len | is_nullable | column_default)
+  role_id | uuid | uuid | max_len=- | nullable=NO | default=
+  permission_id | uuid | uuid | max_len=- | nullable=NO | default=
+- primary key
+  role_id (constraint=role_permissions_pkey)
+  permission_id (constraint=role_permissions_pkey)
+- foreign keys
+  permission_id -> permissions.permission_id (constraint=role_permissions_permission_id_fkey)
+  role_id -> roles.role_id (constraint=role_permissions_role_id_fkey)
+- check constraints
+  (none)
+- unique constraints
+  (none)
+
+========================================================================
+TABLE user_roles
+- columns (name | data_type | udt_name | max_len | is_nullable | column_default)
+  user_role_id | uuid | uuid | max_len=- | nullable=NO | default=gen_random_uuid()
+  user_id | uuid | uuid | max_len=- | nullable=NO | default=
+  role_id | uuid | uuid | max_len=- | nullable=NO | default=
+  clan_id | uuid | uuid | max_len=- | nullable=YES | default=
+  granted_by | uuid | uuid | max_len=- | nullable=YES | default=
+  granted_at | timestamp with time zone | timestamptz | max_len=- | nullable=NO | default=CURRENT_TIMESTAMP
+  revoked_at | timestamp with time zone | timestamptz | max_len=- | nullable=YES | default=
+- primary key
+  user_role_id (constraint=user_roles_pkey)
+- foreign keys
+  clan_id -> clans.clan_id (constraint=user_roles_clan_id_fkey)
+  granted_by -> users.user_id (constraint=user_roles_granted_by_fkey)
+  role_id -> roles.role_id (constraint=user_roles_role_id_fkey)
+  user_id -> users.user_id (constraint=user_roles_user_id_fkey)
+- check constraints
+  (none)
+- unique constraints
+  (none)

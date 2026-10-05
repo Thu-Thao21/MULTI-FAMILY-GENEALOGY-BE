@@ -7,6 +7,7 @@ from typing import AsyncGenerator
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -17,6 +18,7 @@ class Base(DeclarativeBase):
     pass
 
 
+# settings.DATABASE_URL is already normalized to postgresql+psycopg://
 engine = create_async_engine(settings.DATABASE_URL, echo=False)
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
@@ -26,25 +28,15 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
-async def init_db() -> None:
-    """Tạo tất cả bảng trong database và tự động thêm các cột mới nếu thiếu."""
-    import app.models.postgres  # noqa: F401
-    from sqlalchemy import text
+async def check_db() -> None:
+    """Connectivity probe only. Does not create or alter schema."""
+    async with engine.connect() as conn:
+        await conn.execute(text("SELECT 1"))
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        try:
-            await conn.execute(text("ALTER TABLE accounts ADD COLUMN password_hash TEXT;"))
-        except Exception:
-            pass
-        try:
-            await conn.execute(text("ALTER TABLE families ADD COLUMN owner_id VARCHAR(36);"))
-        except Exception:
-            pass
-        try:
-            await conn.execute(text("ALTER TABLE families ADD COLUMN branches JSON DEFAULT '[]';"))
-        except Exception:
-            pass
+
+async def init_db() -> None:
+    """Startup connectivity check. Does not create tables or run migrations."""
+    await check_db()
 
 
 async def close_db() -> None:

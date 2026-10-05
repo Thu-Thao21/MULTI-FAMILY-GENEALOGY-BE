@@ -8,4 +8,6 @@ passlib[bcrypt]>=1.7.4
 pydantic-settings>=2.0.0
 firebase-admin>=6.4.0
 alembic>=1.13.0
+greenlet
+psycopg[binary]
 
