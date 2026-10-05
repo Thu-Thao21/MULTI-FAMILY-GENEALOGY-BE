@@ -10,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import settings
+from app.core.errors import register_exception_handlers
+from app.core.request_id import RequestIdMiddleware
 from app.db.postgres import check_db, close_db, init_db
 from app.routers import health
 
@@ -24,6 +26,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Added last = outermost user middleware, so every request (including CORS
+# preflight and error responses) gets a request_id.
+app.add_middleware(RequestIdMiddleware)
+register_exception_handlers(app)
 
 
 @app.on_event("startup")

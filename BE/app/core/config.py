@@ -28,6 +28,8 @@ def _normalize_database_url(url: str) -> str:
 
 class Settings(BaseSettings):
     DATABASE_URL: str
+    # When true, unhandled-error logs include the traceback. Keep false outside local dev.
+    DEBUG: bool = False
     FIREBASE_PROJECT_ID: str = "multi-family-genealogy"
     FIREBASE_CREDENTIALS_PATH: str = ""
     FRONTEND_ORIGINS: str = "http://localhost:5173,http://localhost:8080"
