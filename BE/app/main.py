@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.controllers.auth_access.router import router as auth_router
+from app.controllers.auth_access.user_admin_router import router as user_admin_router
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.request_id import RequestIdMiddleware
@@ -69,5 +70,6 @@ async def readiness():
 
 app.include_router(health.router, prefix="/api")
 app.include_router(auth_router, prefix=API_PREFIX)
+app.include_router(user_admin_router, prefix=API_PREFIX)
 
 # To run: uvicorn app.main:app --reload --port 8001

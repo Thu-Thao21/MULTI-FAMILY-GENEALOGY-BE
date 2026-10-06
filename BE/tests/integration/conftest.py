@@ -18,7 +18,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from tests.integration.factory import World, build_app
+from tests.integration.factory import World, build_app, build_full_app
 
 ENV_FLAG = "ALLOW_DB_TESTS"
 _HERE = Path(__file__).resolve().parent
@@ -72,5 +72,13 @@ async def world(session) -> World:
 async def client(session):
     app = build_app(session)
     transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def real_client(session):
+    """HTTP client on the real routers (auth + user administration)."""
+    transport = httpx.ASGITransport(app=build_full_app(session))
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c

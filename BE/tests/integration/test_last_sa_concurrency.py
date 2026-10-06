@@ -15,13 +15,13 @@ from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.core.errors import AppError
 from app.dependencies.permissions import ensure_not_last_system_admin
-from app.models.user_access.entities import Role, User, UserRole
+from app.models.user_access.entities import AuditLog, Role, User, UserRole
 from app.models.user_access.repository import UserAccessRepository
 from app.schemas.errors import ErrorCode
 
@@ -36,6 +36,15 @@ def _is_ours(column):
     return column.startswith(PREFIX)
 
 
+async def purge_prefixed_users(s) -> None:
+    """Delete itest-conc-* users AND the audit rows that name them (audit FKs are
+    ON DELETE SET NULL, so deleting only the users would leave orphan audit rows)."""
+    ids = list((await s.execute(select(User.user_id).where(_is_ours(User.firebase_uid)))).scalars())
+    if ids:
+        await s.execute(delete(AuditLog).where(or_(AuditLog.entity_id.in_(ids), AuditLog.actor_id.in_(ids))))
+    await s.execute(delete(User).where(_is_ours(User.firebase_uid)))
+
+
 @pytest_asyncio.fixture(loop_scope="session")
 async def two_committed_sas():
     from app.core.config import settings
@@ -46,7 +55,7 @@ async def two_committed_sas():
     try:
         async with maker() as s, s.begin():
             # Leftovers from a crashed earlier run (our prefix only).
-            await s.execute(delete(User).where(_is_ours(User.firebase_uid)))
+            await purge_prefixed_users(s)
             others = await UserAccessRepository(s).count_active_system_admins()
             if others:
                 pytest.skip(
@@ -72,7 +81,7 @@ async def two_committed_sas():
         yield maker, ids[0], ids[1]
     finally:
         async with maker() as s, s.begin():
-            await s.execute(delete(User).where(_is_ours(User.firebase_uid)))
+            await purge_prefixed_users(s)
         await engine.dispose()
 
 

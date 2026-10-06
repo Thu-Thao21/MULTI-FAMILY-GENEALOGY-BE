@@ -3,9 +3,10 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.user_access.entities import User
 from app.models.family.entities import (
     AccountInvitation,
     BusinessRegistration,
@@ -33,7 +34,7 @@ def _now() -> datetime:
 
 
 class FamilyRepository:
-    """Query-only repository. Use cases own transactions; do not commit here.
+    """Queries plus a few plain writes (FA permissions). Use cases own transactions; never commit here.
 
     Tenant rule: every query on a clan-owned resource takes clan_id and filters by it.
     Global resources (registrations, plans, reset tokens, email logs) are not clan-owned.
@@ -229,6 +230,103 @@ class FamilyRepository:
             .order_by(Clan.name, Clan.clan_id)
         )
         return [(row[0], row[1]) for row in (await self._session.execute(stmt)).all()]
+
+    # ----- Clan user list (Mốc F). Always filtered by clan_id. -----
+
+    async def list_clan_members(
+        self,
+        clan_id: uuid.UUID,
+        *,
+        membership_status: str | None,
+        limit: int,
+        offset: int,
+    ) -> list[tuple[ClanMembership, User]]:
+        stmt = (
+            select(ClanMembership, User)
+            .join(User, User.user_id == ClanMembership.user_id)
+            .where(ClanMembership.clan_id == clan_id)
+        )
+        if membership_status is not None:
+            stmt = stmt.where(ClanMembership.status == membership_status)
+        stmt = (
+            stmt.order_by(User.display_name, User.user_id).limit(limit).offset(offset)
+        )
+        return [(r[0], r[1]) for r in (await self._session.execute(stmt)).all()]
+
+    async def count_clan_members(
+        self, clan_id: uuid.UUID, *, membership_status: str | None
+    ) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(ClanMembership)
+            .where(ClanMembership.clan_id == clan_id)
+        )
+        if membership_status is not None:
+            stmt = stmt.where(ClanMembership.status == membership_status)
+        return int((await self._session.execute(stmt)).scalar_one())
+
+    async def list_active_fa_user_ids(
+        self, clan_id: uuid.UUID, user_ids: list[uuid.UUID]
+    ) -> set[uuid.UUID]:
+        """Which of these users hold a non-revoked FA assignment in this clan (one query)."""
+        if not user_ids:
+            return set()
+        stmt = select(FamilyAdminAssignment.user_id).where(
+            FamilyAdminAssignment.clan_id == clan_id,
+            FamilyAdminAssignment.revoked_at.is_(None),
+            FamilyAdminAssignment.user_id.in_(user_ids),
+        )
+        return set((await self._session.execute(stmt)).scalars().all())
+
+    # ----- Family Admin permission writes (Mốc F). Flush only; the caller commits. -----
+
+    async def lock_active_fa_assignments(
+        self, clan_id: uuid.UUID, user_id: uuid.UUID
+    ) -> list[FamilyAdminAssignment]:
+        """Non-revoked assignments of the user in this clan, row-locked (FOR NO KEY UPDATE),
+        in a fixed order. Serializes concurrent permission updates for that user."""
+        stmt = (
+            select(FamilyAdminAssignment)
+            .where(
+                FamilyAdminAssignment.clan_id == clan_id,
+                FamilyAdminAssignment.user_id == user_id,
+                FamilyAdminAssignment.revoked_at.is_(None),
+            )
+            .order_by(FamilyAdminAssignment.assignment_id)
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def list_assignment_permission_codes(self, assignment_id: uuid.UUID) -> set[str]:
+        stmt = select(FamilyAdminPermission.permission_code).where(
+            FamilyAdminPermission.assignment_id == assignment_id
+        )
+        return set((await self._session.execute(stmt)).scalars().all())
+
+    async def add_fa_permissions(
+        self, assignment_id: uuid.UUID, codes: list[str], *, granted_by: uuid.UUID, now: datetime
+    ) -> None:
+        for code in codes:
+            self._session.add(
+                FamilyAdminPermission(
+                    assignment_id=assignment_id,
+                    permission_code=code,
+                    granted_by=granted_by,
+                    granted_at=now,
+                )
+            )
+        await self._session.flush()
+
+    async def delete_fa_permissions(self, assignment_id: uuid.UUID, codes: list[str]) -> None:
+        if not codes:
+            return
+        await self._session.execute(
+            delete(FamilyAdminPermission).where(
+                FamilyAdminPermission.assignment_id == assignment_id,
+                FamilyAdminPermission.permission_code.in_(codes),
+            )
+        )
 
     # ----- Family Admin -----
 

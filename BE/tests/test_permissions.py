@@ -261,3 +261,5 @@ def test_sa_lock_statement_uses_for_update_on_user_roles():
     sql = str(active_system_admin_roles_for_update_stmt().compile(dialect=postgresql.dialect()))
     assert "FOR UPDATE OF user_roles" in sql
     assert "user_roles.revoked_at IS NULL" in sql and "user_roles.clan_id IS NULL" in sql
+    # Fixed, caller-independent order (deadlock guard): by user, then by grant.
+    assert "ORDER BY user_roles.user_id, user_roles.user_role_id" in sql

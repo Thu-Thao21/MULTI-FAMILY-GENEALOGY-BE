@@ -52,3 +52,30 @@ Mô tả gốc:
 
 - **Hiện trạng:** hợp đồng ghi `429 RATE_LIMITED` nhưng chưa có hạ tầng giới hạn. Token sai và UID lạ chỉ ghi log ứng dụng (không ghi DB), nên spam không làm phình `login_history`, nhưng mỗi request vẫn tốn một lần xác minh token.
 - **Cần lead quyết định:** limiter trong bộ nhớ (một instance) hay dùng chung (Redis/DB), ngưỡng theo IP và theo UID, và vị trí đặt (app hay reverse proxy).
+
+## KI-07 Chưa có API cấp Family Admin mới và thu hồi Family Admin hẳn (Mốc F)
+
+- **Quyết định (Mốc F):** `PUT /clans/{id}/admins/{user_id}/permissions` chỉ **sửa tập quyền** của một assignment toàn clan đã có. Danh sách rỗng xóa hết quyền nhưng giữ assignment (`revoked_at` vẫn NULL, user vẫn là FA không có quyền nào).
+- **Chưa làm:** tạo assignment mới cho một thành viên (thuộc luồng mời FA, D05) và thu hồi FA hẳn (`revoked_at`). Hợp đồng PUT cũng trả `404` khi user chưa là FA, nên hiện chưa có đường nào tạo FA ngoài dữ liệu seed hoặc SQL.
+- **Phạm vi chi/ngành:** PUT không có `branch_id`, và bảng `branches` chưa có model. PUT chỉ tác động lên assignment toàn clan (`branch_id` NULL). User chỉ có assignment theo chi/ngành → `404`. Kiểm tra `branch_id` của tài nguyên chỉ có ở `authorize()`.
+
+## KI-08 DB không chặn hai assignment FA còn hiệu lực cho cùng (clan, user)
+
+- **Bảng:** `family_admin_assignments` chỉ có khóa chính; không có unique trên `(clan_id, user_id)` (kể cả `WHERE revoked_at IS NULL`; `branch_id` NULL cũng không bị unique).
+- **Hiện trạng:** `PUT .../permissions` trả `409 STATE_CONFLICT` khi user có nhiều hơn một assignment toàn clan còn hiệu lực, thay vì đoán assignment nào. `authorize()` thì hợp (union) quyền của mọi assignment còn hiệu lực. Test: `test_branch_limited_and_duplicate_assignments_on_db`.
+- **Đề xuất cho lead (không tự áp dụng):** index unique trên `(clan_id, user_id, branch_id)` với `NULLS NOT DISTINCT` và `WHERE revoked_at IS NULL` (PostgreSQL 15+). Cần dọn dòng trùng trước khi tạo index.
+
+## KI-09 Danh sách quyền ủy quyền được: chưa cấm mã nào
+
+- **Quyết định (Mốc F):** PUT chỉ nhận mã có trong bảng `permissions` (mã lạ → `422`). Chưa cấm mã nào; lead quyết định có cần danh sách cấm.
+- **Mã nhạy cảm trong bảng `permissions` (kiểm bằng SELECT ngày 06/10/2026), để lead xem xét:**
+  - `ADMIN_MANAGE` ("Quản lý Family Admin"): về ngữ nghĩa cho phép quản lý FA khác, trái với luật hiện tại "chỉ BO sửa quyền FA" (chưa action nào dùng mã này nên chưa có tác dụng);
+  - `MEMBER_ACCOUNT_MANAGE` ("Quản lý tài khoản thành viên"): mở danh sách tài khoản của clan (đang dùng bởi `clan.users.list`);
+  - `AUDIT_VIEW` (xem nhật ký), `IMPORT_EXPORT` (nhập/xuất dữ liệu), `FUND_MANAGE` (quỹ), `INTER_FAMILY_MANAGE` (liên họ).
+- **Hiện chỉ `MEMBER_ACCOUNT_MANAGE` có tác dụng** (không action nào khác dùng mã FA); mã khác được lưu và hiện trong `/auth/me` nhưng chưa mở quyền gì.
+
+## KI-10 Khóa tài khoản chỉ chặn ở DB, không đụng Firebase
+
+- **Quyết định (Mốc F):** `PATCH /admin/users/{id}/status` chỉ đổi `users.status` và thu hồi phiên ứng dụng. Không gọi Firebase Admin SDK (không `disabled=True`, không `revoke_refresh_tokens`).
+- **Hệ quả:** người bị khóa vẫn đăng nhập được vào Firebase và ID token còn sống tối đa 1 giờ, nhưng không đổi được phiên: `POST /auth/session` trả `403 ACCOUNT_BLOCKED` và mọi request dùng phiên cũ trả `401 SESSION_INVALID`. Mở khóa không cần làm gì phía Firebase. Cần lead quyết định nếu muốn chặn cả đăng nhập phía Firebase (cần Admin API và service account).
+

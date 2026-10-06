@@ -10,7 +10,12 @@ from sqlalchemy.exc import OperationalError
 
 from app.core.firebase import InvalidIdToken, ProviderUnavailable, VerifiedIdentity
 from app.core.tokens import hash_session_token
-from app.models.family.entities import Clan, ClanMembership, ClanOwnershipHistory
+from app.models.family.entities import (
+    Clan,
+    ClanMembership,
+    ClanOwnershipHistory,
+    FamilyAdminAssignment,
+)
 from app.models.user_access.entities import CredentialMetadata, LoginHistory, User, UserSession
 
 NOW = datetime(2026, 10, 5, 8, 0, tzinfo=timezone.utc)
@@ -29,6 +34,10 @@ def make_user(
         display_name="Test User",
         status=status,
         first_login_required=first_login_required,
+        email_verified=False,
+        phone_verified=False,
+        created_at=NOW - timedelta(days=1),
+        updated_at=NOW - timedelta(days=1),
     )
 
 
@@ -219,15 +228,59 @@ class FakeUserAccessRepo:
     async def add_audit_log(self, **values) -> None:
         self.audit.append(values)
 
+    # --- Mốc F ---
+    known_permissions: set[str] = field(
+        default_factory=lambda: {
+            "MEMBER_ACCOUNT_MANAGE", "ADMIN_MANAGE", "PERSON_VIEW", "TREE_VIEW", "AUDIT_VIEW",
+        }
+    )
+
+    async def get_user_for_update(self, user_id):
+        self.calls.append("lock_user")
+        return self.users.get(user_id)
+
+    def _filtered(self, status, q):
+        needle = (q or "").lower()
+        rows = [
+            u for u in self.users.values()
+            if (status is None or u.status == status)
+            and (not needle or needle in u.email.lower() or needle in u.display_name.lower())
+        ]
+        return sorted(rows, key=lambda u: str(u.user_id))
+
+    async def list_users(self, *, status, q, limit, offset):
+        return self._filtered(status, q)[offset : offset + limit]
+
+    async def count_users(self, *, status, q):
+        return len(self._filtered(status, q))
+
+    async def list_clan_role_codes(self, clan_id, user_ids):
+        out: dict = {}
+        for g in self.roles:
+            if g.clan_id == clan_id and not g.revoked and g.user_id in user_ids:
+                out.setdefault(g.user_id, set()).add(g.role_code)
+        return {uid: sorted(codes) for uid, codes in out.items()}
+
+    async def existing_permission_codes(self, codes):
+        return set(codes) & self.known_permissions
+
 
 @dataclass
-class FaGrant:
+class FakeAssignment:
+    """One family_admin_assignments row with its family_admin_permissions codes."""
+
     clan_id: uuid.UUID
     user_id: uuid.UUID
     branch_id: uuid.UUID | None
-    permission_code: str
+    codes: set[str] = field(default_factory=set)
     revoked: bool = False
     assignment_id: uuid.UUID = field(default_factory=uuid.uuid4)
+
+    def as_entity(self) -> FamilyAdminAssignment:
+        return FamilyAdminAssignment(
+            assignment_id=self.assignment_id, user_id=self.user_id, clan_id=self.clan_id,
+            branch_id=self.branch_id, revoked_at=NOW if self.revoked else None,
+        )
 
 
 @dataclass
@@ -235,7 +288,10 @@ class FakeFamilyRepo:
     clans: dict[uuid.UUID, Clan] = field(default_factory=dict)
     memberships: list[ClanMembership] = field(default_factory=list)
     owners: list[ClanOwnershipHistory] = field(default_factory=list)
-    fa: list[FaGrant] = field(default_factory=list)
+    assignments: list[FakeAssignment] = field(default_factory=list)
+    calls: list[str] = field(default_factory=list)
+
+    users: dict[uuid.UUID, User] = field(default_factory=dict)  # for list_clan_members
 
     def add_clan(self, status: str = "ACTIVE") -> Clan:
         clan = Clan(clan_id=uuid.uuid4(), clan_code=uuid.uuid4().hex[:8], name="Clan", status=status)
@@ -259,7 +315,14 @@ class FakeFamilyRepo:
         )
 
     def add_fa(self, clan: Clan, user: User, code: str, branch_id=None, revoked=False):
-        self.fa.append(FaGrant(clan.clan_id, user.user_id, branch_id, code, revoked))
+        return self.add_fa_assignment(clan, user, [code], branch_id=branch_id, revoked=revoked)
+
+    def add_fa_assignment(
+        self, clan: Clan, user: User, codes: list[str], branch_id=None, revoked=False
+    ) -> FakeAssignment:
+        row = FakeAssignment(clan.clan_id, user.user_id, branch_id, set(codes), revoked)
+        self.assignments.append(row)
+        return row
 
     async def get_clan_by_id(self, clan_id):
         return self.clans.get(clan_id)
@@ -276,13 +339,58 @@ class FakeFamilyRepo:
 
     async def list_active_fa_grants(self, clan_id, user_id):
         return [
-            (g.assignment_id, g.branch_id, g.permission_code)
-            for g in self.fa
-            if g.clan_id == clan_id and g.user_id == user_id and not g.revoked
+            (a.assignment_id, a.branch_id, code)
+            for a in self.assignments
+            if a.clan_id == clan_id and a.user_id == user_id and not a.revoked
+            for code in sorted(a.codes)
         ]
 
     async def list_fa_permission_codes(self, clan_id, user_id):
         return sorted({code for _a, _b, code in await self.list_active_fa_grants(clan_id, user_id)})
+
+    # --- Mốc F ---
+    async def list_clan_members(self, clan_id, *, membership_status, limit, offset):
+        self.calls.append(f"list_clan_members:{clan_id}")
+        rows = [
+            (m, self.users[m.user_id])
+            for m in self.memberships
+            if m.clan_id == clan_id and (membership_status is None or m.status == membership_status)
+        ]
+        rows.sort(key=lambda r: (r[1].display_name, str(r[1].user_id)))
+        return rows[offset : offset + limit]
+
+    async def count_clan_members(self, clan_id, *, membership_status):
+        return sum(
+            1 for m in self.memberships
+            if m.clan_id == clan_id and (membership_status is None or m.status == membership_status)
+        )
+
+    async def list_active_fa_user_ids(self, clan_id, user_ids):
+        return {
+            a.user_id for a in self.assignments
+            if a.clan_id == clan_id and not a.revoked and a.user_id in user_ids
+        }
+
+    async def lock_active_fa_assignments(self, clan_id, user_id):
+        self.calls.append("lock_fa")
+        return [
+            a.as_entity() for a in self.assignments
+            if a.clan_id == clan_id and a.user_id == user_id and not a.revoked
+        ]
+
+    def _assignment(self, assignment_id) -> FakeAssignment:
+        return next(a for a in self.assignments if a.assignment_id == assignment_id)
+
+    async def list_assignment_permission_codes(self, assignment_id):
+        return set(self._assignment(assignment_id).codes)
+
+    async def add_fa_permissions(self, assignment_id, codes, *, granted_by, now):
+        self.calls.append("add_fa_permissions")
+        self._assignment(assignment_id).codes.update(codes)
+
+    async def delete_fa_permissions(self, assignment_id, codes):
+        self.calls.append("delete_fa_permissions")
+        self._assignment(assignment_id).codes.difference_update(codes)
 
     async def list_memberships_with_clans(self, user_id):
         return [

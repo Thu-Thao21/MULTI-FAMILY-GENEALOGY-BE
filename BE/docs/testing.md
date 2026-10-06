@@ -31,6 +31,7 @@ $env:ALLOW_DB_TESTS = "1"
 - Bỏ test đồng thời: `-m "integration and not concurrency"`. Chỉ chạy test đồng thời: `-m concurrency`.
 - Test `concurrency` **commit thật**, dùng user `itest-conc-*` và xóa trong `finally`. Chúng cần DB không còn System Admin ACTIVE nào khác (guard đếm toàn bộ); nếu có (ví dụ SA của seed dev) thì tự skip và nêu lý do. Muốn chạy: `seed_dev.py --cleanup` trước, hoặc dùng nhánh DB riêng.
 - **Trước khi chạy, dọn seed** (`seed_dev.py --cleanup`): khi DB còn System Admin ACTIVE khác (ví dụ `dev-sa`), 3 test "SA cuối" trong `test_last_sa_concurrency.py` tự skip.
+- `test_user_admin_db.py` và `test_user_admin_concurrency.py` (Mốc F) dùng router thật `user_admin_router`. Test đồng thời **commit thật** (user `itest-conc-*` cùng các dòng audit_logs của chúng, xóa trong `finally`), cần DB không còn SA khác, và gồm một test đối chứng (`test_control_user_row_first_with_for_update_deadlocks`) phải thấy deadlock thật để chứng minh các test còn lại bắt được lỗi thứ tự khóa.
 - `test_auth_flow_db.py` dùng router auth thật (`app/controllers/auth_access`) với DB thật và Firebase giả. Các route `/admin/users`, `/clans/{id}/users` trong `tests/integration/factory.py` vẫn là app mini để thử dependency phân quyền (chưa có endpoint nghiệp vụ thật).
 
 ## 3. Seed dữ liệu dev

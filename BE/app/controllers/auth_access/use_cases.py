@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
@@ -165,6 +166,37 @@ async def create_session(
 # ----- GET /auth/me -----
 
 
+async def build_membership_summaries(
+    *,
+    users: UserAccessRepository,
+    family: FamilyRepository,
+    user_id: uuid.UUID,
+    grants: list[tuple[str, uuid.UUID | None]],
+) -> list[MembershipSummary]:
+    """One summary per non-revoked membership of the user (GET /auth/me and
+    GET /admin/users/{id}). permissions[] is PROVISIONAL (api_contract.md section 6)."""
+    memberships: list[MembershipSummary] = []
+    for membership, clan in await family.list_memberships_with_clans(user_id):
+        permissions: set[str] = set()
+        # Nothing is effective unless both the membership and the clan are ACTIVE,
+        # mirroring authorize().
+        if membership.status == "ACTIVE" and clan.status == "ACTIVE":
+            if await is_active_owner(user_id, clan.clan_id, users, family):
+                permissions.update(owner_actions())
+            permissions.update(await family.list_fa_permission_codes(clan.clan_id, user_id))
+        memberships.append(
+            MembershipSummary(
+                clan_id=clan.clan_id,
+                clan_name=clan.name,
+                clan_status=clan.status,
+                membership_status=membership.status,
+                roles=sorted({code for code, cid in grants if cid == clan.clan_id}),
+                permissions=sorted(permissions),
+            )
+        )
+    return memberships
+
+
 async def get_me(
     *, users: UserAccessRepository, family: FamilyRepository, principal: Principal
 ) -> MeResponse:
@@ -176,26 +208,9 @@ async def get_me(
 
     grants = await users.list_active_role_grants(user.user_id)
     is_system_admin = any(code == SYSTEM_ADMIN_ROLE and clan is None for code, clan in grants)
-
-    memberships: list[MembershipSummary] = []
-    for membership, clan in await family.list_memberships_with_clans(user.user_id):
-        permissions: set[str] = set()
-        # Nothing is effective unless both the membership and the clan are ACTIVE,
-        # mirroring authorize().
-        if membership.status == "ACTIVE" and clan.status == "ACTIVE":
-            if await is_active_owner(user.user_id, clan.clan_id, users, family):
-                permissions.update(owner_actions())
-            permissions.update(await family.list_fa_permission_codes(clan.clan_id, user.user_id))
-        memberships.append(
-            MembershipSummary(
-                clan_id=clan.clan_id,
-                clan_name=clan.name,
-                clan_status=clan.status,
-                membership_status=membership.status,
-                roles=sorted({code for code, cid in grants if cid == clan.clan_id}),
-                permissions=sorted(permissions),
-            )
-        )
+    memberships = await build_membership_summaries(
+        users=users, family=family, user_id=user.user_id, grants=grants
+    )
 
     return MeResponse(
         user_id=user.user_id,

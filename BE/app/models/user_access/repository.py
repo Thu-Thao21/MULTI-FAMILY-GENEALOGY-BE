@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Select, func, select, update
+from sqlalchemy import Select, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user_access.entities import (
@@ -27,6 +27,12 @@ def active_system_admin_roles_for_update_stmt() -> Select[tuple[uuid.UUID]]:
 
     Serializes concurrent lock/disable/revoke operations on System Admins so the
     "last active SA" check cannot be raced. Must run inside the caller's transaction.
+
+    LOCK ORDER (everything that locks rows for a status change follows it):
+      1. this statement: ORDER BY user_id, user_role_id, the same fixed order for every
+         caller, so two callers can never hold the set in opposite orders;
+      2. only then the target user row (get_user_for_update, FOR NO KEY UPDATE).
+    A request that waits here holds no other lock yet, so it cannot be part of a cycle.
     """
     return (
         select(UserRole.user_role_id)
@@ -36,7 +42,7 @@ def active_system_admin_roles_for_update_stmt() -> Select[tuple[uuid.UUID]]:
             UserRole.clan_id.is_(None),
             UserRole.revoked_at.is_(None),
         )
-        .order_by(UserRole.user_role_id)
+        .order_by(UserRole.user_id, UserRole.user_role_id)
         .with_for_update(of=UserRole)
     )
 
@@ -49,6 +55,23 @@ class UserAccessRepository:
 
     async def get_user_by_id(self, user_id: uuid.UUID) -> User | None:
         stmt = select(User).where(User.user_id == user_id)
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def get_user_for_update(self, user_id: uuid.UUID) -> User | None:
+        """Lock the user row with FOR NO KEY UPDATE and return fresh column values.
+
+        NO KEY UPDATE (not FOR UPDATE): the audit_logs / login_history / user_roles
+        foreign keys to users take FOR KEY SHARE on this row, which FOR UPDATE would
+        block. Two requests that each lock a user and then insert an audit row naming
+        the other as actor would deadlock. NO KEY UPDATE still serializes concurrent
+        changes of the same user. Take the SA lock first when it is needed.
+        """
+        stmt = (
+            select(User)
+            .where(User.user_id == user_id)
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
+        )
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def get_user_by_firebase_uid(self, firebase_uid: str) -> User | None:
@@ -300,6 +323,7 @@ class UserAccessRepository:
         ip_address: str | None,
         occurred_at: datetime,
         clan_id: uuid.UUID | None = None,
+        reason: str | None = None,
     ) -> AuditLog:
         row = AuditLog(
             log_id=uuid.uuid4(),
@@ -310,9 +334,73 @@ class UserAccessRepository:
             entity_id=entity_id,
             old_data=old_data,
             new_data=new_data,
+            reason=reason,
             ip_address=ip_address,
             occurred_at=occurred_at,
         )
         self._session.add(row)
         await self._session.flush()
         return row
+
+    # ----- User administration (Mốc F) -----
+
+    @staticmethod
+    def _user_filters(status: str | None, q: str | None) -> list:
+        conditions = []
+        if status is not None:
+            conditions.append(User.status == status)
+        if q:
+            # Case-insensitive search; LIKE wildcards in the input are escaped. Stored
+            # e-mails are never changed or lowercased.
+            escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = f"%{escaped}%"
+            conditions.append(
+                or_(
+                    User.email.ilike(pattern, escape="\\"),
+                    User.display_name.ilike(pattern, escape="\\"),
+                )
+            )
+        return conditions
+
+    async def list_users(
+        self, *, status: str | None, q: str | None, limit: int, offset: int
+    ) -> list[User]:
+        stmt = (
+            select(User)
+            .where(*self._user_filters(status, q))
+            .order_by(User.created_at.desc(), User.user_id)
+            .limit(limit)
+            .offset(offset)
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def count_users(self, *, status: str | None, q: str | None) -> int:
+        stmt = select(func.count()).select_from(User).where(*self._user_filters(status, q))
+        return int((await self._session.execute(stmt)).scalar_one())
+
+    async def list_clan_role_codes(
+        self, clan_id: uuid.UUID, user_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, list[str]]:
+        """Active role codes held IN THIS CLAN for each given user (one query)."""
+        if not user_ids:
+            return {}
+        stmt = (
+            select(UserRole.user_id, Role.code)
+            .join(Role, Role.role_id == UserRole.role_id)
+            .where(
+                UserRole.clan_id == clan_id,
+                UserRole.revoked_at.is_(None),
+                UserRole.user_id.in_(user_ids),
+            )
+        )
+        out: dict[uuid.UUID, set[str]] = {}
+        for user_id, code in (await self._session.execute(stmt)).all():
+            out.setdefault(user_id, set()).add(code)
+        return {uid: sorted(codes) for uid, codes in out.items()}
+
+    async def existing_permission_codes(self, codes: list[str]) -> set[str]:
+        """Which of these codes exist in the permissions table (SELECT only)."""
+        if not codes:
+            return set()
+        stmt = select(Permission.code).where(Permission.code.in_(codes))
+        return set((await self._session.execute(stmt)).scalars().all())

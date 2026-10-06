@@ -1,6 +1,6 @@
 # Hợp đồng API Sprint 1 — MFGMS AI
 
-Trạng thái: **đề xuất**. Schema Pydantic đã có trong `app/schemas/`. Đã cài trong `main` (Mốc D): `POST /auth/session`, `GET /auth/me`, `POST /auth/logout`, `POST /auth/change-password`. Các API khác chưa có endpoint. Tài liệu này là căn cứ để FE nối màn hình và để BE viết controller ở Mốc D, E, F. Nguồn: mục 6, 7, 8, 9 của `BE_Sprint1_Coding_Plan.md.md`.
+Trạng thái: **đề xuất**. Schema Pydantic đã có trong `app/schemas/`. Đã cài trong `main`: Mốc D `POST /auth/session`, `GET /auth/me`, `POST /auth/logout`, `POST /auth/change-password`; Mốc F `GET /admin/users`, `GET /admin/users/{id}`, `PATCH /admin/users/{id}/status`, `GET /clans/{id}/users`, `PUT /clans/{id}/admins/{user_id}/permissions`. Các API khác chưa có endpoint. Tài liệu này là căn cứ để FE nối màn hình và để BE viết controller ở Mốc D, E, F. Nguồn: mục 6, 7, 8, 9 của `BE_Sprint1_Coding_Plan.md.md`.
 
 ## 1. Quy ước chung
 
@@ -230,6 +230,19 @@ NEED_SUPPLEMENT và luồng nộp lại hồ sơ, cấp tài khoản Member hàn
 | 17 | Hạn phiên 8 giờ (`SESSION_TTL_HOURS`), `recent_id_token` tối đa 300 giây (`RECENT_LOGIN_MAX_AGE_SECONDS`). Chưa có refresh token ứng dụng |
 | 18 | Kiểm tra token bị thu hồi phía Firebase (`check_revoked`) chỉ bật khi có service account (Admin API) |
 | 19 | Reset mật khẩu và rate limit `/auth/session` chưa làm (KI-05, KI-06) |
+
+### Đã chốt ở Mốc F (quản trị người dùng, ủy quyền FA)
+
+| # | Quyết định |
+| --- | --- |
+| 20 | **Bảng chuyển trạng thái (tạm thời, chờ lead):** ACTIVE → LOCKED, SUSPENDED, DISABLED; LOCKED → ACTIVE, SUSPENDED, DISABLED; SUSPENDED → ACTIVE, LOCKED, DISABLED; DISABLED → ACTIVE (mở lại); PENDING → chỉ DISABLED (PENDING lên ACTIVE nhờ đổi mật khẩu lần đầu, không bằng tay). Đích trùng trạng thái hiện tại, hoặc ngoài bảng → `409 STATE_CONFLICT`. PENDING không phải đích hợp lệ (`422`). DISABLED chưa phải trạng thái cuối |
+| 21 | Chuyển sang LOCKED/SUSPENDED/DISABLED thu hồi mọi phiên của user (`revoked_session_count`) và ghi `audit_logs` (`action` = `user.status.update`; `old_data`/`new_data` chỉ có `status`, `revoked_sessions`, `request_id`; lý do nhập từ API nằm ở cột `reason`). Mở khóa chỉ đổi `status`, không đụng `failed_login_count`/`locked_until`. SA tự khóa mình hoặc khóa SA khác được, trừ khi sẽ còn 0 SA ACTIVE (quyết định 10) |
+| 22 | Thứ tự khóa của PATCH status (chống deadlock): (1) tập dòng `user_roles` SYSTEM_ADMIN còn hiệu lực, `ORDER BY user_id, user_role_id`, chỉ khi đích là LOCKED/SUSPENDED/DISABLED; (2) dòng `users` đích bằng `FOR NO KEY UPDATE` (không phải `FOR UPDATE`, vì khóa ngoại `audit_logs.actor_id` cần `FOR KEY SHARE` trên dòng actor). Không đảo thứ tự |
+| 23 | Khóa tài khoản chỉ chặn ở DB; không gọi Firebase. ID token Firebase còn sống tối đa 1 giờ nhưng không đổi được phiên, và phiên cũ đã bị thu hồi (KI-10) |
+| 24 | `GET /admin/users`: sắp xếp `created_at` giảm dần; `q` tìm không phân biệt hoa thường trên `email` và `display_name` (ký tự `%`, `_`, `\` được escape); email giữ nguyên, không lowercase; không trả `firebase_uid` |
+| 25 | `GET /clans/{id}/users`: luôn lọc theo `clan_id` của đường dẫn; `roles` chỉ là role giữ **trong clan đó**; `is_family_admin` = có assignment chưa thu hồi; mặc định liệt kê mọi trạng thái membership (kể cả REVOKED), `membership_status` thu hẹp; sắp xếp theo `display_name` |
+| 26 | `PUT .../permissions`: chỉ BO; thay toàn bộ tập mã của assignment toàn clan (`branch_id` NULL) còn hiệu lực. Mã phải có trong bảng `permissions` (lạ → `422`; chưa cấm mã nào, xem KI-09). Danh sách rỗng giữ assignment. Tập không đổi → `200`, không ghi gì, không audit. Đổi tập → `audit_logs` (`action` = `family_admin.permissions.update`, `clan_id`, tập quyền trước/sau). `404` nếu user không có membership ACTIVE trong clan, không có assignment chưa thu hồi, hoặc chỉ có assignment theo chi/ngành; `409` nếu có nhiều hơn một assignment toàn clan (KI-08). Cấp FA mới và thu hồi FA hẳn chưa làm (KI-07) |
+| 27 | Quyền được kiểm tra trước khi đọc body/query: người không có quyền chỉ nhận `403`/`404`, không bao giờ nhận `422` của body |
 
 ### Chưa chốt (giả định từ Mốc C1)
 

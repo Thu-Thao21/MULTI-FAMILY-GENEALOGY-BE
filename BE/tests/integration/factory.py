@@ -60,13 +60,15 @@ class World:
         *,
         first_login_required: bool = False,
         cred: dict | None = None,
+        email: str | None = None,
+        display_name: str = "Integration Test User",
     ) -> User:
         tag = uuid.uuid4().hex[:12]
         user = User(
             user_id=uuid.uuid4(),
-            firebase_uid=f"itest-{tag}",
-            email=f"itest-{tag}{EMAIL_DOMAIN}",
-            display_name="Integration Test User",
+            firebase_uid=f"itest-uid-{tag}",
+            email=email or f"itest-{tag}{EMAIL_DOMAIN}",
+            display_name=display_name,
             status=status,
             first_login_required=first_login_required,
         )
@@ -271,4 +273,26 @@ def build_app(session) -> FastAPI:
     async def fa_permissions(clan_id: str, user_id: str):
         return {"ok": True}
 
+    return app
+
+
+def build_full_app(session) -> FastAPI:
+    """The REAL routers (auth + user administration) on a real DB session.
+
+    Use this when the route itself is under test; build_app() above is the older stub
+    app kept for the C3 authorization tests.
+    """
+    from app.controllers.auth_access.router import router as auth_router
+    from app.controllers.auth_access.user_admin_router import router as user_admin_router
+
+    app = FastAPI()
+    app.add_middleware(RequestIdMiddleware)
+    register_exception_handlers(app)
+    app.include_router(auth_router, prefix="/api/v1")
+    app.include_router(user_admin_router, prefix="/api/v1")
+
+    async def db_override():
+        yield session
+
+    app.dependency_overrides[get_db] = db_override
     return app
