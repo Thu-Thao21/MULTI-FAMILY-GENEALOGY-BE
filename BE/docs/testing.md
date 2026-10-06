@@ -8,7 +8,8 @@ Chạy từ thư mục `BE`, dùng `.venv\Scripts\python.exe`. Biến môi trư�
 - `FIREBASE_PROJECT_ID` **không còn giá trị mặc định**. Thiếu thì app vẫn khởi động, nhưng `POST /auth/session` trả `503 PROVIDER_UNAVAILABLE` (fail closed).
 - `FIREBASE_SERVICE_ACCOUNT_PATH` chỉ cần cho Admin API (đổi mật khẩu, kiểm tra token bị thu hồi). File không commit; `.gitignore` đã chặn `*service-account*.json` và `*firebase-adminsdk*.json`.
 - Không đặt `FIREBASE_AUTH_EMULATOR_HOST`: ở chế độ emulator, SDK nhận token không chữ ký, nên backend từ chối toàn bộ (`503`).
-- Test **không** đọc các biến Firebase từ `.env`: `tests/conftest.py` tự đặt `FIREBASE_PROJECT_ID=test-project`, `FIREBASE_SERVICE_ACCOUNT_PATH=` (rỗng) và xóa biến emulator. Không test nào gọi Firebase thật; luồng đăng nhập dùng `FakeIdentityProvider` trong `tests/fakes.py`.
+- Test **không** đọc cấu hình Firebase/CORS từ `.env`: `tests/conftest.py` tự đặt `FIREBASE_PROJECT_ID=test-project`, `FIREBASE_SERVICE_ACCOUNT_PATH=` (rỗng), `FRONTEND_ORIGINS=http://localhost:5173,http://localhost:8080` và xóa biến emulator. (`DATABASE_URL` vẫn lấy từ `.env`: app cần nó để import; test thường không kết nối.)
+- **Kiểm tra cấu hình khi khởi động** (Mốc G): thiếu `FIREBASE_PROJECT_ID`, có `FIREBASE_AUTH_EMULATOR_HOST`, `FIREBASE_SERVICE_ACCOUNT_PATH` trỏ file không tồn tại, hoặc `FRONTEND_ORIGINS` chứa `*` thì app **dừng ngay khi khởi động** (sự kiện startup, không phải lúc import). Thông báo chỉ nêu tên biến, không nêu giá trị. Không test nào gọi Firebase thật; luồng đăng nhập dùng `FakeIdentityProvider` trong `tests/fakes.py`.
 
 ## 1. Test thường (không cần database)
 
@@ -99,3 +100,75 @@ Kết quả mong đợi:
 | Token thật nhưng UID chưa seed | `401 INVALID_ID_TOKEN`, không có dòng mới trong `users` |
 | Gỡ `FIREBASE_PROJECT_ID` rồi khởi động lại | `503 PROVIDER_UNAVAILABLE` |
 | Sau `logout`, gọi lại `/auth/me` | `401 SESSION_INVALID` |
+
+## 5. Số liệu chạy mới nhất (Mốc G, 06/10/2026)
+
+Chạy từ `BE`, Python 3.13.7, `.venv` của dự án, sau `seed_dev.py --cleanup` (DB không còn dữ liệu seed, nên 3 test "SA cuối" chạy chứ không skip).
+
+| Lệnh | Kết quả |
+| --- | --- |
+| `pytest -q` | **283 passed**, 117 deselected (nhóm `integration`), 0 failed, ~30 giây |
+| `ALLOW_DB_TESTS=1 pytest -m integration -q` | **116 passed, 1 xfailed** (KI-03, đúng dự kiến), 0 skipped, 0 failed, 16 phút 9 giây |
+| `python -c "import app.main"` | MAIN OK |
+| `scripts/check_orm_vs_db.py` | 0 errors, 0 INFO |
+| `docker build` (Python 3.13-slim, phiên bản ghim) | thành công; xem mục 6 |
+
+Tổng cộng 400 test (283 + 116 + 1 xfail). Sau lần chạy, DB không còn dòng rác: 0 user, 0 clan, 0 audit_logs, 0 phiên, 0 login_history; `roles`/`permissions`/`role_permissions` giữ nguyên (4/18/0).
+
+Nhóm test theo nội dung:
+
+| Nhóm | File chính |
+| --- | --- |
+| Xác thực, phiên, đăng nhập Firebase (giả lập) | `test_auth_dependency.py`, `test_auth_api.py`, `test_firebase_provider.py`, `integration/test_sessions_db.py`, `integration/test_auth_flow_db.py` |
+| Phân quyền, tenant, SA cuối | `test_permissions.py`, `integration/test_http_access.py`, `integration/test_system_admin_guard.py`, `integration/test_user_roles_unique_index.py`, `integration/test_last_sa_concurrency.py` |
+| Quản trị người dùng, ủy quyền FA | `test_user_admin_api.py`, `integration/test_user_admin_db.py`, `integration/test_user_admin_concurrency.py` |
+| Hợp đồng OpenAPI so với `api_contract.md` | `test_openapi_contract.py` |
+| CORS (mọi loại response, kể cả 500) | `test_cors.py` |
+| Cấu hình khởi động, lỗi `DATABASE_URL` không lộ chuỗi | `test_startup_checks.py`, `test_config_secrets.py` |
+| Kiểm tra bảo mật cơ khí (xem `security_review.md`) | `test_security_checks.py`, `test_no_insecure_auth.py` |
+
+## 6. Docker: build thử và kiểm tra image
+
+Đã chạy ngày 06/10/2026 với Docker 23.0.5; **chỉ build, không chạy container, không push**.
+
+```powershell
+docker build -t mfgms-be:check .
+docker image inspect mfgms-be:check --format "User={{.Config.User}} Exposed={{.Config.ExposedPorts}} Healthcheck={{.Config.Healthcheck.Test}}"
+docker history mfgms-be:check --no-trunc
+docker rmi mfgms-be:check
+```
+
+Kết quả: build thành công; `User=appuser`, cổng `8000`, có `HEALTHCHECK`; `/app` chỉ có `app/`, `alembic/`, `alembic.ini`, `requirements.txt` (không `.env`, file service account, `scripts/`, `tests/`, `docs/`, `.git`); phiên bản gói cài trong image trùng bộ đã test (fastapi 0.142.2, uvicorn 0.54.0, sqlalchemy 2.1.3, psycopg 3.3.6, firebase-admin 7.7.0, alembic 1.20.0, pydantic-settings 2.15.0).
+
+Chưa làm: chạy container thật, quét CVE của image (KI-14). `alembic/versions/` chưa tồn tại nên `alembic upgrade` trong image chưa dùng được.
+
+Kiểm tra phụ thuộc (cài `pip-audit` vào venv tạm **ngoài repo**, không thêm vào requirements):
+
+```powershell
+python -m venv D:\tmp\audit-venv
+D:\tmp\audit-venv\Scripts\python.exe -m pip install pip-audit
+D:\tmp\audit-venv\Scripts\pip-audit.exe --path "<BE>\.venv\Lib\site-packages"
+```
+
+Ngày 06/10/2026: **No known vulnerabilities found** (pip-audit 2.10.1). Chỉ phản ánh thời điểm chạy; nên chạy lại định kỳ.
+
+## 7. Đối chiếu mục 11 của kế hoạch (T01–T33)
+
+"Có" nghĩa là có test tự động; "Có (Firebase giả)" nghĩa là xác minh chữ ký trên token Firebase thật chưa được test tự động (mục 4).
+
+| Nhóm | Tình huống | Trạng thái | Test hoặc lý do chưa có |
+| --- | --- | --- | --- |
+| T01–03 Auth | Token giả/hết hạn/đã revoke; UID lạ; account khóa | Có (Firebase giả) | `test_firebase_provider.py` (token giả mạo), `test_auth_api.py`, `integration/test_auth_flow_db.py`, `integration/test_sessions_db.py` |
+| T04–06 Phiên | Logout; hết hạn; restart ứng dụng | Một phần | Logout và hết hạn: `test_auth_api.py`, `integration/test_sessions_db.py`. Restart: chưa có test riêng (phiên nằm hoàn toàn trong DB, không có trạng thái trong bộ nhớ; kết luận từ đọc mã) |
+| T07–09 Mật khẩu | Mật khẩu tạm hết hạn; first-login gọi API nghiệp vụ; đổi mật khẩu thành công | Có (Firebase giả) | `test_auth_api.py`, `integration/test_http_access.py`, `integration/test_auth_flow_db.py` |
+| T10–12 Reset | Email có/không tồn tại; code sai/hết hạn/dùng lại; spam | **Chưa** | Chưa có API reset (KI-05) |
+| T13–15 Tenant | BO A gọi tài nguyên B; FA thiếu quyền; ME tự nâng role | Có | `integration/test_http_access.py`, `integration/test_user_admin_db.py`; không có API nâng vai trò nên "ME tự nâng role" chỉ kiểm được là member/FA bị `403` trên các API quản trị |
+| T16–18 Quyền | Thu hồi membership/role; SA xem PRIVATE; sửa field nhạy cảm ngoài schema | Một phần | Thu hồi: `integration/test_http_access.py`; field ngoài schema: `422` do `extra=forbid`. **SA xem PRIVATE: chưa** (chưa có API dữ liệu gia phả, `support_access_grants` chưa dùng) |
+| T19–21 Duyệt | Hồ sơ trùng; hai SA duyệt đồng thời; tạo clan khi chưa duyệt | **Chưa** | Mốc E |
+| T22–24 Cấp Owner | Hai request đồng thời; retry cùng key; key cũ khác payload | **Chưa** | Mốc E (Idempotency-Key, job cấp tài khoản) |
+| T25–27 Lỗi ngoài DB | Firebase timeout; email lỗi; Firebase thành công nhưng DB lỗi | Một phần | Firebase lỗi và "Firebase đổi mật khẩu xong nhưng DB lỗi": `test_auth_api.py`. Email lỗi: chưa (Mốc E) |
+| T28–30 Migration | DB trống; DB baseline; rollback/forward-fix | **Chưa** | Chưa có revision Alembic; baseline do trưởng nhóm chốt |
+| T31–33 Tích hợp | CORS FE; luồng Guest đến Owner; log có request_id không secret | Một phần | CORS: `test_cors.py`; log request_id/không secret: `test_auth_api.py`, `test_security_checks.py`. Luồng Guest đến Owner: Mốc E. Thử với FE thật: chưa |
+
+Ngoài mục 11 của kế hoạch, có thêm: đồng thời "SA cuối" và deadlock (`integration/test_user_admin_concurrency.py`, `test_last_sa_concurrency.py`), khóa dòng `FOR NO KEY UPDATE`, đối chiếu OpenAPI với hợp đồng, kiểm tra khởi động và lỗi cấu hình không lộ giá trị.
+

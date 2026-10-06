@@ -79,3 +79,25 @@ Mô tả gốc:
 - **Quyết định (Mốc F):** `PATCH /admin/users/{id}/status` chỉ đổi `users.status` và thu hồi phiên ứng dụng. Không gọi Firebase Admin SDK (không `disabled=True`, không `revoke_refresh_tokens`).
 - **Hệ quả:** người bị khóa vẫn đăng nhập được vào Firebase và ID token còn sống tối đa 1 giờ, nhưng không đổi được phiên: `POST /auth/session` trả `403 ACCOUNT_BLOCKED` và mọi request dùng phiên cũ trả `401 SESSION_INVALID`. Mở khóa không cần làm gì phía Firebase. Cần lead quyết định nếu muốn chặn cả đăng nhập phía Firebase (cần Admin API và service account).
 
+## KI-11 Triển khai sau reverse proxy: `login_history` ghi IP của proxy
+
+- **Hiện trạng:** `ClientInfo.from_request` chỉ dùng IP của kết nối trực tiếp (`request.client.host`) và cố ý **không** tin `X-Forwarded-For`. Sau reverse proxy (nginx, load balancer, Cloud Run...), mọi dòng `login_history`, `user_sessions` và `audit_logs` sẽ mang IP của proxy.
+- **Việc cần làm khi triển khai:** chạy uvicorn với `--proxy-headers` kèm `--forwarded-allow-ips=<danh sách proxy tin cậy>` (không dùng `*` trừ khi proxy là đường vào duy nhất). Dockerfile hiện **chưa** bật các cờ này, theo quyết định của Mốc G.
+- **Rủi ro nếu bật sai:** tin `X-Forwarded-For` từ nguồn không tin cậy cho phép giả mạo IP trong nhật ký đăng nhập.
+
+## KI-12 CORS: lỗi 500 chưa xử lý không có header CORS — Đã xử lý (Mốc G)
+
+- **Phát hiện:** Starlette chạy handler của `Exception` trong lớp ngoài cùng (`ServerErrorMiddleware`), nằm ngoài `CORSMiddleware`. Lỗi 500 vì thế tới trình duyệt không có `Access-Control-*`, FE chỉ thấy lỗi mạng và không đọc được `request_id`.
+- **Đã xử lý:** `UnhandledErrorMiddleware` đặt ngay dưới `CORSMiddleware` (thứ tự: RequestId, CORS, UnhandledError), trả cùng envelope 500 và cùng log như trước (tên lớp lỗi và `request_id`, không có thông điệp lỗi). Thêm `expose_headers=["X-Request-ID", "Retry-After"]`. Test: `tests/test_cors.py`.
+
+## KI-13 Lỗi `DATABASE_URL` sai định dạng in cả chuỗi kết nối (có mật khẩu) — Đã xử lý (Mốc G)
+
+- **Phát hiện:** `ValidationError` của pydantic in `input_value='<giá trị>'`, nên một `DATABASE_URL` sai định dạng làm lộ mật khẩu trong traceback khởi động và log triển khai.
+- **Đã xử lý:** `Settings` đặt `hide_input_in_errors=True`. Test (mật khẩu giả, subprocess, cả stdout, stderr và log DEBUG): `tests/test_config_secrets.py`.
+
+## KI-14 Chưa chạy container thật và chưa quét CVE của image
+
+- **Đã làm (Mốc G):** `docker build` thành công, kiểm tra nội dung `/app` của image (không có `.env`, service account, `scripts/`, `tests/`, `docs/`), cấu hình `USER`, `HEALTHCHECK`, `EXPOSE` và phiên bản gói cài khớp bộ đã test.
+- **Chưa làm:** chạy container với database và Firebase thật, kiểm tra `HEALTHCHECK` ở trạng thái chạy, và quét lỗ hổng của lớp hệ điều hành (`python:3.13-slim`) bằng công cụ quét image.
+- **Alembic:** image chứa `alembic/` và `alembic.ini` nhưng thư mục `alembic/versions/` chưa tồn tại (chờ baseline của trưởng nhóm), nên `alembic upgrade` trong image chưa dùng được.
+

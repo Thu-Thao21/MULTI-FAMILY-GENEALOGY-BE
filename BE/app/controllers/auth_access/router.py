@@ -8,11 +8,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.controllers.auth_access import use_cases
 from app.controllers.auth_access.use_cases import ClientInfo
 from app.core.firebase import IdentityProvider, get_identity_provider
+from app.core.openapi_responses import (
+    AUTHENTICATED_RESTRICTED_OK,
+    BASE,
+    error_responses,
+)
 from app.db.postgres import get_db
 from app.dependencies.auth import Principal, get_principal_allow_restricted, get_user_access_repo
 from app.dependencies.permissions import get_family_repo
 from app.models.family.repository import FamilyRepository
 from app.models.user_access.repository import UserAccessRepository
+from app.schemas.errors import ErrorCode
 from app.schemas.auth import (
     ChangePasswordRequest,
     MeResponse,
@@ -23,7 +29,19 @@ from app.schemas.auth import (
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.post("/session", status_code=201, response_model=SessionCreateResponse)
+@router.post(
+    "/session",
+    status_code=201,
+    response_model=SessionCreateResponse,
+    responses=error_responses(
+        ErrorCode.INVALID_ID_TOKEN,
+        ErrorCode.ACCOUNT_BLOCKED,
+        ErrorCode.TEMPORARY_PASSWORD_EXPIRED,
+        ErrorCode.VALIDATION_ERROR,
+        ErrorCode.PROVIDER_UNAVAILABLE,
+        *BASE,
+    ),
+)
 async def create_session(
     body: SessionCreateRequest,
     request: Request,
@@ -43,7 +61,9 @@ async def create_session(
 # The three routes below are the ONLY ones using get_principal_allow_restricted.
 
 
-@router.get("/me", response_model=MeResponse)
+@router.get(
+    "/me", response_model=MeResponse, responses=error_responses(*AUTHENTICATED_RESTRICTED_OK)
+)
 async def me(
     principal: Principal = Depends(get_principal_allow_restricted),
     users: UserAccessRepository = Depends(get_user_access_repo),
@@ -52,7 +72,12 @@ async def me(
     return await use_cases.get_me(users=users, family=family, principal=principal)
 
 
-@router.post("/logout", status_code=204, response_class=Response)
+@router.post(
+    "/logout",
+    status_code=204,
+    response_class=Response,
+    responses=error_responses(*AUTHENTICATED_RESTRICTED_OK),
+)
 async def logout(
     principal: Principal = Depends(get_principal_allow_restricted),
     db: AsyncSession = Depends(get_db),
@@ -62,7 +87,17 @@ async def logout(
     return Response(status_code=204)
 
 
-@router.post("/change-password", status_code=204, response_class=Response)
+@router.post(
+    "/change-password",
+    status_code=204,
+    response_class=Response,
+    responses=error_responses(
+        *AUTHENTICATED_RESTRICTED_OK,
+        ErrorCode.RECENT_LOGIN_REQUIRED,
+        ErrorCode.VALIDATION_ERROR,
+        ErrorCode.PROVIDER_UNAVAILABLE,
+    ),
+)
 async def change_password(
     body: ChangePasswordRequest,
     request: Request,

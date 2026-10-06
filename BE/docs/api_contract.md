@@ -2,6 +2,27 @@
 
 Trạng thái: **đề xuất**. Schema Pydantic đã có trong `app/schemas/`. Đã cài trong `main`: Mốc D `POST /auth/session`, `GET /auth/me`, `POST /auth/logout`, `POST /auth/change-password`; Mốc F `GET /admin/users`, `GET /admin/users/{id}`, `PATCH /admin/users/{id}/status`, `GET /clans/{id}/users`, `PUT /clans/{id}/admins/{user_id}/permissions`. Các API khác chưa có endpoint. Tài liệu này là căn cứ để FE nối màn hình và để BE viết controller ở Mốc D, E, F. Nguồn: mục 6, 7, 8, 9 của `BE_Sprint1_Coding_Plan.md.md`.
 
+## Trạng thái cài đặt
+
+Cập nhật 06/10/2026 (Mốc G). Chỉ ghi chú trạng thái; nội dung hợp đồng ở các mục sau không đổi. `tests/test_openapi_contract.py` khóa danh sách "đã cài" và đối chiếu từng endpoint với tài liệu này.
+
+| Endpoint | Trạng thái | Ghi chú |
+| --- | --- | --- |
+| `POST /auth/session` | Đã cài (Mốc D) | Mã `429` trong hợp đồng chưa cài (chưa có rate limit, KI-06) |
+| `GET /auth/me` | Đã cài (Mốc D) | `permissions[]` tạm thời, chờ lead (mục 6, quyết định 16) |
+| `POST /auth/logout` | Đã cài (Mốc D) | |
+| `POST /auth/change-password` | Đã cài (Mốc D) | Đổi xong phải đăng nhập lại |
+| `POST /auth/password-reset/request`, `POST /auth/password-reset/confirm` | Chưa cài | KI-05; FE tạm dùng `sendPasswordResetEmail` của Firebase |
+| `GET /admin/users`, `GET /admin/users/{user_id}` | Đã cài (Mốc F) | |
+| `PATCH /admin/users/{user_id}/status` | Đã cài (Mốc F) | Bảng chuyển trạng thái tạm thời, chờ lead (quyết định 20) |
+| `GET /clans/{clan_id}/users` | Đã cài (Mốc F) | |
+| `PUT /clans/{clan_id}/admins/{user_id}/permissions` | Đã cài (Mốc F) | Chỉ sửa tập quyền, chưa cấp/thu hồi FA (KI-07) |
+| `GET /service-plans`, `POST /business-registrations`, `POST /business-registrations/track` | Chưa cài | Mốc E |
+| `GET /admin/business-registrations`, `GET /admin/business-registrations/{id}`, `POST .../review`, `POST .../business` | Chưa cài | Mốc E |
+| `POST /admin/clans/{id}/owner`, `GET /admin/provisioning-jobs/{id}`, `POST /admin/clans/{id}/activate` | Chưa cài | Mốc E (job cần migration, D03) |
+
+OpenAPI do FastAPI sinh ra (`/docs`, `/openapi.json`) khai báo mọi mã lỗi của từng endpoint đã cài bằng schema `ErrorResponse` (thay cho `HTTPValidationError` mặc định của FastAPI, vốn không phải body lỗi thật). Mã khai báo là các mã mà code có thể trả; có thể rộng hơn danh sách "Lỗi" của từng mục (ví dụ `503 DATABASE_UNAVAILABLE`, `403 TEMPORARY_PASSWORD_EXPIRED` áp dụng cho mọi API cần đăng nhập, theo mục 2).
+
 ## 1. Quy ước chung
 
 | Mục | Quy ước |

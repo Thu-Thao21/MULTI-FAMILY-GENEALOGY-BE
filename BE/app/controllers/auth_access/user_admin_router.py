@@ -15,12 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.controllers.auth_access import user_admin_use_cases as use_cases
 from app.controllers.auth_access.use_cases import ClientInfo
+from app.core.openapi_responses import AUTHENTICATED, error_responses
 from app.db.postgres import get_db
 from app.dependencies.auth import Principal, get_user_access_repo
 from app.dependencies.permissions import Action, clan_scope_from_path, get_family_repo, require_action
 from app.models.family.repository import FamilyRepository
 from app.models.user_access.repository import UserAccessRepository
 from app.schemas.common import Page
+from app.schemas.errors import ErrorCode
 from app.schemas.users import (
     AdminUserDetail,
     AdminUserListQuery,
@@ -40,6 +42,7 @@ router = APIRouter(tags=["user-admin"])
     "/admin/users",
     response_model=Page[AdminUserSummary],
     dependencies=[Depends(require_action(Action.USER_LIST))],
+    responses=error_responses(*AUTHENTICATED, ErrorCode.FORBIDDEN, ErrorCode.VALIDATION_ERROR),
 )
 async def list_users(
     query: AdminUserListQuery = Depends(),
@@ -52,6 +55,9 @@ async def list_users(
     "/admin/users/{user_id}",
     response_model=AdminUserDetail,
     dependencies=[Depends(require_action(Action.USER_READ))],
+    responses=error_responses(
+        *AUTHENTICATED, ErrorCode.FORBIDDEN, ErrorCode.NOT_FOUND, ErrorCode.VALIDATION_ERROR
+    ),
 )
 async def get_user(
     user_id: uuid.UUID,
@@ -61,7 +67,17 @@ async def get_user(
     return await use_cases.get_user_detail(users=users, family=family, user_id=user_id)
 
 
-@router.patch("/admin/users/{user_id}/status", response_model=UserStatusUpdateResponse)
+@router.patch(
+    "/admin/users/{user_id}/status",
+    response_model=UserStatusUpdateResponse,
+    responses=error_responses(
+        *AUTHENTICATED,
+        ErrorCode.FORBIDDEN,
+        ErrorCode.NOT_FOUND,
+        ErrorCode.STATE_CONFLICT,
+        ErrorCode.VALIDATION_ERROR,
+    ),
+)
 async def update_user_status(
     user_id: uuid.UUID,
     body: UserStatusUpdateRequest,
@@ -84,6 +100,9 @@ async def update_user_status(
     "/clans/{clan_id}/users",
     response_model=Page[ClanUserItem],
     dependencies=[Depends(require_action(Action.CLAN_USERS_LIST, clan_scope_from_path()))],
+    responses=error_responses(
+        *AUTHENTICATED, ErrorCode.FORBIDDEN, ErrorCode.NOT_FOUND, ErrorCode.VALIDATION_ERROR
+    ),
 )
 async def list_clan_users(
     clan_id: str,  # already validated by clan_scope_from_path (malformed -> 404)
@@ -99,6 +118,13 @@ async def list_clan_users(
 @router.put(
     "/clans/{clan_id}/admins/{user_id}/permissions",
     response_model=FamilyAdminPermissionsResponse,
+    responses=error_responses(
+        *AUTHENTICATED,
+        ErrorCode.FORBIDDEN,
+        ErrorCode.NOT_FOUND,
+        ErrorCode.STATE_CONFLICT,
+        ErrorCode.VALIDATION_ERROR,
+    ),
 )
 async def update_fa_permissions(
     clan_id: str,  # already validated by clan_scope_from_path (malformed -> 404)

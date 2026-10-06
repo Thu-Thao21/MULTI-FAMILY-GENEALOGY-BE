@@ -12,31 +12,53 @@ from fastapi.responses import JSONResponse
 from app.controllers.auth_access.router import router as auth_router
 from app.controllers.auth_access.user_admin_router import router as user_admin_router
 from app.core.config import settings
-from app.core.errors import register_exception_handlers
+from app.core.errors import UnhandledErrorMiddleware, register_exception_handlers
 from app.core.request_id import RequestIdMiddleware
+from app.core.startup_checks import ConfigurationError, validate_runtime_config
 from app.db.postgres import check_db, close_db, init_db
 from app.dependencies.auth import API_PREFIX
 from app.routers import health
 
 logger = logging.getLogger("mfg")
 
-app = FastAPI(title="Multi-family Genealogy API")
+def create_app() -> FastAPI:
+    """Build the application. The module-level `app` below is the one uvicorn serves;
+    tests call create_app() to get a fresh instance they can extend."""
+    application = FastAPI(title="Multi-family Genealogy API")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-# Added last = outermost user middleware, so every request (including CORS
-# preflight and error responses) gets a request_id.
-app.add_middleware(RequestIdMiddleware)
-register_exception_handlers(app)
+    # Middleware order: the LAST one added is the OUTERMOST. From outside in:
+    #   RequestIdMiddleware -> CORSMiddleware -> UnhandledErrorMiddleware -> handlers/routes
+    # UnhandledErrorMiddleware must sit inside CORS so a 500 envelope still gets the
+    # Access-Control-* headers; RequestIdMiddleware outermost so every response, preflight
+    # and error included, carries a request_id.
+    application.add_middleware(UnhandledErrorMiddleware)
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        # Without this the browser hides these headers from frontend JavaScript.
+        expose_headers=["X-Request-ID", "Retry-After"],
+    )
+    application.add_middleware(RequestIdMiddleware)
+    register_exception_handlers(application)
+    return application
+
+
+app = create_app()
 
 
 @app.on_event("startup")
 async def startup_event():
+    # Fail closed: a bad Firebase/CORS configuration stops the process with a clear
+    # message (variable names only, never values). Runs before the DB check and only on
+    # real startup, never on import.
+    try:
+        validate_runtime_config(settings)
+    except ConfigurationError as exc:
+        logger.critical("%s", exc)
+        raise
     try:
         await init_db()
         logger.info("Database connectivity check passed.")

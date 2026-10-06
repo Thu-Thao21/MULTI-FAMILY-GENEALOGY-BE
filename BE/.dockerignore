@@ -1,7 +1,37 @@
-__pycache__/
-venv/
-*.pyc
+# Keep the build context small and free of secrets. The Dockerfile only COPYs app/,
+# alembic/ and alembic.ini; this is a second line of defence.
+
+# Secrets and local configuration
 .env
-*.sqlite3
+.env.*
+!.env.example
 *service-account*.json
 *firebase-adminsdk*.json
+*.pem
+*.key
+
+# Virtual environments and caches
+.venv/
+venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Not part of the runtime image
+.git/
+.gitignore
+.cursor/
+.vscode/
+.idea/
+tests/
+docs/
+scripts/
+database/
+requirements-dev.txt
+README.md
+Dockerfile
+.dockerignore
+*.sqlite3
+*.db

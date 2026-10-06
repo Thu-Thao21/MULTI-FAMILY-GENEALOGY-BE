@@ -47,7 +47,9 @@ class Settings(BaseSettings):
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # hide_input_in_errors: a validation error must never echo the offending value;
+    # for DATABASE_URL that value is a connection string with the password.
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     @field_validator("DATABASE_URL", mode="before")
     @classmethod

@@ -18,6 +18,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import InterfaceError, OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.core.config import settings
 from app.core.request_id import REQUEST_ID_HEADER
@@ -143,3 +144,42 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(OperationalError, database_unavailable_handler)
     app.add_exception_handler(InterfaceError, database_unavailable_handler)
     app.add_exception_handler(Exception, unhandled_exception_handler)
+
+
+class UnhandledErrorMiddleware:
+    """Turn an unhandled exception into the standard 500 envelope INSIDE CORSMiddleware.
+
+    Starlette runs the handler registered for Exception in ServerErrorMiddleware, the
+    OUTERMOST layer, so that 500 would bypass CORSMiddleware and reach the browser without
+    Access-Control-* headers (the frontend then sees an opaque network error and cannot
+    read the body or request_id). Installed directly under CORSMiddleware, this catches
+    the error first; CORS headers are then added to the envelope like any other response.
+
+    Same body and log as unhandled_exception_handler: exception class and request_id only,
+    never the message, traceback (unless DEBUG) or any internal detail in the response.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        response_started = False
+
+        async def tracking_send(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, tracking_send)
+        except Exception as exc:  # noqa: BLE001 - this is the catch-all by design
+            if response_started:
+                raise  # headers already sent: cannot replace the response
+            request = Request(scope, receive)
+            response = await unhandled_exception_handler(request, exc)
+            await response(scope, receive, send)
