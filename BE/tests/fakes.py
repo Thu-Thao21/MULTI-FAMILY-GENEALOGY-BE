@@ -6,21 +6,94 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy.exc import OperationalError
+
+from app.core.firebase import InvalidIdToken, ProviderUnavailable, VerifiedIdentity
 from app.core.tokens import hash_session_token
 from app.models.family.entities import Clan, ClanMembership, ClanOwnershipHistory
-from app.models.user_access.entities import CredentialMetadata, User, UserSession
+from app.models.user_access.entities import CredentialMetadata, LoginHistory, User, UserSession
 
 NOW = datetime(2026, 10, 5, 8, 0, tzinfo=timezone.utc)
 
 
-def make_user(status: str = "ACTIVE", *, first_login_required: bool = False) -> User:
+def make_user(
+    status: str = "ACTIVE",
+    *,
+    first_login_required: bool = False,
+    firebase_uid: str | None = None,
+) -> User:
     return User(
         user_id=uuid.uuid4(),
+        firebase_uid=firebase_uid or f"fake-uid-{uuid.uuid4().hex[:12]}",
         email=f"{uuid.uuid4().hex[:8]}@example.test",
         display_name="Test User",
         status=status,
         first_login_required=first_login_required,
     )
+
+
+@dataclass
+class FakeIdentityProvider:
+    """Stands in for Firebase. Tokens are opaque strings mapped to identities.
+
+    Never stores passwords: set_password records only the UID.
+    """
+
+    identities: dict[str, VerifiedIdentity] = field(default_factory=dict)
+    unavailable: bool = False
+    set_password_error: Exception | None = None
+    password_changes: list[str] = field(default_factory=list)
+
+    def issue(
+        self,
+        uid: str,
+        *,
+        auth_time: datetime | None = None,
+        email: str | None = "someone@example.test",
+    ) -> str:
+        token = f"fake-id-token-{uuid.uuid4().hex}"
+        self.identities[token] = VerifiedIdentity(
+            uid=uid,
+            email=email,
+            email_verified=False,
+            auth_time=auth_time or datetime.now(timezone.utc) - timedelta(seconds=30),
+            sign_in_provider="password",
+        )
+        return token
+
+    async def verify_id_token(self, id_token: str) -> VerifiedIdentity:
+        if self.unavailable:
+            raise ProviderUnavailable("fake_unavailable")
+        identity = self.identities.get(id_token)
+        if identity is None:
+            raise InvalidIdToken("invalid")
+        return identity
+
+    async def set_password(self, uid: str, new_password: str) -> None:
+        if self.set_password_error is not None:
+            raise self.set_password_error
+        self.password_changes.append(uid)
+
+
+@dataclass
+class FakeDb:
+    """Unit of work. commit() snapshots what the repo holds, to prove commit order."""
+
+    repo: "FakeUserAccessRepo | None" = None
+    fail_commit: bool = False
+    commits: int = 0
+    rollbacks: int = 0
+    committed_login_history: list[LoginHistory] = field(default_factory=list)
+
+    async def commit(self) -> None:
+        if self.fail_commit:
+            raise OperationalError("COMMIT", {}, Exception("simulated"))
+        self.commits += 1
+        if self.repo is not None:
+            self.committed_login_history = list(self.repo.login_history)
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
 
 
 @dataclass
@@ -39,13 +112,15 @@ class FakeUserAccessRepo:
     roles: list[RoleGrant] = field(default_factory=list)
     calls: list[str] = field(default_factory=list)
     seen_hashes: list[str] = field(default_factory=list)
+    login_history: list[LoginHistory] = field(default_factory=list)
+    audit: list[dict] = field(default_factory=list)
 
     # --- setup helpers ---
     def add_user(self, user: User) -> User:
         self.users[user.user_id] = user
         return user
 
-    def add_session(
+    def seed_session(
         self,
         user: User,
         token: str = "tok-valid",
@@ -105,6 +180,44 @@ class FakeUserAccessRepo:
         }
         ids.discard(exclude_user_id)
         return len(ids)
+
+    async def list_active_role_grants(self, user_id):
+        return [(g.role_code, g.clan_id) for g in self.roles if g.user_id == user_id and not g.revoked]
+
+    # --- Mốc D: login / session writes ---
+    async def get_user_by_firebase_uid(self, firebase_uid):
+        return next((u for u in self.users.values() if u.firebase_uid == firebase_uid), None)
+
+    async def add_session(self, **values) -> UserSession:
+        row = UserSession(session_id=uuid.uuid4(), **values)
+        self.sessions[values["token_jti_hash"]] = row
+        return row
+
+    def _revoke(self, rows, reason, now) -> int:
+        count = 0
+        for s in rows:
+            if s.revoked_at is None:
+                s.revoked_at, s.revoke_reason = now, reason
+                count += 1
+        return count
+
+    async def revoke_session(self, session_id, *, reason, now) -> int:
+        return self._revoke([s for s in self.sessions.values() if s.session_id == session_id], reason, now)
+
+    async def revoke_all_sessions(self, user_id, *, reason, now) -> int:
+        return self._revoke([s for s in self.sessions.values() if s.user_id == user_id], reason, now)
+
+    async def add_login_history(self, **values) -> LoginHistory:
+        row = LoginHistory(login_id=uuid.uuid4(), **values)
+        self.login_history.append(row)
+        return row
+
+    async def add_credential_metadata(self, user_id, *, now) -> CredentialMetadata:
+        self.set_cred(self.users[user_id])
+        return self.creds[user_id]
+
+    async def add_audit_log(self, **values) -> None:
+        self.audit.append(values)
 
 
 @dataclass
@@ -166,4 +279,14 @@ class FakeFamilyRepo:
             (g.assignment_id, g.branch_id, g.permission_code)
             for g in self.fa
             if g.clan_id == clan_id and g.user_id == user_id and not g.revoked
+        ]
+
+    async def list_fa_permission_codes(self, clan_id, user_id):
+        return sorted({code for _a, _b, code in await self.list_active_fa_grants(clan_id, user_id)})
+
+    async def list_memberships_with_clans(self, user_id):
+        return [
+            (m, self.clans[m.clan_id])
+            for m in self.memberships
+            if m.user_id == user_id and m.revoked_at is None and m.status != "REVOKED"
         ]

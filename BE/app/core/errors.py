@@ -16,6 +16,7 @@ from typing import Mapping
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import InterfaceError, OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import settings
@@ -115,6 +116,15 @@ async def validation_exception_handler(
     return error_response(request, ErrorCode.VALIDATION_ERROR, message)
 
 
+async def database_unavailable_handler(request: Request, exc: Exception) -> JSONResponse:
+    # Connection-level DB errors only. The message is not logged: it can embed
+    # connection details.
+    logger.error(
+        "Database unavailable %s request_id=%s", type(exc).__name__, _request_id(request)
+    )
+    return error_response(request, ErrorCode.DATABASE_UNAVAILABLE)
+
+
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     rid = _request_id(request)
     logger.error(
@@ -130,4 +140,6 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(AppError, app_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)  # type: ignore[arg-type]
     app.add_exception_handler(RequestValidationError, validation_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(OperationalError, database_unavailable_handler)
+    app.add_exception_handler(InterfaceError, database_unavailable_handler)
     app.add_exception_handler(Exception, unhandled_exception_handler)

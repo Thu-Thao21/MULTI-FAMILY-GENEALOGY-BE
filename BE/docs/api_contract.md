@@ -1,6 +1,6 @@
 # Hợp đồng API Sprint 1 — MFGMS AI
 
-Trạng thái: **đề xuất**. Schema Pydantic đã có trong `app/schemas/`, nhưng chưa có endpoint nào được cài trong `main`. Tài liệu này là căn cứ để FE nối màn hình và để BE viết controller ở Mốc D, E, F. Nguồn: mục 6, 7, 8, 9 của `BE_Sprint1_Coding_Plan.md.md`.
+Trạng thái: **đề xuất**. Schema Pydantic đã có trong `app/schemas/`. Đã cài trong `main` (Mốc D): `POST /auth/session`, `GET /auth/me`, `POST /auth/logout`, `POST /auth/change-password`. Các API khác chưa có endpoint. Tài liệu này là căn cứ để FE nối màn hình và để BE viết controller ở Mốc D, E, F. Nguồn: mục 6, 7, 8, 9 của `BE_Sprint1_Coding_Plan.md.md`.
 
 ## 1. Quy ước chung
 
@@ -63,13 +63,15 @@ Schema nằm trong `app/schemas/auth.py`.
 - **Quyền:** Guest (đổi Firebase ID token lấy phiên ứng dụng)
 - **Body:** `SessionCreateRequest` `{id_token}`
 - **Thành công:** `201` `SessionCreateResponse` `{access_token, token_type: "Bearer", expires_at, user: {user_id, display_name, email, status}, requires_password_change}`. `access_token` chỉ trả một lần
-- **Lỗi:** `401 INVALID_ID_TOKEN`; `403 ACCOUNT_BLOCKED`, `403 TEMPORARY_PASSWORD_EXPIRED`; `422`; `429`; `503 PROVIDER_UNAVAILABLE`
+- **Lỗi:** `401 INVALID_ID_TOKEN`; `403 ACCOUNT_BLOCKED`, `403 TEMPORARY_PASSWORD_EXPIRED`; `422`; `429` (chưa cài, KI-06); `503 PROVIDER_UNAVAILABLE`
+- **Mốc D:** `401 INVALID_ID_TOKEN` dùng chung cho token sai/hết hạn/thu hồi, UID chưa có trong `users`, và ID token có `auth_time` trước lần đổi mật khẩu gần nhất. Cùng thông điệp, không lộ UID có tồn tại hay không. Không bao giờ tự tạo user, không nối tài khoản theo email. `expires_at` = lúc tạo + `SESSION_TTL_HOURS` (8 giờ).
 
 ### GET /auth/me
 - **Quyền:** phiên hợp lệ, kể cả phiên hạn chế
 - **Thành công:** `200` `MeResponse` `{user_id, display_name, status, memberships[], permissions[], requires_password_change}`
   - `memberships[]`: `MembershipSummary` `{clan_id, clan_name, clan_status, membership_status, roles[], permissions[]}`; quyền trong từng clan
   - `permissions[]` cấp hệ thống: quyền từ role có `clan_id = NULL`
+  - **Tạm thời, chờ lead chốt** (xem mục 6, Mốc D): giá trị trong `permissions` là mã action của policy cho SA/BO và mã trong `family_admin_permissions` cho FA
 - **Lỗi:** chỉ các lỗi chung của API cần đăng nhập
 
 ### POST /auth/logout
@@ -79,6 +81,9 @@ Schema nằm trong `app/schemas/auth.py`.
 - **Lỗi:** `401 SESSION_INVALID`
 
 ### POST /auth/password-reset/request
+
+> **Chưa cài (Mốc D để sang mốc sau, KI-05).** FE tạm dùng `sendPasswordResetEmail` của Firebase SDK.
+
 - **Quyền:** Guest; có rate limit
 - **Body:** `PasswordResetRequest` `{email}`
 - **Thành công:** `202` `PasswordResetRequestAccepted` `{message}`. Cùng một thông báo dù email có tồn tại hay không
@@ -94,6 +99,7 @@ Schema nằm trong `app/schemas/auth.py`.
 - **Quyền:** phiên hợp lệ, kể cả phiên hạn chế
 - **Body:** `ChangePasswordRequest` `{new_password, recent_id_token}`
 - **Thành công:** `204`. Mọi phiên bị thu hồi; FE phải đăng nhập lại
+- **Mốc D:** BE gọi Firebase Admin SDK (`update_user` rồi `revoke_refresh_tokens`), cần `FIREBASE_SERVICE_ACCOUNT_PATH`; thiếu thì `503 PROVIDER_UNAVAILABLE`. `recent_id_token` phải cùng UID với phiên và có `auth_time` trong vòng `RECENT_LOGIN_MAX_AGE_SECONDS` (300 giây), nếu không `401 RECENT_LOGIN_REQUIRED`. Sau khi đổi, **mọi ID token cũ (đăng nhập trước lúc đổi) bị `POST /auth/session` từ chối**, nên FE phải `signOut` rồi đăng nhập lại bằng mật khẩu mới để lấy ID token mới. Firebase từ chối mật khẩu theo chính sách của project thì `422 VALIDATION_ERROR`. Nếu Firebase đã đổi nhưng DB lỗi: `503 DATABASE_UNAVAILABLE` kèm `request_id`; cờ đổi mật khẩu vẫn còn nên tài khoản vẫn bị hạn chế, gọi lại là hoàn tất
 - **Lỗi:** `401 RECENT_LOGIN_REQUIRED`; `403 TEMPORARY_PASSWORD_EXPIRED`; `422`; `503 PROVIDER_UNAVAILABLE`. Nếu Firebase đã đổi nhưng DB lỗi, trả `503` kèm `request_id` để theo dõi, không trả thành công
 
 ## 4. API Business và người dùng (mục 8)
@@ -211,6 +217,19 @@ NEED_SUPPLEMENT và luồng nộp lại hồ sơ, cấp tài khoản Member hàn
 | 9 | Phiên tạo trước `credential_metadata.password_changed_at` bị coi là `401 SESSION_INVALID` |
 | 10 | Khóa, tạm ngưng, disable hoặc thu hồi role SA không được để hệ thống còn 0 SA `ACTIVE`, kể cả khi SA tự khóa mình. Trả `409 STATE_CONFLICT`. Kiểm tra chạy trong cùng transaction với thao tác ghi và khóa các dòng `user_roles` SA bằng `SELECT ... FOR UPDATE` |
 | 11 | Phiên hạn chế chỉ dùng được `/auth/me`, `/auth/change-password`, `/auth/logout`. Mọi route khác trả `403 PASSWORD_CHANGE_REQUIRED` |
+
+### Đã chốt ở Mốc D (đăng nhập Firebase)
+
+| # | Quyết định |
+| --- | --- |
+| 12 | Firebase quản lý mật khẩu và cách đăng nhập (Email/Password, Google, Facebook). DB không lưu mật khẩu. ID token được xác minh bằng Admin SDK: chữ ký, issuer, audience = `FIREBASE_PROJECT_ID`, hạn dùng. Không có đường giải mã không kiểm chữ ký; thiếu cấu hình thì `503` (fail closed) |
+| 13 | Chỉ tài khoản đã có dòng `users` với đúng `firebase_uid` mới có phiên. UID lạ: `401 INVALID_ID_TOKEN`, không tạo user. Không dùng `email_verified` để cho phép/chặn đăng nhập (liên kết theo UID, không theo email) |
+| 14 | `login_history` chỉ ghi khi đã xác định được user: thành công, hoặc UID có trong DB nhưng bị từ chối (`ACCOUNT_BLOCKED`, `TEMPORARY_PASSWORD_EXPIRED`, `ID_TOKEN_BEFORE_PASSWORD_CHANGE`). Dòng thất bại được commit trước khi trả lỗi. Token lỗi hoặc UID lạ chỉ ghi log ứng dụng (request_id, mã lý do; không token, không UID) |
+| 15 | Sau lần đổi mật khẩu đầu tiên thành công, `users.status` PENDING chuyển ACTIVE. Đây là **trạng thái tài khoản người dùng**, không phải trạng thái Business/clan; quy tắc kích hoạt Business (D03) vẫn chờ lead |
+| 16 | `/auth/me` `permissions[]` **tạm thời, chờ lead chốt**: SA nhận mã action cấp hệ thống của policy (ví dụ `registration.review`); BO hiệu lực nhận mã action cấp clan của policy (`clan.users.list`, `clan.fa_permissions.update`); FA nhận mã lưu trong `family_admin_permissions` (ví dụ `MEMBER_ACCOUNT_MANAGE`). Hai nguồn mã khác nhau vì `role_permissions` không được dùng (quyết định 1). Clan hoặc membership không ACTIVE: vẫn liệt kê `roles`, `permissions` rỗng |
+| 17 | Hạn phiên 8 giờ (`SESSION_TTL_HOURS`), `recent_id_token` tối đa 300 giây (`RECENT_LOGIN_MAX_AGE_SECONDS`). Chưa có refresh token ứng dụng |
+| 18 | Kiểm tra token bị thu hồi phía Firebase (`check_revoked`) chỉ bật khi có service account (Admin API) |
+| 19 | Reset mật khẩu và rate limit `/auth/session` chưa làm (KI-05, KI-06) |
 
 ### Chưa chốt (giả định từ Mốc C1)
 

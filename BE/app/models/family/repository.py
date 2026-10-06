@@ -214,6 +214,22 @@ class FamilyRepository:
         )
         return list((await self._session.execute(stmt)).scalars().all())
 
+    async def list_memberships_with_clans(
+        self, user_id: uuid.UUID
+    ) -> list[tuple[ClanMembership, Clan]]:
+        """The caller's own non-revoked memberships with their clan (for GET /auth/me)."""
+        stmt = (
+            select(ClanMembership, Clan)
+            .join(Clan, Clan.clan_id == ClanMembership.clan_id)
+            .where(
+                ClanMembership.user_id == user_id,
+                ClanMembership.revoked_at.is_(None),
+                ClanMembership.status != "REVOKED",
+            )
+            .order_by(Clan.name, Clan.clan_id)
+        )
+        return [(row[0], row[1]) for row in (await self._session.execute(stmt)).all()]
+
     # ----- Family Admin -----
 
     async def get_fa_assignment(

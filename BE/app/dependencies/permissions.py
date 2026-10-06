@@ -144,16 +144,41 @@ def _not_found() -> AppError:
     return AppError(ErrorCode.NOT_FOUND)
 
 
+async def is_active_owner(
+    user_id: uuid.UUID,
+    clan_id: uuid.UUID,
+    roles: RoleRepository,
+    family: ClanAccessRepository,
+) -> bool:
+    """Role BUSINESS_OWNER in this clan + the active ownership row is the user's.
+
+    Membership and clan status are checked by the caller (authorize does it first).
+    """
+    if not await roles.has_active_role(user_id, BUSINESS_OWNER_ROLE, clan_id=clan_id):
+        return False
+    owner = await family.get_active_owner(clan_id)
+    return owner is not None and owner.ended_at is None and owner.user_id == user_id
+
+
 async def _is_active_owner(
     principal: Principal,
     clan_id: uuid.UUID,
     roles: RoleRepository,
     family: ClanAccessRepository,
 ) -> bool:
-    if not await roles.has_active_role(principal.user_id, BUSINESS_OWNER_ROLE, clan_id=clan_id):
-        return False
-    owner = await family.get_active_owner(clan_id)
-    return owner is not None and owner.ended_at is None and owner.user_id == principal.user_id
+    return await is_active_owner(principal.user_id, clan_id, roles, family)
+
+
+def system_admin_actions() -> list[str]:
+    """Action codes an active System Admin may perform (GET /auth/me, provisional)."""
+    return sorted(a.value for a, r in ACTION_RULES.items() if r.scope is ScopeKind.SYSTEM)
+
+
+def owner_actions() -> list[str]:
+    """Clan action codes an effective Business Owner may perform (GET /auth/me, provisional)."""
+    return sorted(
+        a.value for a, r in ACTION_RULES.items() if r.scope is ScopeKind.CLAN and r.allow_owner
+    )
 
 
 async def _fa_covers(

@@ -13,7 +13,9 @@ Every request:
 Roles are never read from the token; authorization lives in permissions.py and
 re-reads the database on every request.
 
-No Firebase here: ID-token exchange is Mốc D.
+No Firebase here. The ID-token exchange (POST /auth/session) lives in
+app/controllers/auth_access and reuses evaluate_account() below, so a login and
+every later request apply the same account rules.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import Awaitable, Callable, Protocol
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -83,6 +85,55 @@ def _session_invalid() -> AppError:
     return AppError(ErrorCode.SESSION_INVALID, headers=_WWW_AUTH)
 
 
+async def evaluate_account(
+    user: User,
+    load_cred: Callable[[], Awaitable[CredentialMetadata | None]],
+    *,
+    now: datetime,
+    issued_at: datetime,
+    stale_error: Callable[[], AppError],
+) -> bool:
+    """Account rules shared by every request and by the ID-token exchange.
+
+    issued_at: when the credential being used was issued (session created_at, or the
+    Firebase auth_time at login). Anything issued before the latest password change is
+    dead, even if the explicit revoke after the change was missed -> stale_error().
+
+    Returns requires_password_change. Raises AppError; order matters:
+    blocked status, stale credential, expired temporary password, PENDING.
+    """
+    if user.status in BLOCKED_STATUSES or user.status not in USABLE_STATUSES:
+        # Unknown statuses are denied too (default deny).
+        raise AppError(ErrorCode.ACCOUNT_BLOCKED)
+
+    cred = await load_cred()
+
+    if (
+        cred is not None
+        and cred.password_changed_at is not None
+        and cred.password_changed_at > issued_at
+    ):
+        raise stale_error()
+
+    must_change = bool(cred is not None and cred.must_change_password)
+    requires_password_change = bool(user.first_login_required) or must_change
+
+    if (
+        must_change
+        and cred is not None
+        and cred.temporary_password_expires_at is not None
+        and cred.temporary_password_expires_at <= now
+    ):
+        raise AppError(ErrorCode.TEMPORARY_PASSWORD_EXPIRED)
+
+    # PENDING is only usable as a restricted session (temporary password flow); the
+    # first successful password change moves the user to ACTIVE.
+    if user.status == "PENDING" and not requires_password_change:
+        raise AppError(ErrorCode.ACCOUNT_BLOCKED)
+
+    return requires_password_change
+
+
 async def resolve_principal(
     token: str,
     repo: AuthRepository,
@@ -100,36 +151,17 @@ async def resolve_principal(
     if user is None:
         raise _session_invalid()
 
-    if user.status in BLOCKED_STATUSES or user.status not in USABLE_STATUSES:
-        # Unknown statuses are denied too (default deny).
-        raise AppError(ErrorCode.ACCOUNT_BLOCKED)
+    # Fetched lazily so a blocked account is rejected before anything else.
+    async def load_cred() -> CredentialMetadata | None:
+        return await repo.get_credential_metadata(user.user_id)
 
-    cred = await repo.get_credential_metadata(user.user_id)
-
-    # A session issued before the latest password change is dead, even if the
-    # explicit revoke after change/reset was missed.
-    if (
-        cred is not None
-        and cred.password_changed_at is not None
-        and cred.password_changed_at > session.created_at
-    ):
-        raise _session_invalid()
-
-    must_change = bool(cred is not None and cred.must_change_password)
-    requires_password_change = bool(user.first_login_required) or must_change
-
-    if (
-        must_change
-        and cred is not None
-        and cred.temporary_password_expires_at is not None
-        and cred.temporary_password_expires_at <= now
-    ):
-        raise AppError(ErrorCode.TEMPORARY_PASSWORD_EXPIRED)
-
-    # PENDING is only usable as a restricted session (temporary password flow).
-    # TODO(D03): revisit once the activation rule is decided.
-    if user.status == "PENDING" and not requires_password_change:
-        raise AppError(ErrorCode.ACCOUNT_BLOCKED)
+    requires_password_change = await evaluate_account(
+        user,
+        load_cred,
+        now=now,
+        issued_at=session.created_at,
+        stale_error=_session_invalid,
+    )
 
     return Principal(
         user_id=user.user_id,

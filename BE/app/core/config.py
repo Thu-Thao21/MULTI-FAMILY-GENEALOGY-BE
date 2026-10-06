@@ -30,8 +30,15 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     # When true, unhandled-error logs include the traceback. Keep false outside local dev.
     DEBUG: bool = False
-    FIREBASE_PROJECT_ID: str = "multi-family-genealogy"
-    FIREBASE_CREDENTIALS_PATH: str = ""
+    # Firebase project whose ID tokens are accepted (token audience). No default on
+    # purpose: when empty, POST /auth/session fails closed with 503.
+    FIREBASE_PROJECT_ID: str = ""
+    # Service account JSON path, only for the Admin API (password change, token
+    # revocation check). The file content is never read or logged by app code.
+    FIREBASE_SERVICE_ACCOUNT_PATH: str = ""
+    # Application session lifetime and how fresh recent_id_token must be.
+    SESSION_TTL_HOURS: int = 8
+    RECENT_LOGIN_MAX_AGE_SECONDS: int = 300
     FRONTEND_ORIGINS: str = "http://localhost:5173,http://localhost:8080"
     FRONTEND_URL: str = "http://localhost:5173"
 

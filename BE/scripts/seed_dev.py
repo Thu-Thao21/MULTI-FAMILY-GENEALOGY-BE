@@ -11,7 +11,12 @@ Rules:
     missing role/permission aborts with a clear message).
   - Idempotent: every row is looked up by its natural key first.
   - Everything it writes is identifiable: clans DEV-*, users dev-*@example.test with
-    firebase_uid dev-*. --cleanup deletes only rows with those markers.
+    firebase_uid dev-*. --cleanup deletes only clans DEV-* and users dev-*@example.test
+    (example.test is a reserved domain, so no real account can match).
+  - Optional DEV_SA_FIREBASE_UID: if set, dev-sa gets that firebase_uid so a real
+    Firebase account can sign in as the dev System Admin (Mốc D). The value is never
+    printed and must never be written into code, docs or tests. If unset, dev-sa keeps
+    its current UID (the fake dev-sa for a new row).
   - No password hash, no session, no token. Prints counts and e-mails, never secrets
     or DATABASE_URL.
 """
@@ -33,6 +38,7 @@ EMAIL_PREFIX = "dev-"
 EMAIL_SUFFIX = "@example.test"
 UID_PREFIX = "dev-"
 FA_PERMISSION = "MEMBER_ACCOUNT_MANAGE"
+SA_UID_ENV = "DEV_SA_FIREBASE_UID"
 
 # (key, status) of every dev user; e-mail = dev-<key>@example.test
 USERS: list[tuple[str, str, str]] = [
@@ -62,6 +68,16 @@ EXTRA_MEMBERS: list[tuple[str, str, str]] = [
 
 class SeedError(Exception):
     """Expected failure with a message that is safe to print."""
+
+
+def dev_sa_uid() -> str | None:
+    """Real Firebase UID for dev-sa from the environment, validated, never printed."""
+    value = os.environ.get(SA_UID_ENV, "").strip()
+    if not value:
+        return None
+    if len(value) > 128 or any(ch.isspace() for ch in value):
+        raise SeedError(f"{SA_UID_ENV} không hợp lệ (tối đa 128 ký tự, không có khoảng trắng).")
+    return value
 
 
 def email_of(key: str) -> str:
@@ -102,21 +118,37 @@ async def seed(session) -> Counter:
             f"Thiếu permission {FA_PERMISSION} trong bảng permissions. Seed không tự tạo; dừng."
         )
 
+    real_sa_uid = dev_sa_uid()
+
+    async def ensure_uid_free(uid: str, owner_id: uuid.UUID | None) -> None:
+        other = await ua.get_user_by_firebase_uid(uid)
+        if other is not None and other.user_id != owner_id:
+            raise SeedError(f"UID trong {SA_UID_ENV} đã gắn với một user khác. Dừng.")
+
     users: dict[str, User] = {}
     for key, status, display_name in USERS:
         email = email_of(key)
         user = await ua.get_user_by_email(email)
         if user is not None:
-            if not (user.firebase_uid or "").startswith(UID_PREFIX):
+            current = user.firebase_uid or ""
+            # dev-sa may legitimately hold a real UID linked by an earlier run.
+            if not current.startswith(UID_PREFIX) and key != "sa":
                 raise SeedError(
                     f"E-mail {email} đã tồn tại nhưng không phải dữ liệu seed (firebase_uid "
                     f"không có tiền tố {UID_PREFIX}). Dừng để không chiếm tài khoản thật."
                 )
+            if key == "sa" and real_sa_uid and current != real_sa_uid:
+                await ensure_uid_free(real_sa_uid, user.user_id)
+                user.firebase_uid = real_sa_uid
+                await session.flush()
+                mark("users (đổi firebase_uid dev-sa)", True)
             mark("users", False)
         else:
+            if key == "sa" and real_sa_uid:
+                await ensure_uid_free(real_sa_uid, None)
             user = User(
                 user_id=uuid.uuid4(),
-                firebase_uid=f"{UID_PREFIX}{key}",
+                firebase_uid=real_sa_uid if key == "sa" and real_sa_uid else f"{UID_PREFIX}{key}",
                 email=email,
                 display_name=display_name,
                 status=status,
@@ -256,7 +288,14 @@ async def seed(session) -> Counter:
     kinds = sorted(set(made) | set(had))
     print("Seed dev (một transaction):")
     for kind in kinds:
-        print(f"  {kind:<26} tạo mới: {made[kind]:>2}   đã có: {had[kind]:>2}")
+        print(f"  {kind:<34} tạo mới: {made[kind]:>2}   đã có: {had[kind]:>2}")
+    sa_uid = users["sa"].firebase_uid or ""
+    source = (
+        f"lấy từ {SA_UID_ENV}" if real_sa_uid
+        else "giá trị giả dev-sa" if sa_uid.startswith(UID_PREFIX)
+        else f"UID thật đã gắn từ trước (giữ nguyên; không đặt {SA_UID_ENV})"
+    )
+    print(f"  firebase_uid của dev-sa: {source} (không in giá trị)")
     return made
 
 
@@ -269,11 +308,12 @@ async def cleanup(session) -> None:
     # Clans first: ownership/membership/assignments cascade from clans, while
     # clan_ownership_history.user_id has no ON DELETE action.
     clans = await session.execute(delete(Clan).where(Clan.clan_code.startswith(CLAN_PREFIX)))
+    # By e-mail only: dev-sa may carry a real Firebase UID. Nothing is deleted in
+    # Firebase itself, only the DB rows.
     users = await session.execute(
         delete(User).where(
             User.email.startswith(EMAIL_PREFIX),
             User.email.endswith(EMAIL_SUFFIX),
-            User.firebase_uid.startswith(UID_PREFIX),
         )
     )
     print("Cleanup dev (một transaction):")

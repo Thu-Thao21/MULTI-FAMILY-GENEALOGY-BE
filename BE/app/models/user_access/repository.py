@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user_access.entities import (
@@ -42,7 +42,7 @@ def active_system_admin_roles_for_update_stmt() -> Select[tuple[uuid.UUID]]:
 
 
 class UserAccessRepository:
-    """Query-only repository. Use cases own transactions; do not commit here."""
+    """Queries plus plain inserts/updates. Use cases own transactions; never commit here."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -209,3 +209,110 @@ class UserAccessRepository:
         if exclude_user_id is not None:
             stmt = stmt.where(UserRole.user_id != exclude_user_id)
         return int((await self._session.execute(stmt)).scalar_one())
+
+    # ----- Writes for sessions and login (Mốc D). Flush only; the caller commits. -----
+
+    async def add_session(
+        self,
+        *,
+        user_id: uuid.UUID,
+        token_jti_hash: str,
+        created_at: datetime,
+        expires_at: datetime,
+        ip_address: str | None,
+        user_agent: str | None,
+    ) -> UserSession:
+        row = UserSession(
+            session_id=uuid.uuid4(),
+            user_id=user_id,
+            token_jti_hash=token_jti_hash,
+            created_at=created_at,
+            expires_at=expires_at,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def revoke_session(self, session_id: uuid.UUID, *, reason: str, now: datetime) -> int:
+        stmt = (
+            update(UserSession)
+            .where(UserSession.session_id == session_id, UserSession.revoked_at.is_(None))
+            .values(revoked_at=now, revoke_reason=reason)
+        )
+        return (await self._session.execute(stmt)).rowcount or 0
+
+    async def revoke_all_sessions(self, user_id: uuid.UUID, *, reason: str, now: datetime) -> int:
+        stmt = (
+            update(UserSession)
+            .where(UserSession.user_id == user_id, UserSession.revoked_at.is_(None))
+            .values(revoked_at=now, revoke_reason=reason)
+        )
+        return (await self._session.execute(stmt)).rowcount or 0
+
+    async def add_login_history(
+        self,
+        *,
+        user_id: uuid.UUID | None,
+        identifier: str | None,
+        success: bool,
+        failure_reason: str | None,
+        ip_address: str | None,
+        user_agent: str | None,
+        occurred_at: datetime,
+    ) -> LoginHistory:
+        row = LoginHistory(
+            login_id=uuid.uuid4(),
+            user_id=user_id,
+            identifier=identifier,
+            success=success,
+            failure_reason=failure_reason,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            occurred_at=occurred_at,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def add_credential_metadata(self, user_id: uuid.UUID, *, now: datetime) -> CredentialMetadata:
+        row = CredentialMetadata(
+            user_id=user_id,
+            auth_provider="FIREBASE",
+            must_change_password=False,
+            failed_login_count=0,
+            updated_at=now,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def add_audit_log(
+        self,
+        *,
+        actor_id: uuid.UUID | None,
+        action: str,
+        entity_type: str,
+        entity_id: uuid.UUID | None,
+        old_data: dict | None,
+        new_data: dict | None,
+        ip_address: str | None,
+        occurred_at: datetime,
+        clan_id: uuid.UUID | None = None,
+    ) -> AuditLog:
+        row = AuditLog(
+            log_id=uuid.uuid4(),
+            clan_id=clan_id,
+            actor_id=actor_id,
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            old_data=old_data,
+            new_data=new_data,
+            ip_address=ip_address,
+            occurred_at=occurred_at,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
