@@ -1,6 +1,6 @@
 # Hợp đồng API Sprint 1 — MFGMS AI
 
-Trạng thái: **đề xuất**. Schema Pydantic đã có trong `app/schemas/`. Đã cài trong `main`: Mốc D `POST /auth/session`, `GET /auth/me`, `POST /auth/logout`, `POST /auth/change-password`; Mốc F `GET /admin/users`, `GET /admin/users/{id}`, `PATCH /admin/users/{id}/status`, `GET /clans/{id}/users`, `PUT /clans/{id}/admins/{user_id}/permissions`. Các API khác chưa có endpoint. Tài liệu này là căn cứ để FE nối màn hình và để BE viết controller ở Mốc D, E, F. Nguồn: mục 6, 7, 8, 9 của `BE_Sprint1_Coding_Plan.md.md`.
+Trạng thái: **đề xuất**. Schema Pydantic đã có trong `app/schemas/`. Đã cài trong `main`: Mốc D `POST /auth/session`, `GET /auth/me`, `POST /auth/logout`, `POST /auth/change-password`; Mốc F `GET /admin/users`, `GET /admin/users/{id}`, `PATCH /admin/users/{id}/status`, `GET /clans/{id}/users`, `PUT /clans/{id}/admins/{user_id}/permissions`; Mốc F2 `POST /clans/{id}/admins`, `DELETE /clans/{id}/admins/{user_id}`. Các API khác chưa có endpoint. Tài liệu này là căn cứ để FE nối màn hình và để BE viết controller ở Mốc D, E, F. Nguồn: mục 6, 7, 8, 9 của `BE_Sprint1_Coding_Plan.md.md`.
 
 ## Trạng thái cài đặt
 
@@ -16,7 +16,8 @@ Cập nhật 06/10/2026 (Mốc G). Chỉ ghi chú trạng thái; nội dung hợ
 | `GET /admin/users`, `GET /admin/users/{user_id}` | Đã cài (Mốc F) | |
 | `PATCH /admin/users/{user_id}/status` | Đã cài (Mốc F) | Bảng chuyển trạng thái tạm thời, chờ lead (quyết định 20) |
 | `GET /clans/{clan_id}/users` | Đã cài (Mốc F) | |
-| `PUT /clans/{clan_id}/admins/{user_id}/permissions` | Đã cài (Mốc F) | Chỉ sửa tập quyền, chưa cấp/thu hồi FA (KI-07) |
+| `PUT /clans/{clan_id}/admins/{user_id}/permissions` | Đã cài (Mốc F) | Sửa tập quyền; mã `ADMIN_MANAGE` bị `403` (quyết định 30) |
+| `POST /clans/{clan_id}/admins`, `DELETE /clans/{clan_id}/admins/{user_id}` | Đã cài (Mốc F2) | Đề bạt và thu hồi Family Admin (KI-07 đã xử lý) |
 | `GET /service-plans`, `POST /business-registrations`, `POST /business-registrations/track` | Chưa cài | Mốc E |
 | `GET /admin/business-registrations`, `GET /admin/business-registrations/{id}`, `POST .../review`, `POST .../business` | Chưa cài | Mốc E |
 | `POST /admin/clans/{id}/owner`, `GET /admin/provisioning-jobs/{id}`, `POST /admin/clans/{id}/activate` | Chưa cài | Mốc E (job cần migration, D03) |
@@ -215,7 +216,18 @@ Schema nằm trong `app/schemas/business.py` và `app/schemas/users.py`.
 - **Quyền:** BO của clan
 - **Body:** `FamilyAdminPermissionsUpdateRequest` `{permission_codes[]}`: thay toàn bộ, tối đa 100 mã, không trùng; danh sách rỗng xóa hết quyền
 - **Thành công:** `200` `FamilyAdminPermissionsResponse` `{clan_id, user_id, assignment_id, permission_codes[], updated_at}`
-- **Lỗi:** `403 FORBIDDEN` nếu cấp vượt quyền được ủy quyền; `404 NOT_FOUND` nếu user không phải FA đang hiệu lực trong clan; `422`
+- **Lỗi:** `403 FORBIDDEN` nếu cấp vượt quyền được ủy quyền (hiện là mã `ADMIN_MANAGE`); `404 NOT_FOUND` nếu user không phải FA đang hiệu lực trong clan; `422`
+
+### POST /clans/{clan_id}/admins
+- **Quyền:** BO của clan (clan phải `ACTIVE`)
+- **Body:** `FamilyAdminAssignRequest` `{user_id, permission_codes[]}`: `permission_codes` tối đa 100 mã, không trùng, có thể rỗng; không có `branch_id` (luôn là phạm vi toàn clan)
+- **Thành công:** `201` `FamilyAdminAssignResponse` `{clan_id, user_id, assignment_id, permission_codes[], created_at}`
+- **Lỗi:** `403 FORBIDDEN` nếu thiếu quyền hoặc có mã không được ủy quyền; `404 NOT_FOUND` nếu clan không nhìn thấy, hoặc user không phải thành viên `ACTIVE` của clan; `409 STATE_CONFLICT` nếu user đã là FA còn hiệu lực, hoặc là chủ họ/người còn vai trò `BUSINESS_OWNER` trong clan; `422` (mã không có trong bảng `permissions`, trường lạ, `user_id` sai định dạng)
+
+### DELETE /clans/{clan_id}/admins/{user_id}
+- **Quyền:** BO của clan (clan phải `ACTIVE`)
+- **Thành công:** `204`. Thu hồi hẳn tư cách Family Admin; hiệu lực từ request tiếp theo của người đó
+- **Lỗi:** `403 FORBIDDEN`; `404 NOT_FOUND` nếu clan không nhìn thấy, hoặc user không phải FA còn hiệu lực trong clan; `422` (`user_id` sai định dạng)
 
 ## 5. Chưa nằm trong hợp đồng
 
@@ -262,8 +274,20 @@ NEED_SUPPLEMENT và luồng nộp lại hồ sơ, cấp tài khoản Member hàn
 | 23 | Khóa tài khoản chỉ chặn ở DB; không gọi Firebase. ID token Firebase còn sống tối đa 1 giờ nhưng không đổi được phiên, và phiên cũ đã bị thu hồi (KI-10) |
 | 24 | `GET /admin/users`: sắp xếp `created_at` giảm dần; `q` tìm không phân biệt hoa thường trên `email` và `display_name` (ký tự `%`, `_`, `\` được escape); email giữ nguyên, không lowercase; không trả `firebase_uid` |
 | 25 | `GET /clans/{id}/users`: luôn lọc theo `clan_id` của đường dẫn; `roles` chỉ là role giữ **trong clan đó**; `is_family_admin` = có assignment chưa thu hồi; mặc định liệt kê mọi trạng thái membership (kể cả REVOKED), `membership_status` thu hẹp; sắp xếp theo `display_name` |
-| 26 | `PUT .../permissions`: chỉ BO; thay toàn bộ tập mã của assignment toàn clan (`branch_id` NULL) còn hiệu lực. Mã phải có trong bảng `permissions` (lạ → `422`; chưa cấm mã nào, xem KI-09). Danh sách rỗng giữ assignment. Tập không đổi → `200`, không ghi gì, không audit. Đổi tập → `audit_logs` (`action` = `family_admin.permissions.update`, `clan_id`, tập quyền trước/sau). `404` nếu user không có membership ACTIVE trong clan, không có assignment chưa thu hồi, hoặc chỉ có assignment theo chi/ngành; `409` nếu có nhiều hơn một assignment toàn clan (KI-08). Cấp FA mới và thu hồi FA hẳn chưa làm (KI-07) |
+| 26 | `PUT .../permissions`: chỉ BO; thay toàn bộ tập mã của assignment toàn clan (`branch_id` NULL) còn hiệu lực. Mã phải có trong bảng `permissions` (lạ → `422`); mã `ADMIN_MANAGE` bị `403` từ Mốc F2 (quyết định 30, KI-09). Danh sách rỗng giữ assignment. Tập không đổi → `200`, không ghi gì, không audit. Đổi tập → `audit_logs` (`action` = `family_admin.permissions.update`, `clan_id`, tập quyền trước/sau). `404` nếu user không có membership ACTIVE trong clan, không có assignment chưa thu hồi, hoặc chỉ có assignment theo chi/ngành; `409` nếu có nhiều hơn một assignment toàn clan (KI-08). Cấp FA mới và thu hồi FA hẳn: Mốc F2 (quyết định 29, 33) |
 | 27 | Quyền được kiểm tra trước khi đọc body/query: người không có quyền chỉ nhận `403`/`404`, không bao giờ nhận `422` của body |
+
+### Đã chốt ở Mốc F2 (cấp và thu hồi Family Admin)
+
+| # | Quyết định |
+| --- | --- |
+| 28 | Hai action mới `clan.fa.assign` và `clan.fa.revoke`: chỉ BO, clan phải `ACTIVE` (giống `clan.fa_permissions.update`). `/auth/me` của BO liệt kê thêm hai mã này; **tạm thời, chờ lead chốt** như mọi mã trong `permissions[]` (quyết định 16) |
+| 29 | `POST /clans/{id}/admins` đề bạt một thành viên `ACTIVE` của clan thành FA **toàn clan** (`branch_id` NULL), kèm tập quyền ban đầu (có thể rỗng) và một dòng `user_roles` `FAMILY_ADMIN` trong clan (để `roles[]` của `/auth/me` và danh sách thành viên khớp với assignment; quyền FA vẫn chỉ xét qua assignment, quyết định 1). Người từng bị thu hồi được đề bạt lại: tạo assignment **mới**, không bật lại dòng cũ |
+| 30 | **Mã không được ủy quyền** (hằng số `NON_DELEGABLE_PERMISSION_CODES`, hiện chỉ `ADMIN_MANAGE`) → `403 FORBIDDEN`, cho cả `POST` và `PUT .../permissions`, đúng dòng "cấp vượt quyền được ủy quyền" của hợp đồng gốc; kiểm tra này chạy trước kiểm tra mã không tồn tại (`422`) và không phản hồi lại mã. **Hệ quả:** `PUT` mà tập quyền gửi lên vẫn chứa `ADMIN_MANAGE` cũng bị `403`, kể cả khi assignment cũ đã giữ mã này từ trước: muốn lưu thì phải bỏ mã đó khỏi danh sách (khi đó nó bị gỡ khỏi assignment). Danh sách cấm do lead mở rộng (KI-09) |
+| 31 | Chống trùng: DB chưa có unique cho assignment còn hiệu lực (KI-08) nên code bảo đảm: mọi đề bạt xếp hàng trên dòng `clan_memberships (clan, user)` bằng `FOR NO KEY UPDATE`; request sau thấy assignment của request trước và trả `409`. Thứ tự khóa của vòng đời FA: dòng membership, rồi các dòng assignment (`FOR NO KEY UPDATE`, `ORDER BY assignment_id`), rồi `user_roles`. Không khóa dòng `users`. `uq_active_user_role_scope` là lớp bảo vệ thứ hai ở DB cho dòng vai trò |
+| 32 | Đích đề bạt là chủ họ hiện tại (kể cả BO tự đề bạt mình) hoặc người còn vai trò `BUSINESS_OWNER` trong clan → `409`. User không có membership `ACTIVE` trong clan (kể cả thành viên của clan khác) → `404`. Không kiểm tra trạng thái tài khoản (`users.status`) của đích: chỉ cần membership `ACTIVE` |
+| 33 | `DELETE /clans/{id}/admins/{user_id}` thu hồi **mọi** assignment còn hiệu lực của user trong clan (toàn clan, theo chi/ngành hoặc trùng): đặt `revoked_at`, **xóa các dòng permission** của chúng (lịch sử mã quyền nằm trong `audit_logs.old_data`) và đặt `revoked_at` cho dòng `user_roles` `FAMILY_ADMIN` của clan. Không yêu cầu membership còn `ACTIVE`. Không phải FA → `404`. Sau đó `PUT .../permissions` trả `404` cho user đó |
+| 34 | Audit: `family_admin.assign` (`new_data`: `user_id`, `permission_codes`, `role_granted`, `request_id`) và `family_admin.revoke` (`old_data`: `user_id`, `assignment_ids`, `permission_codes` trước khi thu hồi; `new_data`: số assignment và dòng vai trò đã thu hồi, `request_id`); không chứa `firebase_uid`, email hay token |
 
 ### Chưa chốt (giả định từ Mốc C1)
 

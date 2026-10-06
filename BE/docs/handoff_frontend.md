@@ -1,6 +1,6 @@
 # Bàn giao cho Frontend — API xác thực và quản trị người dùng
 
-Cập nhật 06/10/2026 (Mốc G). Tài liệu này nói **cách dùng** API đã cài. Hợp đồng đầy đủ nằm ở [`api_contract.md`](api_contract.md); sơ đồ OpenAPI sống ở `/docs` và `/openapi.json` của server (khai báo cả mã lỗi từng endpoint).
+Cập nhật 06/10/2026 (Mốc F2). Tài liệu này nói **cách dùng** API đã cài. Hợp đồng đầy đủ nằm ở [`api_contract.md`](api_contract.md); sơ đồ OpenAPI sống ở `/docs` và `/openapi.json` của server (khai báo cả mã lỗi từng endpoint).
 
 ## 1. Tóm tắt
 
@@ -21,7 +21,7 @@ Endpoint đã cài:
 | `GET /auth/me`, `POST /auth/logout`, `POST /auth/change-password` | Mọi người đã đăng nhập, **kể cả phiên hạn chế** |
 | `GET /admin/users`, `GET /admin/users/{user_id}`, `PATCH /admin/users/{user_id}/status` | System Admin |
 | `GET /clans/{clan_id}/users` | Business Owner, hoặc Family Admin được ủy quyền `MEMBER_ACCOUNT_MANAGE` |
-| `PUT /clans/{clan_id}/admins/{user_id}/permissions` | Business Owner |
+| `POST /clans/{clan_id}/admins` (đề bạt Family Admin), `DELETE /clans/{clan_id}/admins/{user_id}` (thu hồi), `PUT /clans/{clan_id}/admins/{user_id}/permissions` (sửa quyền) | Business Owner |
 
 **Chưa có** (đừng nối màn hình): đăng ký và duyệt Business, cấp Owner, kích hoạt dòng họ (Mốc E); reset mật khẩu qua BE (xem mục 9).
 
@@ -99,13 +99,13 @@ Mọi lỗi có cùng một dạng (kể cả `404`, `405`, `422`, `500`, `503`)
 | 401 | `INVALID_ID_TOKEN` | ID token sai/hết hạn/thu hồi, hoặc tài khoản chưa có trong hệ thống, hoặc ID token lấy trước lần đổi mật khẩu | Đăng nhập lại bằng Firebase |
 | 401 | `SESSION_INVALID` | Phiên hết hạn, đã đăng xuất, bị thu hồi (khóa, đổi mật khẩu) | Xóa phiên, đăng nhập lại |
 | 401 | `RECENT_LOGIN_REQUIRED` | `recent_id_token` không đủ mới hoặc sai người | Yêu cầu xác thực lại rồi thử lại |
-| 403 | `FORBIDDEN` | Thiếu quyền, hoặc dòng họ chưa `ACTIVE` | Ẩn/vô hiệu chức năng, báo không đủ quyền |
+| 403 | `FORBIDDEN` | Thiếu quyền, hoặc dòng họ chưa `ACTIVE`, hoặc mã quyền không được ủy quyền (hiện là `ADMIN_MANAGE`) khi đề bạt/sửa quyền Family Admin | Ẩn/vô hiệu chức năng, báo không đủ quyền |
 | 403 | `ACCOUNT_BLOCKED` | Tài khoản `LOCKED`, `SUSPENDED`, `DISABLED` (hoặc `PENDING` không có cờ đổi mật khẩu) | Báo tài khoản không dùng được, liên hệ quản trị |
 | 403 | `PASSWORD_CHANGE_REQUIRED` | Phiên hạn chế gọi API ngoài 3 API được phép | Chuyển sang màn đổi mật khẩu |
 | 403 | `TEMPORARY_PASSWORD_EXPIRED` | Mật khẩu tạm đã hết hạn | Báo cần quản trị cấp lại |
 | 404 | `NOT_FOUND` | Không tồn tại **hoặc không nhìn thấy** (kể cả dòng họ khác) | Báo không tìm thấy; đừng suy ra tồn tại hay không |
 | 405 | `METHOD_NOT_ALLOWED` | Sai phương thức | Lỗi lập trình |
-| 409 | `STATE_CONFLICT` | Trạng thái đã đổi hoặc chuyển không hợp lệ (ví dụ khóa System Admin cuối cùng) | Tải lại dữ liệu, báo người dùng |
+| 409 | `STATE_CONFLICT` | Trạng thái đã đổi hoặc chuyển không hợp lệ (ví dụ khóa System Admin cuối cùng); đề bạt người đã là Family Admin, hoặc là chủ họ | Tải lại dữ liệu, báo người dùng |
 | 422 | `VALIDATION_ERROR` | Sai schema, thiếu trường, trường lạ, mã quyền không tồn tại | Hiện lỗi theo tên trường |
 | 429 | `RATE_LIMITED` | Hợp đồng có, **BE chưa cài** (KI-06) | Chưa gặp |
 | 500 | `INTERNAL_ERROR` | Lỗi không lường trước | Báo lỗi chung kèm `request_id` |
@@ -138,7 +138,12 @@ Mọi API danh sách nhận `page` (≥ 1, mặc định 1) và `page_size` (1�
 - System Admin không tự động có quyền trong dòng họ nào: `GET /clans/{id}/users` với System Admin trả `404`.
 - Khóa tài khoản (`PATCH .../status`) thu hồi mọi phiên của người đó: lần gọi tiếp theo của họ trả `401 SESSION_INVALID`, và đổi lại ID token trả `403 ACCOUNT_BLOCKED`.
 - Bảng chuyển trạng thái tài khoản (tạm thời, chờ trưởng nhóm): `ACTIVE` → `LOCKED`/`SUSPENDED`/`DISABLED`; `LOCKED`/`SUSPENDED` → `ACTIVE`/(nhau)/`DISABLED`; `DISABLED` → `ACTIVE`; `PENDING` → chỉ `DISABLED`. Mọi chuyển khác, hoặc chuyển về chính trạng thái hiện tại, trả `409`. Không thể khóa hoặc vô hiệu hóa System Admin cuối cùng (`409`).
-- `PUT .../permissions` thay **toàn bộ** tập quyền; danh sách rỗng xóa hết quyền nhưng vẫn giữ tư cách Family Admin. Chưa có API cấp Family Admin mới hay thu hồi hẳn.
+- **Vòng đời Family Admin** (chỉ Business Owner, dòng họ phải `ACTIVE`):
+  - `POST /clans/{clan_id}/admins` với `{user_id, permission_codes}` đề bạt một **thành viên `ACTIVE`** của dòng họ thành Family Admin cho **cả dòng họ**; `permission_codes` có thể rỗng hoặc bỏ qua. `201` trả `assignment_id`. Người không phải thành viên `ACTIVE` của dòng họ này: `404`. Người đã là Family Admin, hoặc là chủ họ/người còn vai trò Business Owner của dòng họ: `409`. Gọi hai lần cùng lúc cho cùng một người thì chỉ một lần thành công.
+  - `PUT .../permissions` thay **toàn bộ** tập quyền của Family Admin; danh sách rỗng xóa hết quyền nhưng vẫn giữ tư cách Family Admin.
+  - `DELETE /clans/{clan_id}/admins/{user_id}` thu hồi **hẳn** (`204`): mất mọi quyền ngay ở request kế tiếp của người đó, vẫn là thành viên của dòng họ. Không phải Family Admin: `404`. Có thể đề bạt lại sau đó (tạo assignment mới).
+  - Mã quyền phải có trong hệ thống (mã lạ: `422`) và **không được ủy quyền** `ADMIN_MANAGE` (`403`); với `PUT`, tập quyền gửi lên vẫn chứa `ADMIN_MANAGE` cũng bị `403`, phải bỏ mã đó. Hiện chỉ `MEMBER_ACCOUNT_MANAGE` thật sự mở thêm chức năng (xem danh sách tài khoản của dòng họ); các mã khác được lưu nhưng chưa có tác dụng.
+  - Danh sách tài khoản của dòng họ (`GET /clans/{clan_id}/users`) và `GET /auth/me` phản ánh thay đổi ngay: `is_family_admin`, `roles` có `FAMILY_ADMIN`.
 
 ## 9. Giới hạn đã biết
 
@@ -212,6 +217,8 @@ Phản hồi: **200**
         "BUSINESS_OWNER"
       ],
       "permissions": [
+        "clan.fa.assign",
+        "clan.fa.revoke",
         "clan.fa_permissions.update",
         "clan.users.list"
       ]
@@ -591,6 +598,8 @@ Phản hồi: **200**
         "BUSINESS_OWNER"
       ],
       "permissions": [
+        "clan.fa.assign",
+        "clan.fa.revoke",
         "clan.fa_permissions.update",
         "clan.users.list"
       ]
@@ -807,6 +816,162 @@ Phản hồi: **422**
   "error": {
     "code": "VALIDATION_ERROR",
     "message": "Invalid input. Fields: permission_codes (unknown permission code)",
+    "request_id": "6df2c3e1-27f4-43c4-b2e3-97fe67742e24"
+  }
+}
+```
+
+#### Business Owner: đề bạt một thành viên thành Family Admin
+
+`permission_codes` có thể rỗng hoặc bỏ qua. Hiệu lực ngay ở request kế tiếp của người được đề bạt.
+
+Yêu cầu:
+
+```http
+POST /api/v1/clans/{clan_id}/admins
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+```json
+{
+  "user_id": "<user_id của thành viên>",
+  "permission_codes": [
+    "MEMBER_ACCOUNT_MANAGE"
+  ]
+}
+```
+
+Phản hồi: **201**
+
+```json
+{
+  "clan_id": "00000000-0000-4000-8000-000000000007",
+  "user_id": "00000000-0000-4000-8000-000000000012",
+  "assignment_id": "00000000-0000-4000-8000-000000000013",
+  "permission_codes": [
+    "MEMBER_ACCOUNT_MANAGE"
+  ],
+  "created_at": "2026-10-05T08:00:00Z"
+}
+```
+
+#### Đề bạt người đã là Family Admin
+
+Yêu cầu:
+
+```http
+POST /api/v1/clans/{clan_id}/admins
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+```json
+{
+  "user_id": "<user_id của thành viên>"
+}
+```
+
+Phản hồi: **409**
+
+```json
+{
+  "error": {
+    "code": "STATE_CONFLICT",
+    "message": "The user is already a Family Admin of this clan.",
+    "request_id": "6df2c3e1-27f4-43c4-b2e3-97fe67742e24"
+  }
+}
+```
+
+#### Mã quyền không được ủy quyền
+
+Yêu cầu:
+
+```http
+POST /api/v1/clans/{clan_id}/admins
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+```json
+{
+  "user_id": "<user_id của thành viên>",
+  "permission_codes": [
+    "ADMIN_MANAGE"
+  ]
+}
+```
+
+Phản hồi: **403**
+
+```json
+{
+  "error": {
+    "code": "FORBIDDEN",
+    "message": "One or more permission codes cannot be delegated.",
+    "request_id": "6df2c3e1-27f4-43c4-b2e3-97fe67742e24"
+  }
+}
+```
+
+#### Người không phải thành viên đang hoạt động của dòng họ
+
+Yêu cầu:
+
+```http
+POST /api/v1/clans/{clan_id}/admins
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+```json
+{
+  "user_id": "<user_id>"
+}
+```
+
+Phản hồi: **404**
+
+```json
+{
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "Resource not found.",
+    "request_id": "6df2c3e1-27f4-43c4-b2e3-97fe67742e24"
+  }
+}
+```
+
+#### Business Owner: thu hồi Family Admin
+
+Mất mọi quyền Family Admin ngay; vẫn là thành viên của dòng họ.
+
+Yêu cầu:
+
+```http
+DELETE /api/v1/clans/{clan_id}/admins/{user_id}
+Authorization: Bearer <access_token>
+```
+
+Phản hồi: **204**
+
+#### Thu hồi người không còn là Family Admin
+
+Yêu cầu:
+
+```http
+DELETE /api/v1/clans/{clan_id}/admins/{user_id}
+Authorization: Bearer <access_token>
+```
+
+Phản hồi: **404**
+
+```json
+{
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "Resource not found.",
     "request_id": "6df2c3e1-27f4-43c4-b2e3-97fe67742e24"
   }
 }

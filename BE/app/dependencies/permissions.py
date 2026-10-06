@@ -57,6 +57,8 @@ class Action(StrEnum):
     # Clan scope.
     CLAN_USERS_LIST = "clan.users.list"
     CLAN_FA_PERMISSIONS_UPDATE = "clan.fa_permissions.update"
+    CLAN_FA_ASSIGN = "clan.fa.assign"
+    CLAN_FA_REVOKE = "clan.fa.revoke"
 
 
 class ScopeKind(Enum):
@@ -99,7 +101,16 @@ ACTION_RULES: dict[Action, Rule] = {
     ),
     # BO only: "không cấp vượt quyền được ủy quyền" -> FA cannot edit FA permissions.
     Action.CLAN_FA_PERMISSIONS_UPDATE: Rule(ScopeKind.CLAN, allow_owner=True),
+    # Appointing / revoking a Family Admin is BO only, like editing their permissions.
+    Action.CLAN_FA_ASSIGN: Rule(ScopeKind.CLAN, allow_owner=True),
+    Action.CLAN_FA_REVOKE: Rule(ScopeKind.CLAN, allow_owner=True),
 }
+
+# Permission codes that exist in the permissions table but may NOT be delegated to a
+# Family Admin (POST /clans/{id}/admins and PUT .../permissions answer 403 FORBIDDEN).
+# ADMIN_MANAGE ("Quản lý Family Admin") would let a Family Admin manage Family Admins,
+# which is reserved to the Business Owner. The lead may extend this set (KI-09).
+NON_DELEGABLE_PERMISSION_CODES: frozenset[str] = frozenset({"ADMIN_MANAGE"})
 
 
 @dataclass(frozen=True)

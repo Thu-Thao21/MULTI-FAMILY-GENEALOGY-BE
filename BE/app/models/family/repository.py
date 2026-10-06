@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user_access.entities import User
@@ -297,6 +297,81 @@ class FamilyRepository:
             .execution_options(populate_existing=True)
         )
         return list((await self._session.execute(stmt)).scalars().all())
+
+    async def lock_membership(
+        self, clan_id: uuid.UUID, user_id: uuid.UUID
+    ) -> ClanMembership | None:
+        """Lock the (clan, user) membership row, FOR NO KEY UPDATE, and return it fresh.
+
+        This row is the serialization point for appointing a Family Admin: two concurrent
+        appointments of the same user queue here, and the second one then sees the first
+        one's committed assignment. (family_admin_assignments has no unique constraint,
+        KI-08, so the code must provide the guarantee.) Nothing references clan_memberships
+        by foreign key, so this lock cannot take part in an FK lock cycle. Lock order for the
+        Family Admin lifecycle: this row first, then assignment rows, then user_roles rows.
+        """
+        stmt = (
+            select(ClanMembership)
+            .where(ClanMembership.clan_id == clan_id, ClanMembership.user_id == user_id)
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def create_fa_assignment(
+        self,
+        clan_id: uuid.UUID,
+        user_id: uuid.UUID,
+        *,
+        assigned_by: uuid.UUID,
+        now: datetime,
+    ) -> FamilyAdminAssignment:
+        """A clan-wide assignment (branch_id NULL). Flush only; the caller commits."""
+        row = FamilyAdminAssignment(
+            assignment_id=uuid.uuid4(),
+            user_id=user_id,
+            clan_id=clan_id,
+            branch_id=None,
+            assigned_by=assigned_by,
+            created_at=now,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def revoke_fa_assignments(
+        self, clan_id: uuid.UUID, user_id: uuid.UUID, *, now: datetime
+    ) -> list[uuid.UUID]:
+        """Set revoked_at on EVERY non-revoked assignment of the user in this clan and
+        return their ids (RETURNING), so the caller works on exactly the rows it revoked."""
+        result = await self._session.execute(
+            update(FamilyAdminAssignment)
+            .where(
+                FamilyAdminAssignment.clan_id == clan_id,
+                FamilyAdminAssignment.user_id == user_id,
+                FamilyAdminAssignment.revoked_at.is_(None),
+            )
+            .values(revoked_at=now)
+            .returning(FamilyAdminAssignment.assignment_id)
+        )
+        return sorted(result.scalars().all())
+
+    async def delete_all_fa_permissions(
+        self, clan_id: uuid.UUID, assignment_ids: list[uuid.UUID]
+    ) -> int:
+        """Delete every permission row of these assignments (only those of this clan)."""
+        if not assignment_ids:
+            return 0
+        in_clan = select(FamilyAdminAssignment.assignment_id).where(
+            FamilyAdminAssignment.clan_id == clan_id,
+            FamilyAdminAssignment.assignment_id.in_(assignment_ids),
+        )
+        result = await self._session.execute(
+            delete(FamilyAdminPermission).where(
+                FamilyAdminPermission.assignment_id.in_(in_clan)
+            )
+        )
+        return result.rowcount or 0
 
     async def list_assignment_permission_codes(self, assignment_id: uuid.UUID) -> set[str]:
         stmt = select(FamilyAdminPermission.permission_code).where(

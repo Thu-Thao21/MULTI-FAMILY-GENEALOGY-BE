@@ -111,6 +111,35 @@ class FamilyAdminPermissionsUpdateRequest(RequestModel):
         return value
 
 
+# ----- POST /clans/{id}/admins (BO) -----
+
+
+class FamilyAdminAssignRequest(RequestModel):
+    """Appoint an ACTIVE member of the clan as Family Admin for the WHOLE clan.
+
+    permission_codes is the initial set and may be empty. There is no branch_id: branch
+    scoped assignments are not created through the API (branches are not mapped yet).
+    """
+
+    user_id: uuid.UUID
+    permission_codes: list[PermissionCode] = Field(default_factory=list, max_length=100)
+
+    @field_validator("permission_codes")
+    @classmethod
+    def _no_duplicates(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("permission_codes must not contain duplicates")
+        return value
+
+
+class FamilyAdminAssignResponse(ResponseModel):
+    clan_id: uuid.UUID
+    user_id: uuid.UUID
+    assignment_id: uuid.UUID
+    permission_codes: list[str]
+    created_at: UtcDatetime
+
+
 class FamilyAdminPermissionsResponse(ResponseModel):
     clan_id: uuid.UUID
     user_id: uuid.UUID

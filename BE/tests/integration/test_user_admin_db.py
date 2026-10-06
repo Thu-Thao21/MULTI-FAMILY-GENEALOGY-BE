@@ -334,15 +334,24 @@ async def test_unknown_code_is_422_and_other_codes_are_not_applied(real_client, 
     assert await fa_codes(session, assignment.assignment_id) == {FA_CODE}
 
 
-async def test_every_code_in_the_permissions_table_is_accepted(real_client, session, world):
-    """No deny list: every code of the permissions table can be delegated (lead decides)."""
+async def test_every_delegable_code_in_the_permissions_table_is_accepted(real_client, session, world):
+    """Every code of the permissions table except the non-delegable ones (Mốc F2 Q1:
+    ADMIN_MANAGE -> 403) can be delegated; adding a non-delegable code turns the PUT into 403."""
+    from app.dependencies.permissions import NON_DELEGABLE_PERMISSION_CODES
+
     all_codes = list((await session.execute(select_permission_codes())).scalars().all())
     assert FA_CODE in all_codes and len(all_codes) >= 10
+    assert NON_DELEGABLE_PERMISSION_CODES <= set(all_codes)
+    delegable = [c for c in all_codes if c not in NON_DELEGABLE_PERMISSION_CODES]
     clan, bo = await world.business_owner()
     fa, assignment = await fa_in(world, clan)
-    r = await put(real_client, await world.session_for(bo), clan, fa.user_id, all_codes)
-    assert r.status_code == 200 and set(r.json()["permission_codes"]) == set(all_codes)
-    assert await fa_codes(session, assignment.assignment_id) == set(all_codes)
+    token = await world.session_for(bo)
+    r = await put(real_client, token, clan, fa.user_id, delegable)
+    assert r.status_code == 200 and set(r.json()["permission_codes"]) == set(delegable)
+    assert await fa_codes(session, assignment.assignment_id) == set(delegable)
+    r = await put(real_client, token, clan, fa.user_id, all_codes)
+    assert (r.status_code, code(r)) == (403, "FORBIDDEN")
+    assert await fa_codes(session, assignment.assignment_id) == set(delegable)
 
 
 def select_permission_codes():

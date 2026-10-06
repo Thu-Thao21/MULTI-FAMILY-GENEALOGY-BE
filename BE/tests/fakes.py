@@ -264,6 +264,45 @@ class FakeUserAccessRepo:
     async def existing_permission_codes(self, codes):
         return set(codes) & self.known_permissions
 
+    # --- Mốc F2: clan role rows ---
+    role_codes_present: set[str] = field(
+        default_factory=lambda: {"SYSTEM_ADMIN", "BUSINESS_OWNER", "FAMILY_ADMIN", "FAMILY_MEMBER"}
+    )
+
+    async def get_role_by_code(self, code):
+        if code not in self.role_codes_present:
+            return None
+
+        class _Role:
+            pass
+
+        role = _Role()
+        role.role_id = uuid.uuid5(uuid.NAMESPACE_DNS, code)
+        role.code = code
+        return role
+
+    async def add_clan_role(self, *, user_id, role_id, clan_id, granted_by, now):
+        self.calls.append("add_clan_role")
+        code = next(c for c in self.role_codes_present if uuid.uuid5(uuid.NAMESPACE_DNS, c) == role_id)
+        # uq_active_user_role_scope: a second ACTIVE grant of (user, role, clan) is rejected.
+        if any(
+            g.user_id == user_id and g.role_code == code and g.clan_id == clan_id and not g.revoked
+            for g in self.roles
+        ):
+            from sqlalchemy.exc import IntegrityError
+
+            raise IntegrityError("INSERT user_roles", {}, Exception("uq_active_user_role_scope"))
+        self.roles.append(RoleGrant(user_id, code, clan_id))
+
+    async def revoke_clan_role(self, *, user_id, clan_id, role_code, now):
+        self.calls.append("revoke_clan_role")
+        count = 0
+        for g in self.roles:
+            if g.user_id == user_id and g.clan_id == clan_id and g.role_code == role_code and not g.revoked:
+                g.revoked = True
+                count += 1
+        return count
+
 
 @dataclass
 class FakeAssignment:
@@ -391,6 +430,35 @@ class FakeFamilyRepo:
     async def delete_fa_permissions(self, assignment_id, codes):
         self.calls.append("delete_fa_permissions")
         self._assignment(assignment_id).codes.difference_update(codes)
+
+    # --- Mốc F2: Family Admin lifecycle ---
+    async def lock_membership(self, clan_id, user_id):
+        self.calls.append("lock_membership")
+        return await self.get_membership(clan_id, user_id)
+
+    async def create_fa_assignment(self, clan_id, user_id, *, assigned_by, now):
+        self.calls.append("create_fa_assignment")
+        row = FakeAssignment(clan_id, user_id, None, set(), False)
+        self.assignments.append(row)
+        return row.as_entity()
+
+    async def revoke_fa_assignments(self, clan_id, user_id, *, now):
+        self.calls.append("revoke_fa_assignments")
+        ids = []
+        for a in self.assignments:
+            if a.clan_id == clan_id and a.user_id == user_id and not a.revoked:
+                a.revoked = True
+                ids.append(a.assignment_id)
+        return sorted(ids)
+
+    async def delete_all_fa_permissions(self, clan_id, assignment_ids):
+        self.calls.append("delete_all_fa_permissions")
+        count = 0
+        for a in self.assignments:
+            if a.clan_id == clan_id and a.assignment_id in assignment_ids:
+                count += len(a.codes)
+                a.codes.clear()
+        return count
 
     async def list_memberships_with_clans(self, user_id):
         return [

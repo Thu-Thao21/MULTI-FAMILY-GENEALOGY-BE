@@ -553,3 +553,399 @@ async def test_fa_assignment_rows_are_locked_with_no_key_update():
     await FamilyRepository(session).lock_active_fa_assignments(uuid.uuid4(), uuid.uuid4())
     sql = str(session.statements[0].compile(dialect=postgresql.dialect()))
     assert "FOR NO KEY UPDATE" in sql and "ORDER BY family_admin_assignments.assignment_id" in sql
+
+
+# =====================================================================================
+# Mốc F2: appoint and revoke Family Admin
+# =====================================================================================
+
+from app.dependencies.permissions import (  # noqa: E402
+    ACTION_RULES,
+    NON_DELEGABLE_PERMISSION_CODES,
+    Action,
+    owner_actions,
+)
+from sqlalchemy.exc import IntegrityError  # noqa: E402
+
+
+def make_member(w, clan, status="ACTIVE"):
+    user = w.user()
+    w.family.add_member(clan, user, status=status)
+    return user
+
+
+def post_admin(w, token, clan, user_id, codes=None, **extra):
+    body = {"user_id": str(user_id), **extra}
+    if codes is not None:
+        body["permission_codes"] = codes
+    return w.client.post(f"/api/v1/clans/{clan.clan_id}/admins", headers=h(token), json=body)
+
+
+def delete_admin(w, token, clan, user_id):
+    return w.client.delete(f"/api/v1/clans/{clan.clan_id}/admins/{user_id}", headers=h(token))
+
+
+def active_assignments(w, clan, user):
+    return [
+        a for a in w.family.assignments
+        if a.clan_id == clan.clan_id and a.user_id == user.user_id and not a.revoked
+    ]
+
+
+def active_fa_roles(w, clan, user):
+    return [
+        g for g in w.repo.roles
+        if g.user_id == user.user_id and g.clan_id == clan.clan_id
+        and g.role_code == "FAMILY_ADMIN" and not g.revoked
+    ]
+
+
+# ----- policy surface -----
+
+
+def test_new_actions_are_bo_only_like_the_existing_fa_permissions_action():
+    reference = ACTION_RULES[Action.CLAN_FA_PERMISSIONS_UPDATE]
+    assert ACTION_RULES[Action.CLAN_FA_ASSIGN] == reference
+    assert ACTION_RULES[Action.CLAN_FA_REVOKE] == reference
+    assert reference.allow_owner and reference.fa_permission is None
+    assert {"clan.fa.assign", "clan.fa.revoke"} <= set(owner_actions())
+
+
+def test_only_admin_manage_is_non_delegable():
+    assert NON_DELEGABLE_PERMISSION_CODES == frozenset({"ADMIN_MANAGE"})
+
+
+# ----- POST /clans/{id}/admins -----
+
+
+def test_bo_appoints_a_member_and_it_takes_effect_at_once(w):
+    clan, bo, token = w.bo()
+    member = make_member(w, clan)
+    member_token = w.token(member)
+    url = f"/api/v1/clans/{clan.clan_id}/users"
+    assert code(w.client.get(url, headers=h(member_token))) == "FORBIDDEN"
+
+    r = post_admin(w, token, clan, member.user_id, [FA_CODE, "PERSON_VIEW"])
+    assert r.status_code == 201
+    body = r.json()
+    assert set(body) == {"clan_id", "user_id", "assignment_id", "permission_codes", "created_at"}
+    assert body["user_id"] == str(member.user_id) and body["clan_id"] == str(clan.clan_id)
+    assert body["permission_codes"] == sorted([FA_CODE, "PERSON_VIEW"])
+    [assignment] = active_assignments(w, clan, member)
+    assert str(assignment.assignment_id) == body["assignment_id"]
+    assert assignment.branch_id is None and assignment.codes == {FA_CODE, "PERSON_VIEW"}
+    assert len(active_fa_roles(w, clan, member)) == 1 and w.db.commits == 1
+
+    assert w.client.get(url, headers=h(member_token)).status_code == 200  # next request
+    listed = {i["user_id"]: i for i in w.client.get(url, headers=h(token)).json()["items"]}
+    assert listed[str(member.user_id)]["is_family_admin"] is True
+    assert "FAMILY_ADMIN" in listed[str(member.user_id)]["roles"]
+
+    [log] = w.repo.audit
+    assert log["action"] == "family_admin.assign" and log["clan_id"] == clan.clan_id
+    assert log["actor_id"] == bo.user_id and log["entity_id"] == assignment.assignment_id
+    assert log["old_data"] is None
+    assert log["new_data"]["user_id"] == str(member.user_id)
+    assert log["new_data"]["permission_codes"] == sorted([FA_CODE, "PERSON_VIEW"])
+    assert log["new_data"]["role_granted"] is True
+    assert member.firebase_uid not in str(log) + r.text and member.email not in str(log)
+
+
+def test_permission_codes_are_optional_and_may_be_empty(w):
+    clan, _bo, token = w.bo()
+    omitted, empty = make_member(w, clan), make_member(w, clan)
+    r = post_admin(w, token, clan, omitted.user_id)
+    assert r.status_code == 201 and r.json()["permission_codes"] == []
+    r = post_admin(w, token, clan, empty.user_id, [])
+    assert r.status_code == 201 and r.json()["permission_codes"] == []
+    assert active_assignments(w, clan, omitted)[0].codes == set()
+
+
+def test_a_new_assignment_can_be_edited_with_the_existing_put(w):
+    clan, _bo, token = w.bo()
+    member = make_member(w, clan)
+    new_id = post_admin(w, token, clan, member.user_id, ["PERSON_VIEW"]).json()["assignment_id"]
+    r = put(w, token, clan, member, [FA_CODE])
+    assert r.status_code == 200
+    assert r.json()["assignment_id"] == new_id and r.json()["permission_codes"] == [FA_CODE]
+    assert w.client.get(f"/api/v1/clans/{clan.clan_id}/users", headers=h(w.token(member))).status_code == 200
+
+
+def test_non_delegable_code_is_403_and_nothing_is_created(w):
+    clan, _bo, token = w.bo()
+    member = make_member(w, clan)
+    for codes in (["ADMIN_MANAGE"], [FA_CODE, "ADMIN_MANAGE"], ["MADE_UP", "ADMIN_MANAGE"]):
+        r = post_admin(w, token, clan, member.user_id, codes)
+        assert (r.status_code, code(r)) == (403, "FORBIDDEN")
+        assert "ADMIN_MANAGE" not in r.text  # codes are never echoed
+    assert active_assignments(w, clan, member) == [] and w.repo.audit == [] and w.db.commits == 0
+
+
+def test_unknown_code_is_422_and_changes_nothing(w):
+    clan, _bo, token = w.bo()
+    member = make_member(w, clan)
+    r = post_admin(w, token, clan, member.user_id, [FA_CODE, "MADE_UP_CODE"])
+    assert (r.status_code, code(r)) == (422, "VALIDATION_ERROR") and "MADE_UP_CODE" not in r.text
+    assert active_assignments(w, clan, member) == []
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"user_id": "not-a-uuid"},
+        {"user_id": str(uuid.uuid4()), "permission_codes": ["A", "A"]},
+        {"user_id": str(uuid.uuid4()), "permission_codes": ["bad code"]},
+        {"user_id": str(uuid.uuid4()), "branch_id": str(uuid.uuid4())},  # no branch scoping
+        {"user_id": str(uuid.uuid4()), "extra": 1},
+    ],
+)
+def test_assign_body_validation(w, body):
+    clan, _bo, token = w.bo()
+    r = w.client.post(f"/api/v1/clans/{clan.clan_id}/admins", headers=h(token), json=body)
+    assert (r.status_code, code(r)) == (422, "VALIDATION_ERROR")
+
+
+def test_target_must_be_an_active_member_of_this_clan(w):
+    clan, _bo, token = w.bo()
+    assert code(post_admin(w, token, clan, uuid.uuid4())) == "NOT_FOUND"           # unknown user
+    assert code(post_admin(w, token, clan, w.user().user_id)) == "NOT_FOUND"       # not a member
+    for status in ("INVITED", "SUSPENDED", "REVOKED"):
+        member = make_member(w, clan, status)
+        assert code(post_admin(w, token, clan, member.user_id)) == "NOT_FOUND", status
+    revoked_at = make_member(w, clan)
+    next(m for m in w.family.memberships if m.user_id == revoked_at.user_id).revoked_at = utcnow()
+    assert code(post_admin(w, token, clan, revoked_at.user_id)) == "NOT_FOUND"
+    other_clan, _bo2, _ = w.bo()
+    foreign = make_member(w, other_clan)                                             # member elsewhere
+    assert code(post_admin(w, token, clan, foreign.user_id)) == "NOT_FOUND"
+    assert w.repo.audit == [] and w.family.assignments == []
+
+
+def test_already_a_family_admin_is_409(w):
+    clan, _bo, token = w.bo()
+    fa, assignment = w.fa(clan, FA_CODE)
+    r = post_admin(w, token, clan, fa.user_id, ["PERSON_VIEW"])
+    assert (r.status_code, code(r)) == (409, "STATE_CONFLICT")
+    assert assignment.codes == {FA_CODE} and len(active_assignments(w, clan, fa)) == 1
+    limited_only = make_member(w, clan)
+    w.family.add_fa_assignment(clan, limited_only, [FA_CODE], branch_id=uuid.uuid4())
+    assert code(post_admin(w, token, clan, limited_only.user_id)) == "STATE_CONFLICT"
+    assert w.repo.audit == []
+
+
+def test_the_owner_and_other_business_owner_role_holders_cannot_be_appointed(w):
+    clan, bo, token = w.bo()
+    r = post_admin(w, token, clan, bo.user_id, [FA_CODE])           # the BO appoints themselves
+    assert (r.status_code, code(r)) == (409, "STATE_CONFLICT")
+    former = make_member(w, clan)                                    # still holds the BO role
+    w.repo.grant(former, "BUSINESS_OWNER", clan.clan_id)
+    assert code(post_admin(w, token, clan, former.user_id)) == "STATE_CONFLICT"
+    assert w.family.assignments == [] and w.repo.audit == []
+
+
+def test_reappointing_after_a_revoke_creates_a_new_assignment_and_role(w):
+    clan, _bo, token = w.bo()
+    member = make_member(w, clan)
+    first = post_admin(w, token, clan, member.user_id, ["PERSON_VIEW"]).json()["assignment_id"]
+    assert delete_admin(w, token, clan, member.user_id).status_code == 204
+    second = post_admin(w, token, clan, member.user_id, [FA_CODE])
+    assert second.status_code == 201 and second.json()["assignment_id"] != first
+    assert len(active_assignments(w, clan, member)) == 1 and len(active_fa_roles(w, clan, member)) == 1
+    old = next(a for a in w.family.assignments if str(a.assignment_id) == first)
+    assert old.revoked and old.codes == set()  # history stays revoked, not reactivated
+
+
+def test_an_existing_active_family_admin_role_row_is_not_duplicated(w):
+    clan, _bo, token = w.bo()
+    member = make_member(w, clan)
+    w.repo.grant(member, "FAMILY_ADMIN", clan.clan_id)               # e.g. created by hand/seed
+    assert post_admin(w, token, clan, member.user_id).status_code == 201
+    assert len(active_fa_roles(w, clan, member)) == 1
+    assert w.repo.audit[-1]["new_data"]["role_granted"] is False
+    assert "add_clan_role" not in w.repo.calls
+
+
+def test_lost_race_on_the_role_row_is_409_and_rolled_back(w, monkeypatch):
+    clan, _bo, token = w.bo()
+    member = make_member(w, clan)
+
+    async def collide(**_kwargs):
+        raise IntegrityError("INSERT user_roles", {}, Exception("uq_active_user_role_scope"))
+
+    monkeypatch.setattr(w.repo, "add_clan_role", collide)
+    r = post_admin(w, token, clan, member.user_id)
+    assert (r.status_code, code(r)) == (409, "STATE_CONFLICT")
+    assert w.db.rollbacks == 1 and w.db.commits == 0
+
+
+def test_missing_family_admin_role_is_a_500_not_a_leak(w):
+    clan, _bo, token = w.bo()
+    member = make_member(w, clan)
+    w.repo.role_codes_present.discard("FAMILY_ADMIN")
+    quiet = TestClient(w.client.app, raise_server_exceptions=False)
+    r = quiet.post(f"/api/v1/clans/{clan.clan_id}/admins", headers=h(token),
+                   json={"user_id": str(member.user_id)})
+    assert (r.status_code, code(r)) == (500, "INTERNAL_ERROR") and "FAMILY_ADMIN" not in r.text
+
+
+def test_assign_lock_order_is_membership_then_assignments_then_role(w):
+    clan, _bo, token = w.bo()
+    member = make_member(w, clan)
+    w.family.calls.clear()
+    w.repo.calls.clear()
+    post_admin(w, token, clan, member.user_id, [FA_CODE])
+    order = w.family.calls
+    assert order.index("lock_membership") < order.index("lock_fa") < order.index("create_fa_assignment")
+    assert "lock_user" not in w.repo.calls  # never a FOR UPDATE on the users row
+    assert w.repo.calls.index("add_clan_role") >= 0
+
+
+def test_assign_access_rules(w):
+    clan, bo, token = w.bo()
+    member = make_member(w, clan)
+    # unauthenticated, FA (even with MEMBER_ACCOUNT_MANAGE) and plain members: 401/403
+    assert w.client.post(f"/api/v1/clans/{clan.clan_id}/admins", json={"user_id": str(member.user_id)}).status_code == 401
+    fa, _ = w.fa(clan, FA_CODE)
+    assert code(post_admin(w, w.token(fa), clan, member.user_id)) == "FORBIDDEN"
+    assert code(post_admin(w, w.token(member), clan, member.user_id)) == "FORBIDDEN"
+    # BO of another clan and a System Admin cannot even see this clan
+    _other, _bo2, other_token = w.bo()
+    assert code(post_admin(w, other_token, clan, member.user_id)) == "NOT_FOUND"
+    _sa, sa_token = w.sa()
+    assert code(post_admin(w, sa_token, clan, member.user_id)) == "NOT_FOUND"
+    assert code(post_admin(w, token, type("C", (), {"clan_id": uuid.uuid4()})(), member.user_id)) == "NOT_FOUND"
+    assert w.client.post("/api/v1/clans/not-a-uuid/admins", headers=h(token),
+                         json={"user_id": str(member.user_id)}).status_code == 404
+    pending_clan, _bo3, pending_token = w.bo("PENDING")
+    target = make_member(w, pending_clan)
+    assert code(post_admin(w, pending_token, pending_clan, target.user_id)) == "FORBIDDEN"
+    assert active_assignments(w, clan, member) == []
+    assert bo is not None
+
+
+def test_authorization_wins_over_validation_for_assign(w):
+    clan, _bo, _ = w.bo()
+    plain = make_member(w, clan)
+    r = w.client.post(f"/api/v1/clans/{clan.clan_id}/admins", headers=h(w.token(plain)), json={"bad": 1})
+    assert (r.status_code, code(r)) == (403, "FORBIDDEN")
+
+
+# ----- PUT and the non-delegable code -----
+
+
+def test_put_rejects_admin_manage_with_403(w):
+    clan, _bo, token = w.bo()
+    fa, assignment = w.fa(clan, FA_CODE)
+    r = put(w, token, clan, fa, [FA_CODE, "ADMIN_MANAGE"])
+    assert (r.status_code, code(r)) == (403, "FORBIDDEN") and "ADMIN_MANAGE" not in r.text
+    assert assignment.codes == {FA_CODE} and w.repo.audit == []
+
+
+def test_put_keeping_an_existing_admin_manage_is_403_and_dropping_it_works(w):
+    """Consequence accepted in the contract (decision 30): the legacy code must be removed."""
+    clan, _bo, token = w.bo()
+    fa, assignment = w.fa(clan, FA_CODE, "ADMIN_MANAGE")
+    assert code(put(w, token, clan, fa, [FA_CODE, "ADMIN_MANAGE"])) == "FORBIDDEN"
+    assert assignment.codes == {FA_CODE, "ADMIN_MANAGE"}
+    r = put(w, token, clan, fa, [FA_CODE])
+    assert r.status_code == 200 and assignment.codes == {FA_CODE}
+
+
+# ----- DELETE /clans/{id}/admins/{user_id} -----
+
+
+def test_bo_revokes_a_family_admin_with_immediate_effect(w):
+    clan, bo, token = w.bo()
+    member = make_member(w, clan)
+    post_admin(w, token, clan, member.user_id, [FA_CODE, "PERSON_VIEW"])
+    member_token = w.token(member)
+    url = f"/api/v1/clans/{clan.clan_id}/users"
+    assert w.client.get(url, headers=h(member_token)).status_code == 200
+
+    r = delete_admin(w, token, clan, member.user_id)
+    assert r.status_code == 204 and r.content == b""
+    assert code(w.client.get(url, headers=h(member_token))) == "FORBIDDEN"  # next request
+    assert active_assignments(w, clan, member) == [] and active_fa_roles(w, clan, member) == []
+    assert all(a.codes == set() for a in w.family.assignments)               # permission rows deleted
+    assert next(m for m in w.family.memberships if m.user_id == member.user_id).status == "ACTIVE"
+    log = w.repo.audit[-1]
+    assert log["action"] == "family_admin.revoke" and log["clan_id"] == clan.clan_id
+    assert log["actor_id"] == bo.user_id
+    assert log["old_data"]["user_id"] == str(member.user_id)
+    assert log["old_data"]["permission_codes"] == sorted([FA_CODE, "PERSON_VIEW"])  # history kept here
+    assert log["new_data"]["revoked_assignments"] == 1 and log["new_data"]["roles_revoked"] == 1
+    assert member.firebase_uid not in str(log) and member.email not in str(log)
+    # PUT on a revoked assignment: 404
+    assert code(put(w, token, clan, member, [FA_CODE])) == "NOT_FOUND"
+
+
+def test_revoke_takes_every_active_assignment_including_branch_limited_and_duplicates(w):
+    clan, _bo, token = w.bo()
+    fa, wide = w.fa(clan, FA_CODE)
+    limited = w.family.add_fa_assignment(clan, fa, ["PERSON_VIEW"], branch_id=uuid.uuid4())
+    duplicate = w.family.add_fa_assignment(clan, fa, ["TREE_VIEW"])
+    other_fa, other = w.fa(clan, FA_CODE)                       # a different user is untouched
+    assert delete_admin(w, token, clan, fa.user_id).status_code == 204
+    for row in (wide, limited, duplicate):
+        assert row.revoked and row.codes == set()
+    assert not other.revoked and other.codes == {FA_CODE}
+    assert w.repo.audit[-1]["new_data"]["revoked_assignments"] == 3
+    assert other_fa is not None
+
+
+def test_a_member_who_is_no_longer_active_can_still_be_revoked(w):
+    clan, _bo, token = w.bo()
+    fa, assignment = w.fa(clan, FA_CODE)
+    next(m for m in w.family.memberships if m.user_id == fa.user_id).status = "SUSPENDED"
+    assert delete_admin(w, token, clan, fa.user_id).status_code == 204 and assignment.revoked
+
+
+def test_revoke_of_someone_who_is_not_a_family_admin_is_404(w):
+    clan, bo, token = w.bo()
+    plain = make_member(w, clan)
+    assert code(delete_admin(w, token, clan, plain.user_id)) == "NOT_FOUND"     # member, not FA
+    assert code(delete_admin(w, token, clan, w.user().user_id)) == "NOT_FOUND"  # not a member
+    assert code(delete_admin(w, token, clan, uuid.uuid4())) == "NOT_FOUND"      # unknown
+    assert code(delete_admin(w, token, clan, bo.user_id)) == "NOT_FOUND"        # the BO is not an FA
+    gone, assignment = w.fa(clan, FA_CODE)
+    assignment.revoked = True
+    assert code(delete_admin(w, token, clan, gone.user_id)) == "NOT_FOUND"      # already revoked
+    other_clan, _bo2, _ = w.bo()
+    foreign, _ = w.fa(other_clan, FA_CODE)
+    assert code(delete_admin(w, token, clan, foreign.user_id)) == "NOT_FOUND"   # FA of another clan
+    assert w.repo.audit == []
+
+
+def test_revoke_access_rules(w):
+    clan, _bo, token = w.bo()
+    fa, assignment = w.fa(clan, FA_CODE)
+    other_fa, _ = w.fa(clan, FA_CODE)
+    assert w.client.delete(f"/api/v1/clans/{clan.clan_id}/admins/{fa.user_id}").status_code == 401
+    assert code(delete_admin(w, w.token(other_fa), clan, fa.user_id)) == "FORBIDDEN"   # FA cannot
+    assert code(delete_admin(w, w.token(fa), clan, fa.user_id)) == "FORBIDDEN"         # not even self
+    _o, _b, other_token = w.bo()
+    assert code(delete_admin(w, other_token, clan, fa.user_id)) == "NOT_FOUND"
+    _sa, sa_token = w.sa()
+    assert code(delete_admin(w, sa_token, clan, fa.user_id)) == "NOT_FOUND"
+    inactive, _ib, inactive_token = w.bo("SUSPENDED")
+    inactive_fa, inactive_assignment = w.fa(inactive, FA_CODE)
+    assert code(delete_admin(w, inactive_token, inactive, inactive_fa.user_id)) == "FORBIDDEN"
+    assert w.client.delete(f"/api/v1/clans/{clan.clan_id}/admins/not-a-uuid", headers=h(token)).status_code == 422
+    assert not assignment.revoked and not inactive_assignment.revoked
+
+
+def test_full_lifecycle_appoint_edit_revoke_and_appoint_again(w):
+    clan, _bo, token = w.bo()
+    member = make_member(w, clan)
+    first = post_admin(w, token, clan, member.user_id, ["PERSON_VIEW"]).json()["assignment_id"]
+    assert put(w, token, clan, member, [FA_CODE, "TREE_VIEW"]).status_code == 200
+    assert delete_admin(w, token, clan, member.user_id).status_code == 204
+    assert code(put(w, token, clan, member, [FA_CODE])) == "NOT_FOUND"
+    assert code(delete_admin(w, token, clan, member.user_id)) == "NOT_FOUND"   # second delete: 404
+    again = post_admin(w, token, clan, member.user_id, [FA_CODE])
+    assert again.status_code == 201 and again.json()["assignment_id"] != first
+    assert [log["action"] for log in w.repo.audit] == [
+        "family_admin.assign", "family_admin.permissions.update",
+        "family_admin.revoke", "family_admin.assign",
+    ]

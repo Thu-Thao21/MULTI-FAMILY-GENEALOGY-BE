@@ -72,6 +72,17 @@ EXPECTED: dict[tuple[str, str], dict] = {
         params={"clan_id", "page", "page_size", "membership_status"},
         errors={401: AUTHED_401, 403: AUTHED_403_FULL, 404: {"NOT_FOUND"}, 422: V422, 500: BOOM, 503: DB},
     ),
+    ("post", "/clans/{clan_id}/admins"): dict(
+        success=201, request="FamilyAdminAssignRequest", response="FamilyAdminAssignResponse",
+        params={"clan_id"},
+        errors={401: AUTHED_401, 403: AUTHED_403_FULL, 404: {"NOT_FOUND"}, 409: {"STATE_CONFLICT"},
+                422: V422, 500: BOOM, 503: DB},
+    ),
+    ("delete", "/clans/{clan_id}/admins/{user_id}"): dict(
+        success=204, request=None, response=None, params={"clan_id", "user_id"},
+        errors={401: AUTHED_401, 403: AUTHED_403_FULL, 404: {"NOT_FOUND"}, 422: V422,
+                500: BOOM, 503: DB},
+    ),
     ("put", "/clans/{clan_id}/admins/{user_id}/permissions"): dict(
         success=200, request="FamilyAdminPermissionsUpdateRequest",
         response="FamilyAdminPermissionsResponse", params={"clan_id", "user_id"},

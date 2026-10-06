@@ -101,7 +101,20 @@ Kết quả mong đợi:
 | Gỡ `FIREBASE_PROJECT_ID` rồi khởi động lại | `503 PROVIDER_UNAVAILABLE` |
 | Sau `logout`, gọi lại `/auth/me` | `401 SESSION_INVALID` |
 
-## 5. Số liệu chạy mới nhất (Mốc G, 06/10/2026)
+## 5. Số liệu chạy mới nhất (Mốc F2, 06/10/2026)
+
+Chạy từ `BE`, Python 3.13.7, `.venv` của dự án, sau `seed_dev.py --cleanup` (DB không còn dữ liệu seed, nên mọi test "SA cuối" chạy chứ không skip).
+
+| Lệnh | Kết quả |
+| --- | --- |
+| `pytest -q` | **320 passed, 137 deselected** (nhóm `integration`), 0 failed |
+| `ALLOW_DB_TESTS=1 pytest -m integration -q` | **136 passed, 1 xfailed** (KI-03, đúng dự kiến), 0 skipped, 0 failed, 23 phút 11 giây |
+| `python -c "import app.main"` | MAIN OK |
+| `scripts/check_orm_vs_db.py` | 0 errors, 0 INFO |
+
+Tổng cộng 457 test. Sau lần chạy, DB không còn dòng rác: 0 user, 0 clan, 0 audit_logs, 0 phiên; `roles`/`permissions`/`role_permissions` giữ nguyên (4/18/0). Mốc F2 thêm: nhóm test vòng đời Family Admin (đơn vị, DB thật, đồng thời) và test dev seed vẫn nhất quán. Test cũ của Mốc F `test_every_code_in_the_permissions_table_is_accepted` (ủy quyền mọi mã, kể cả `ADMIN_MANAGE`) đã đổi thành `test_every_delegable_code_in_the_permissions_table_is_accepted` theo quyết định Q1: mọi mã trừ `ADMIN_MANAGE` được nhận, thêm `ADMIN_MANAGE` thì `403`.
+
+### Số liệu Mốc G (trước F2, giữ để so sánh)
 
 Chạy từ `BE`, Python 3.13.7, `.venv` của dự án, sau `seed_dev.py --cleanup` (DB không còn dữ liệu seed, nên 3 test "SA cuối" chạy chứ không skip).
 
@@ -122,6 +135,7 @@ Nhóm test theo nội dung:
 | Xác thực, phiên, đăng nhập Firebase (giả lập) | `test_auth_dependency.py`, `test_auth_api.py`, `test_firebase_provider.py`, `integration/test_sessions_db.py`, `integration/test_auth_flow_db.py` |
 | Phân quyền, tenant, SA cuối | `test_permissions.py`, `integration/test_http_access.py`, `integration/test_system_admin_guard.py`, `integration/test_user_roles_unique_index.py`, `integration/test_last_sa_concurrency.py` |
 | Quản trị người dùng, ủy quyền FA | `test_user_admin_api.py`, `integration/test_user_admin_db.py`, `integration/test_user_admin_concurrency.py` |
+| Vòng đời Family Admin (đề bạt, thu hồi, tính nhất quán của dev seed) | `test_user_admin_api.py` (mục Mốc F2), `integration/test_family_admin_lifecycle_db.py`, `integration/test_family_admin_concurrency.py` |
 | Hợp đồng OpenAPI so với `api_contract.md` | `test_openapi_contract.py` |
 | CORS (mọi loại response, kể cả 500) | `test_cors.py` |
 | Cấu hình khởi động, lỗi `DATABASE_URL` không lộ chuỗi | `test_startup_checks.py`, `test_config_secrets.py` |
@@ -171,4 +185,19 @@ Ngày 06/10/2026: **No known vulnerabilities found** (pip-audit 2.10.1). Chỉ p
 | T31–33 Tích hợp | CORS FE; luồng Guest đến Owner; log có request_id không secret | Một phần | CORS: `test_cors.py`; log request_id/không secret: `test_auth_api.py`, `test_security_checks.py`. Luồng Guest đến Owner: Mốc E. Thử với FE thật: chưa |
 
 Ngoài mục 11 của kế hoạch, có thêm: đồng thời "SA cuối" và deadlock (`integration/test_user_admin_concurrency.py`, `test_last_sa_concurrency.py`), khóa dòng `FOR NO KEY UPDATE`, đối chiếu OpenAPI với hợp đồng, kiểm tra khởi động và lỗi cấu hình không lộ giá trị.
+
+## 8. Kiểm chứng test bắt lỗi bằng đột biến (Mốc F2)
+
+Mỗi đột biến được áp dụng tạm thời lên mã thật, chạy các test liên quan, rồi khôi phục; sau khi khôi phục băm sha256 của các file trùng với trước khi đột biến. Test chỉ đáng tin khi nó **fail** với đột biến.
+
+| Đột biến | Kết quả | Test bắt được |
+| --- | --- | --- |
+| Bỏ khóa dòng membership khi đề bạt | Bị bắt **một phần** | `test_two_simultaneous_appointments_of_one_user_only_one_wins[role-row-already-active]` fail (hai assignment được tạo). Biến thể `[fresh-user]` vẫn qua vì chỉ mục `uq_active_user_role_scope` trên dòng vai trò `FAMILY_ADMIN` chặn request thứ hai (lớp bảo vệ thứ hai). Vì vậy có biến thể "đã có dòng vai trò" để khóa membership là thứ duy nhất đứng giữa |
+| Bỏ khóa `FOR NO KEY UPDATE` trên các dòng assignment | Bị bắt (cả 4 test) | PUT với DELETE (quyền còn trên assignment đã thu hồi), DELETE rồi PUT (`ok` thay vì `404`), DELETE rồi đề bạt lại (`409` thay vì thành công), hai DELETE (`ok`, `ok` thay vì `ok`, `404`) |
+| DELETE lấy khóa membership **sau** khóa assignment (ngược thứ tự với POST) | Bị bắt | `test_delete_and_appoint_started_at_the_same_instant_never_deadlock`: `ERROR:DeadlockDetected` |
+| DELETE không xóa dòng permission | Bị bắt (cả 4 test đồng thời) | `revoked_with_permissions` khác 0 |
+| DELETE không thu hồi dòng vai trò `FAMILY_ADMIN` | Bị bắt | `test_revoke_deletes_permissions_revokes_assignment_and_role_with_immediate_effect`, `test_reappoint_after_revoke_does_not_violate_the_unique_role_index` |
+| Bỏ kiểm tra mã không được ủy quyền | Bị bắt | `test_non_delegable_code_is_403_and_nothing_is_created`, `test_put_rejects_admin_manage_with_403`, `test_put_keeping_an_existing_admin_manage_is_403_and_dropping_it_works` |
+
+**Bài học về thời gian (đã sửa trong test):** mỗi session mới cần ~4 giây để mở kết nối Neon, trong khi một request chỉ giữ khóa vài trăm mili giây. Lần đầu, các test "so le" (request thứ hai chờ sự kiện rồi mới chạy) không thật sự đồng thời: request thứ hai kết nối xong thì request thứ nhất đã commit, nên đột biến "bỏ khóa assignment" **không bị bắt** (4 test vẫn qua). Đã sửa bằng cách mở sẵn kết nối trước khi chờ sự kiện/barrier (`await session.connection()`), giữ commit lâu hơn (1,5 giây, hoặc 3,5 giây khi request sau cần nhiều truy vấn trước khi tới khóa), dùng sự kiện thay cho `sleep` cố định, và cho test deadlock gửi danh sách mã rỗng để thứ tự khóa xác định. Sau đó đột biến mới bị bắt. Khi viết test đồng thời mới, hãy luôn chạy thử một đột biến.
 

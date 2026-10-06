@@ -53,23 +53,28 @@ Mô tả gốc:
 - **Hiện trạng:** hợp đồng ghi `429 RATE_LIMITED` nhưng chưa có hạ tầng giới hạn. Token sai và UID lạ chỉ ghi log ứng dụng (không ghi DB), nên spam không làm phình `login_history`, nhưng mỗi request vẫn tốn một lần xác minh token.
 - **Cần lead quyết định:** limiter trong bộ nhớ (một instance) hay dùng chung (Redis/DB), ngưỡng theo IP và theo UID, và vị trí đặt (app hay reverse proxy).
 
-## KI-07 Chưa có API cấp Family Admin mới và thu hồi Family Admin hẳn (Mốc F)
+## KI-07 Chưa có API cấp Family Admin mới và thu hồi Family Admin hẳn — Đã xử lý (Mốc F2)
 
-- **Quyết định (Mốc F):** `PUT /clans/{id}/admins/{user_id}/permissions` chỉ **sửa tập quyền** của một assignment toàn clan đã có. Danh sách rỗng xóa hết quyền nhưng giữ assignment (`revoked_at` vẫn NULL, user vẫn là FA không có quyền nào).
-- **Chưa làm:** tạo assignment mới cho một thành viên (thuộc luồng mời FA, D05) và thu hồi FA hẳn (`revoked_at`). Hợp đồng PUT cũng trả `404` khi user chưa là FA, nên hiện chưa có đường nào tạo FA ngoài dữ liệu seed hoặc SQL.
-- **Phạm vi chi/ngành:** PUT không có `branch_id`, và bảng `branches` chưa có model. PUT chỉ tác động lên assignment toàn clan (`branch_id` NULL). User chỉ có assignment theo chi/ngành → `404`. Kiểm tra `branch_id` của tài nguyên chỉ có ở `authorize()`.
+- **Đã xử lý:**
+  - `POST /clans/{id}/admins` (BO đề bạt một thành viên `ACTIVE` thành FA toàn clan, kèm tập quyền ban đầu, có thể rỗng) và `DELETE /clans/{id}/admins/{user_id}` (thu hồi hẳn). `PUT .../permissions` của Mốc F sửa được assignment mới tạo.
+  - Hai action mới `clan.fa.assign`, `clan.fa.revoke`, chỉ BO, clan phải `ACTIVE`.
+  - Đề bạt ghi assignment, các dòng permission và một dòng `user_roles` `FAMILY_ADMIN` trong clan; thu hồi đặt `revoked_at` cho mọi assignment còn hiệu lực của user trong clan, **xóa các dòng permission** (lịch sử mã quyền nằm ở `audit_logs.old_data`) và đặt `revoked_at` cho dòng vai trò. Chi tiết: `api_contract.md` mục 6, quyết định 28 đến 34.
+- **Còn lại:**
+  - Phạm vi chi/ngành: `POST` luôn tạo assignment toàn clan (không nhận `branch_id`), `PUT` chỉ tác động lên assignment toàn clan; assignment theo chi/ngành chỉ có thể tạo bằng SQL hoặc dữ liệu seed, và chỉ `DELETE` mới thu hồi được. Bảng `branches` chưa có model. `authorize()` vẫn kiểm `branch_id` của tài nguyên.
+  - Đề bạt qua lời mời (`FAMILY_ADMIN_INVITE`, D05) chưa làm.
 
-## KI-08 DB không chặn hai assignment FA còn hiệu lực cho cùng (clan, user)
+## KI-08 DB không chặn hai assignment FA còn hiệu lực cho cùng (clan, user) — còn mở ở tầng DB
 
 - **Bảng:** `family_admin_assignments` chỉ có khóa chính; không có unique trên `(clan_id, user_id)` (kể cả `WHERE revoked_at IS NULL`; `branch_id` NULL cũng không bị unique).
-- **Hiện trạng:** `PUT .../permissions` trả `409 STATE_CONFLICT` khi user có nhiều hơn một assignment toàn clan còn hiệu lực, thay vì đoán assignment nào. `authorize()` thì hợp (union) quyền của mọi assignment còn hiệu lực. Test: `test_branch_limited_and_duplicate_assignments_on_db`.
-- **Đề xuất cho lead (không tự áp dụng):** index unique trên `(clan_id, user_id, branch_id)` với `NULLS NOT DISTINCT` và `WHERE revoked_at IS NULL` (PostgreSQL 15+). Cần dọn dòng trùng trước khi tạo index.
+- **Code bảo vệ (Mốc F2), không phải DB:** mọi đề bạt xếp hàng trên dòng `clan_memberships (clan, user)` bằng `FOR NO KEY UPDATE`; request thứ hai thấy assignment của request đầu và trả `409`. `PUT` và `DELETE` khóa các dòng assignment của user (`FOR NO KEY UPDATE`, `ORDER BY assignment_id`). Dữ liệu trùng chỉ có thể xuất hiện nếu ghi thẳng vào DB (SQL, import, hoặc code tương lai bỏ qua các hàm này). `uq_active_user_role_scope` là lớp bảo vệ thứ hai ở DB, nhưng chỉ cho dòng `user_roles`, không cho assignment.
+- **Hiện trạng với dữ liệu trùng đã có:** `PUT .../permissions` trả `409 STATE_CONFLICT` khi user có nhiều hơn một assignment toàn clan còn hiệu lực; `authorize()` hợp (union) quyền của mọi assignment còn hiệu lực; `DELETE` thu hồi tất cả. Test: `test_branch_limited_and_duplicate_assignments_on_db`, `test_revoke_takes_every_active_assignment_and_leaves_other_users_alone`.
+- **Test đồng thời** (`tests/integration/test_family_admin_concurrency.py`): hai đề bạt cùng lúc chỉ một thắng; test đối chứng (bỏ khóa membership) cho thấy hai assignment trùng xuất hiện, tức là chỉ có khóa trong code đứng giữa.
+- **Đề xuất cho lead (không tự áp dụng):** index unique trên `(clan_id, user_id, branch_id)` với `NULLS NOT DISTINCT` và `WHERE revoked_at IS NULL` (PostgreSQL 15+). Cần dọn dòng trùng trước khi tạo index. Đây là lớp bảo vệ ở tầng DB; khóa trong code vẫn nên giữ.
 
-## KI-09 Danh sách quyền ủy quyền được: chưa cấm mã nào
+## KI-09 Danh sách quyền ủy quyền được: chỉ cấm `ADMIN_MANAGE`
 
-- **Quyết định (Mốc F):** PUT chỉ nhận mã có trong bảng `permissions` (mã lạ → `422`). Chưa cấm mã nào; lead quyết định có cần danh sách cấm.
-- **Mã nhạy cảm trong bảng `permissions` (kiểm bằng SELECT ngày 06/10/2026), để lead xem xét:**
-  - `ADMIN_MANAGE` ("Quản lý Family Admin"): về ngữ nghĩa cho phép quản lý FA khác, trái với luật hiện tại "chỉ BO sửa quyền FA" (chưa action nào dùng mã này nên chưa có tác dụng);
+- **Quyết định (Mốc F2):** mã phải có trong bảng `permissions` (lạ → `422`) và **không** nằm trong `NON_DELEGABLE_PERMISSION_CODES` (`app/dependencies/permissions.py`, hiện chỉ `ADMIN_MANAGE`; vi phạm → `403 FORBIDDEN`, theo dòng "cấp vượt quyền được ủy quyền" của hợp đồng gốc). Áp dụng cho `POST` và `PUT`. **Hệ quả:** `PUT` giữ nguyên `ADMIN_MANAGE` của một assignment cũ cũng bị `403`; muốn lưu phải bỏ mã đó (khi đó nó bị gỡ khỏi assignment).
+- **Các mã nhạy cảm còn lại trong bảng `permissions` (kiểm bằng SELECT ngày 06/10/2026), vẫn được ủy quyền, để lead xem xét thêm vào danh sách cấm nếu cần:**
   - `MEMBER_ACCOUNT_MANAGE` ("Quản lý tài khoản thành viên"): mở danh sách tài khoản của clan (đang dùng bởi `clan.users.list`);
   - `AUDIT_VIEW` (xem nhật ký), `IMPORT_EXPORT` (nhập/xuất dữ liệu), `FUND_MANAGE` (quỹ), `INTER_FAMILY_MANAGE` (liên họ).
 - **Hiện chỉ `MEMBER_ACCOUNT_MANAGE` có tác dụng** (không action nào khác dùng mã FA); mã khác được lưu và hiện trong `/auth/me` nhưng chưa mở quyền gì.

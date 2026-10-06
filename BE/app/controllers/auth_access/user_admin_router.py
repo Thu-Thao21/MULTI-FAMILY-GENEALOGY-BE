@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.controllers.auth_access import user_admin_use_cases as use_cases
@@ -29,6 +29,8 @@ from app.schemas.users import (
     AdminUserSummary,
     ClanUserItem,
     ClanUserListQuery,
+    FamilyAdminAssignRequest,
+    FamilyAdminAssignResponse,
     FamilyAdminPermissionsResponse,
     FamilyAdminPermissionsUpdateRequest,
     UserStatusUpdateRequest,
@@ -148,3 +150,68 @@ async def update_fa_permissions(
         body=body,
         client=ClientInfo.from_request(request),
     )
+
+
+@router.post(
+    "/clans/{clan_id}/admins",
+    status_code=201,
+    response_model=FamilyAdminAssignResponse,
+    responses=error_responses(
+        *AUTHENTICATED,
+        ErrorCode.FORBIDDEN,
+        ErrorCode.NOT_FOUND,
+        ErrorCode.STATE_CONFLICT,
+        ErrorCode.VALIDATION_ERROR,
+    ),
+)
+async def assign_family_admin(
+    clan_id: str,  # already validated by clan_scope_from_path (malformed -> 404)
+    body: FamilyAdminAssignRequest,
+    request: Request,
+    principal: Principal = Depends(
+        require_action(Action.CLAN_FA_ASSIGN, clan_scope_from_path())
+    ),
+    db: AsyncSession = Depends(get_db),
+    users: UserAccessRepository = Depends(get_user_access_repo),
+    family: FamilyRepository = Depends(get_family_repo),
+) -> FamilyAdminAssignResponse:
+    return await use_cases.assign_family_admin(
+        db=db,
+        users=users,
+        family=family,
+        principal=principal,
+        clan_id=uuid.UUID(clan_id),
+        body=body,
+        client=ClientInfo.from_request(request),
+    )
+
+
+@router.delete(
+    "/clans/{clan_id}/admins/{user_id}",
+    status_code=204,
+    response_class=Response,
+    responses=error_responses(
+        *AUTHENTICATED, ErrorCode.FORBIDDEN, ErrorCode.NOT_FOUND, ErrorCode.VALIDATION_ERROR
+    ),
+)
+async def revoke_family_admin(
+    clan_id: str,  # already validated by clan_scope_from_path (malformed -> 404)
+    user_id: uuid.UUID,
+    request: Request,
+    principal: Principal = Depends(
+        require_action(Action.CLAN_FA_REVOKE, clan_scope_from_path())
+    ),
+    db: AsyncSession = Depends(get_db),
+    users: UserAccessRepository = Depends(get_user_access_repo),
+    family: FamilyRepository = Depends(get_family_repo),
+) -> Response:
+    await use_cases.revoke_family_admin(
+        db=db,
+        users=users,
+        family=family,
+        principal=principal,
+        clan_id=uuid.UUID(clan_id),
+        user_id=user_id,
+        client=ClientInfo.from_request(request),
+    )
+    return Response(status_code=204)

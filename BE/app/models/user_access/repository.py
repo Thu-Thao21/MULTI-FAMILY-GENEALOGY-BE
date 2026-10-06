@@ -342,6 +342,48 @@ class UserAccessRepository:
         await self._session.flush()
         return row
 
+    # ----- Clan role rows (Mốc F2). Flush/execute only; the caller commits. -----
+
+    async def add_clan_role(
+        self,
+        *,
+        user_id: uuid.UUID,
+        role_id: uuid.UUID,
+        clan_id: uuid.UUID,
+        granted_by: uuid.UUID,
+        now: datetime,
+    ) -> UserRole:
+        """Grant a role INSIDE a clan. uq_active_user_role_scope rejects a second active
+        grant of the same (user, role, clan); revoked rows do not count."""
+        row = UserRole(
+            user_role_id=uuid.uuid4(),
+            user_id=user_id,
+            role_id=role_id,
+            clan_id=clan_id,
+            granted_by=granted_by,
+            granted_at=now,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def revoke_clan_role(
+        self, *, user_id: uuid.UUID, clan_id: uuid.UUID, role_code: str, now: datetime
+    ) -> int:
+        """Set revoked_at on the user's active grants of role_code in this clan."""
+        role_id = select(Role.role_id).where(Role.code == role_code).scalar_subquery()
+        result = await self._session.execute(
+            update(UserRole)
+            .where(
+                UserRole.user_id == user_id,
+                UserRole.clan_id == clan_id,
+                UserRole.role_id == role_id,
+                UserRole.revoked_at.is_(None),
+            )
+            .values(revoked_at=now)
+        )
+        return result.rowcount or 0
+
     # ----- User administration (Mốc F) -----
 
     @staticmethod
