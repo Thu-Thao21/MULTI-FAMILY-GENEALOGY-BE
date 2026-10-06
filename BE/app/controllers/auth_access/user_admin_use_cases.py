@@ -354,10 +354,12 @@ async def assign_family_admin(
     Creates a clan-wide assignment (branch_id NULL), its permission rows and, so that
     roles[] in /auth/me and the clan user list agree, a FAMILY_ADMIN row in user_roles.
 
-    Concurrency: family_admin_assignments has no unique constraint (KI-08), so this code
-    is the guarantee. Everything queues on the membership row (FOR NO KEY UPDATE); the
-    second of two simultaneous appointments then sees the first one's assignment and gets
-    409. uq_active_user_role_scope is a second, DB-level guard for the role row.
+    Concurrency: everything queues on the membership row (FOR NO KEY UPDATE); the second of
+    two simultaneous appointments then sees the first one's assignment and gets 409.
+    Migration 0002 adds uq_family_admin_active_assignment (KI-08): a request that still gets
+    past the lock fails with IntegrityError and also gets 409. On a database without that
+    migration this lock is the only guarantee, so it stays. uq_active_user_role_scope is a
+    second DB-level guard for the role row.
     """
     wanted = set(body.permission_codes)
     await validate_delegable_codes(users, wanted)

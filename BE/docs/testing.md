@@ -29,6 +29,7 @@ $env:ALLOW_DB_TESTS = "1"
 - Thiếu `ALLOW_DB_TESTS=1` thì toàn bộ nhóm này bị skip. Thiếu `-m integration` thì không chạy.
 - Mỗi test chạy trong một transaction và ROLLBACK ở cuối; dữ liệu tự tạo, không phụ thuộc seed. Không DDL, không ghi `roles`, `permissions`, `role_permissions` (chỉ SELECT role theo code).
 - Kết nối tới Neon chậm (vài giây mỗi lần mở, ~0,3 giây mỗi truy vấn), cả nhóm chạy vài phút.
+- **Cần migration đã áp dụng (gói migration, `docs/migrations.md`; đã áp dụng lên dev_minhquan ngày 06/10/2026):** `test_db_constraints.py`, `test_user_roles_unique_index.py` (KI-03), `test_db_rejects_a_duplicate_token_hash` (`test_sessions_db.py`), `test_duplicate_sa_grant_is_rejected_by_the_db_and_the_count_stays_one` (`test_system_admin_guard.py`) và vài test Family Admin đã đổi theo KI-08 (`test_user_admin_db.py`, `test_family_admin_lifecycle_db.py`, `test_family_admin_concurrency.py`) kỳ vọng DB đã có bốn index mới. Trên DB **chưa** migrate chúng fail, và đó là cách phát hiện thiếu migration. `tests/test_migration_guard.py` không cần DB.
 - Bỏ test đồng thời: `-m "integration and not concurrency"`. Chỉ chạy test đồng thời: `-m concurrency`.
 - Test `concurrency` **commit thật**, dùng user `itest-conc-*` và xóa trong `finally`. Chúng cần DB không còn System Admin ACTIVE nào khác (guard đếm toàn bộ); nếu có (ví dụ SA của seed dev) thì tự skip và nêu lý do. Muốn chạy: `seed_dev.py --cleanup` trước, hoặc dùng nhánh DB riêng.
 - **Trước khi chạy, dọn seed** (`seed_dev.py --cleanup`): khi DB còn System Admin ACTIVE khác (ví dụ `dev-sa`), 3 test "SA cuối" trong `test_last_sa_concurrency.py` tự skip.
@@ -114,6 +115,19 @@ Chạy từ `BE`, Python 3.13.7, `.venv` của dự án, sau `seed_dev.py --clea
 
 Tổng cộng 457 test. Sau lần chạy, DB không còn dòng rác: 0 user, 0 clan, 0 audit_logs, 0 phiên; `roles`/`permissions`/`role_permissions` giữ nguyên (4/18/0). Mốc F2 thêm: nhóm test vòng đời Family Admin (đơn vị, DB thật, đồng thời) và test dev seed vẫn nhất quán. Test cũ của Mốc F `test_every_code_in_the_permissions_table_is_accepted` (ủy quyền mọi mã, kể cả `ADMIN_MANAGE`) đã đổi thành `test_every_delegable_code_in_the_permissions_table_is_accepted` theo quyết định Q1: mọi mã trừ `ADMIN_MANAGE` được nhận, thêm `ADMIN_MANAGE` thì `403`.
 
+### Gói migration, sau khi áp dụng lên dev_minhquan (06/10/2026)
+
+Chạy sau `alembic upgrade head` lên nhánh dev (`0002_integrity_constraints`), DB không còn dữ liệu seed.
+
+| Lệnh | Kết quả |
+| --- | --- |
+| `pytest -q` | **363 passed**, 155 deselected (nhóm `integration`), 0 failed. Thêm 43 test so với Mốc F2: 42 trong `test_migration_guard.py` và 1 test thua cuộc đua trên index assignment |
+| `ALLOW_DB_TESTS=1 pytest -m integration -q` | **155 passed**, 0 failed, 0 skipped, **0 xfailed**, 21 phút 31 giây (một lần duy nhất) |
+| `scripts/check_orm_vs_db.py` | 0 errors, 0 INFO (ba index mới đã có ở cả ORM và DB) |
+| `python -c "import app.main"` | MAIN OK |
+
+Tổng cộng 518 test (363 + 155). So với Mốc F2: `1 xfailed` của KI-03 biến mất (test SA trùng nay pass thật), thêm 16 test tích hợp mới trong `test_db_constraints.py` và 2 test ròng trong `test_user_roles_unique_index.py` (5 thành 7). Sau lần chạy, DB không còn dòng rác: 0 user, 0 clan, 0 audit_logs, 0 phiên; `roles`/`permissions`/`role_permissions` giữ nguyên (4/18/0); `alembic_version` = `0002_integrity_constraints`. Diễn tập `downgrade -1` rồi `upgrade head`: xem `docs/migrations.md` mục 11.
+
 ### Số liệu Mốc G (trước F2, giữ để so sánh)
 
 Chạy từ `BE`, Python 3.13.7, `.venv` của dự án, sau `seed_dev.py --cleanup` (DB không còn dữ liệu seed, nên 3 test "SA cuối" chạy chứ không skip).
@@ -136,6 +150,8 @@ Nhóm test theo nội dung:
 | Phân quyền, tenant, SA cuối | `test_permissions.py`, `integration/test_http_access.py`, `integration/test_system_admin_guard.py`, `integration/test_user_roles_unique_index.py`, `integration/test_last_sa_concurrency.py` |
 | Quản trị người dùng, ủy quyền FA | `test_user_admin_api.py`, `integration/test_user_admin_db.py`, `integration/test_user_admin_concurrency.py` |
 | Vòng đời Family Admin (đề bạt, thu hồi, tính nhất quán của dev seed) | `test_user_admin_api.py` (mục Mốc F2), `integration/test_family_admin_lifecycle_db.py`, `integration/test_family_admin_concurrency.py` |
+| Migration: fingerprint, guard `ALLOW_MIGRATE`, SQL xem trước, kiểm tra tiền điều kiện (không cần DB) | `test_migration_guard.py` |
+| Ràng buộc toàn vẹn của migration 0002 (KI-03, KI-04, KI-08, email; cần migration đã áp dụng) | `integration/test_db_constraints.py`, `integration/test_user_roles_unique_index.py` |
 | Hợp đồng OpenAPI so với `api_contract.md` | `test_openapi_contract.py` |
 | CORS (mọi loại response, kể cả 500) | `test_cors.py` |
 | Cấu hình khởi động, lỗi `DATABASE_URL` không lộ chuỗi | `test_startup_checks.py`, `test_config_secrets.py` |
@@ -181,7 +197,7 @@ Ngày 06/10/2026: **No known vulnerabilities found** (pip-audit 2.10.1). Chỉ p
 | T19–21 Duyệt | Hồ sơ trùng; hai SA duyệt đồng thời; tạo clan khi chưa duyệt | **Chưa** | Mốc E |
 | T22–24 Cấp Owner | Hai request đồng thời; retry cùng key; key cũ khác payload | **Chưa** | Mốc E (Idempotency-Key, job cấp tài khoản) |
 | T25–27 Lỗi ngoài DB | Firebase timeout; email lỗi; Firebase thành công nhưng DB lỗi | Một phần | Firebase lỗi và "Firebase đổi mật khẩu xong nhưng DB lỗi": `test_auth_api.py`. Email lỗi: chưa (Mốc E) |
-| T28–30 Migration | DB trống; DB baseline; rollback/forward-fix | **Chưa** | Chưa có revision Alembic; baseline do trưởng nhóm chốt |
+| T28–30 Migration | DB trống; DB baseline; rollback/forward-fix | Một phần | Có revision (`docs/migrations.md`) và test không cần DB: SQL `upgrade`/`downgrade` xem trước, guard, kiểm tra tiền điều kiện và dừng khi trùng dữ liệu (`test_migration_guard.py`). **Đã áp dụng thật lên dev_minhquan** (06/10/2026) và diễn tập `downgrade -1` rồi `upgrade head` (T29 baseline, T30 rollback: có, bằng lệnh tay, nhật ký ở `migrations.md` mục 11). **Chưa** chạy production. "DB trống" (T28) chưa làm được: chưa có cách dựng schema mới giống dev (`initial_schema.sql` đã cũ, KI-16, làm sau Mốc E) |
 | T31–33 Tích hợp | CORS FE; luồng Guest đến Owner; log có request_id không secret | Một phần | CORS: `test_cors.py`; log request_id/không secret: `test_auth_api.py`, `test_security_checks.py`. Luồng Guest đến Owner: Mốc E. Thử với FE thật: chưa |
 
 Ngoài mục 11 của kế hoạch, có thêm: đồng thời "SA cuối" và deadlock (`integration/test_user_admin_concurrency.py`, `test_last_sa_concurrency.py`), khóa dòng `FOR NO KEY UPDATE`, đối chiếu OpenAPI với hợp đồng, kiểm tra khởi động và lỗi cấu hình không lộ giá trị.

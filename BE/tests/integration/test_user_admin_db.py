@@ -385,7 +385,18 @@ async def test_target_rules_on_db(real_client, session, world):
     assert code(await put(real_client, token, clan, foreign.user_id, [FA_CODE])) == "NOT_FOUND"
 
 
-async def test_branch_limited_and_duplicate_assignments_on_db(real_client, session, world):
+async def test_branch_limited_assignment_is_invisible_to_put_and_a_second_clan_wide_one_is_rejected(
+    real_client, session, world
+):
+    """PUT only touches the clan-wide assignment.
+
+    Since migration 0002 (KI-08) the DB refuses a second active clan-wide assignment, so the
+    PUT 409 for "more than one clan-wide assignment" can no longer be reached on a migrated
+    database; it stays in the code as a guard for a database without the index and is covered
+    with fakes in test_user_admin_api.py.
+    """
+    from sqlalchemy.exc import IntegrityError
+
     clan, bo = await world.business_owner()
     token = await world.session_for(bo)
     branch = await world.branch(clan)
@@ -397,9 +408,11 @@ async def test_branch_limited_and_duplicate_assignments_on_db(real_client, sessi
     assert r.status_code == 200 and r.json()["assignment_id"] == str(clan_wide.assignment_id)
     assert await fa_codes(session, branch_assignment.assignment_id) == {FA_CODE}  # untouched
 
-    await world.fa(clan, fa, "AUDIT_VIEW")  # DB allows a 2nd active clan-wide assignment (KI-08)
+    with pytest.raises(IntegrityError):
+        async with session.begin_nested():
+            await world.fa(clan, fa, "AUDIT_VIEW")  # a 2nd active clan-wide assignment (KI-08)
     r = await put(real_client, token, clan, fa.user_id, ["TREE_VIEW"])
-    assert (r.status_code, code(r)) == (409, "STATE_CONFLICT")
+    assert r.status_code == 200 and r.json()["assignment_id"] == str(clan_wide.assignment_id)
 
 
 async def test_fa_and_other_clan_bo_cannot_change_permissions(real_client, session, world):

@@ -1,3 +1,8 @@
+-- WARNING: OUTDATED. Do NOT use this file to build a new database (docs/known_issues.md KI-16).
+-- It lacks 6 tables (credential_metadata, user_sessions, login_history, clan_memberships,
+-- clan_ownership_history, family_admin_permissions), the column users.username and indexes such as
+-- uq_active_user_role_scope. The real schema is the dev branch (docs/schema_*.txt, docs/migrations.md).
+
 CREATE TABLE "users" (
   "user_id" uuid PRIMARY KEY,
   "firebase_uid" varchar(255) UNIQUE NOT NULL,

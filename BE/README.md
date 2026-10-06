@@ -13,6 +13,7 @@ FastAPI + SQLAlchemy (async) + PostgreSQL (Neon). Đăng nhập bằng Firebase 
 | [`docs/testing.md`](docs/testing.md) | Cách chạy seed, test thường, test tích hợp; số liệu mới nhất |
 | [`docs/security_review.md`](docs/security_review.md) | Kết quả rà soát bảo mật (chỉ ghi điều đã kiểm chứng) |
 | [`docs/known_issues.md`](docs/known_issues.md) | Vấn đề đã biết và việc chờ trưởng nhóm quyết định |
+| [`docs/migrations.md`](docs/migrations.md) | Migration Alembic: quy trình, guard an toàn, cảnh báo chưa chạy production |
 | [`docs/BE_Sprint1_Coding_Plan.md`](docs/BE_Sprint1_Coding_Plan.md) | Kế hoạch Sprint 1 |
 
 ## Chạy trên máy dev (Windows)
@@ -78,12 +79,12 @@ Sau reverse proxy: `login_history` ghi IP của proxy trừ khi chạy uvicorn v
 app/
   main.py                 tạo app, middleware (RequestId > CORS > bắt lỗi chưa xử lý), startup
   core/                   cấu hình, lỗi và envelope, request_id, firebase adapter, kiểm tra khởi động
-  db/                     engine, session, kiểm tra kết nối
+  db/                     engine, session, kiểm tra kết nối, fingerprint và guard cho migration
   dependencies/           xác thực phiên (auth.py), phân quyền (permissions.py)
   controllers/auth_access router + use case: auth, quản trị người dùng, ủy quyền FA
   models/                 ORM (user_access, family), repository, registry cho Alembic
   schemas/                Pydantic request/response, mã lỗi
-alembic/                  cấu hình migration (chưa có revision: baseline do trưởng nhóm chốt)
+alembic/                  cấu hình migration và versions/ (0001 baseline, 0002 ràng buộc toàn vẹn; xem docs/migrations.md)
 scripts/                  seed dev, đối chiếu ORM với DB (không vào image Docker)
 tests/                    test thường; tests/integration chạy trên PostgreSQL thật
 docs/                     tài liệu
@@ -91,4 +92,15 @@ docs/                     tài liệu
 
 ## Migration
 
-Chưa có revision Alembic nào; baseline do trưởng nhóm chốt và duyệt. Không chạy `alembic upgrade`/`stamp` trên database dùng chung khi chưa được duyệt. `scripts/check_orm_vs_db.py` đối chiếu ORM với schema thật (chỉ đọc).
+Có hai revision: `0001_baseline` (rỗng, nghĩa là "các bảng đã có sẵn") và `0002_integrity_constraints` (KI-03, KI-04, KI-08, unique `lower(email)`; cần PostgreSQL 15+). **Đã áp dụng lên nhánh dev_minhquan (06/10/2026); chưa chạy production.** Quy trình đầy đủ, cảnh báo và cách xử lý khi dừng vì dữ liệu trùng: [`docs/migrations.md`](docs/migrations.md).
+
+Mọi lệnh alembic có kết nối database chỉ chạy khi có `ALLOW_MIGRATE=1` **và** `MIGRATE_EXPECT_FINGERPRINT` khớp database đang trỏ tới (tránh chạy nhầm nhánh):
+
+```powershell
+.venv\Scripts\python.exe -m app.db.fingerprint                      # in: database=<tên> fingerprint=<8 ký tự>; chỉ-đọc, không in host/mật khẩu
+.venv\Scripts\python.exe -m alembic upgrade base:head --sql         # xem trước SQL, không kết nối database
+$env:ALLOW_MIGRATE = "1"; $env:MIGRATE_EXPECT_FINGERPRINT = "<fingerprint đã xác nhận>"
+.venv\Scripts\python.exe -m alembic upgrade head                    # chỉ sau khi được duyệt
+```
+
+`scripts/check_orm_vs_db.py` đối chiếu ORM với schema thật (chỉ đọc).

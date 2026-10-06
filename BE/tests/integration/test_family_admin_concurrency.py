@@ -4,9 +4,11 @@ Data uses the itest-conc- prefix (users, clan code ITEST-CONC-*) and is deleted 
 together with the audit rows that name it (audit FKs are ON DELETE SET NULL).
 
 What is protected, and by what:
-  * two simultaneous appointments of the SAME user: family_admin_assignments has no unique
-    constraint (KI-08), so both queue on the clan_memberships row (FOR NO KEY UPDATE) and the
-    second one sees the first one's committed assignment -> 409;
+  * two simultaneous appointments of the SAME user: both queue on the clan_memberships row
+    (FOR NO KEY UPDATE) and the second one sees the first one's committed assignment -> 409.
+    Since migration 0002 (KI-08) the unique index uq_family_admin_active_assignment is the
+    last line of defence: a request that gets past the lock still ends in IntegrityError ->
+    409, never in two active assignments (see the control test below);
   * PUT permissions vs DELETE (and DELETE vs POST): all of them lock the user's assignment
     rows (FOR NO KEY UPDATE, ORDER BY assignment_id) before reading or writing.
 No request locks the users row, so the audit FK to the actor cannot deadlock (Mốc F).
@@ -299,8 +301,8 @@ def no_errors(results) -> None:
 async def test_two_simultaneous_appointments_of_one_user_only_one_wins(committed, role_row_exists):
     maker, clan_id, bo_id, target_id, role_id = committed
     if role_row_exists:
-        # With an active FAMILY_ADMIN row already there, the unique role index cannot help:
-        # only the membership lock stands between the two requests and a duplicate assignment.
+        # With an active FAMILY_ADMIN row already there, the unique ROLE index cannot help:
+        # the membership lock (and, on a migrated DB, the assignment index) is what decides.
         async with maker() as s, s.begin():
             s.add(UserRole(user_id=target_id, role_id=role_id, clan_id=clan_id))
     barrier = asyncio.Barrier(2)
@@ -314,9 +316,16 @@ async def test_two_simultaneous_appointments_of_one_user_only_one_wins(committed
     assert st["audit"] == ["family_admin.assign"]  # only the winner is audited
 
 
-async def test_control_without_the_membership_lock_two_assignments_are_created(committed, monkeypatch):
-    """Control (KI-08 made visible): drop the membership lock and the same race leaves TWO
-    active assignments. With a pre-existing role row the role index cannot save it."""
+async def test_control_without_the_membership_lock_the_unique_index_still_lets_only_one_win(
+    committed, monkeypatch
+):
+    """Control (KI-08 closed by migration 0002): drop the membership lock and run the same race.
+
+    Before the migration this left TWO active assignments (the role index could not help
+    because the role row already existed). Now the second INSERT waits for the first
+    transaction and fails on uq_family_admin_active_assignment: IntegrityError, mapped to 409.
+    The test proves the DB layer works on its own; it fails on a database without the index.
+    """
     maker, clan_id, bo_id, target_id, role_id = committed
     async with maker() as s, s.begin():
         s.add(UserRole(user_id=target_id, role_id=role_id, clan_id=clan_id))
@@ -330,8 +339,10 @@ async def test_control_without_the_membership_lock_two_assignments_are_created(c
         run_assign(maker, clan_id, bo_id, target_id, barrier=barrier),
         run_assign(maker, clan_id, bo_id, target_id, barrier=barrier),
     )
-    assert results == ["ok", "ok"], results
-    assert (await state(maker, clan_id, target_id))["active"] == 2
+    assert sorted(results) == sorted(["ok", CONFLICT]), results
+    st = await state(maker, clan_id, target_id)
+    assert st["active"] == 1 and st["all"] == 1
+    assert st["audit"] == ["family_admin.assign"]  # only the winner is audited
 
 
 # ----- PUT vs DELETE -----

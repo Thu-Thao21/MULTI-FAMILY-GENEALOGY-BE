@@ -321,14 +321,15 @@ async def test_revoke_takes_every_active_assignment_and_leaves_other_users_alone
     token = await world.session_for(bo)
     fa = await member_in(world, clan)
     await world.grant(fa, "FAMILY_ADMIN", clan)
-    branch = await world.branch(clan)
+    branch, other_branch = await world.branch(clan), await world.branch(clan)
     wide = await world.fa(clan, fa, FA_CODE)
     limited = await world.fa(clan, fa, "PERSON_VIEW", branch_id=branch)
-    duplicate = await world.fa(clan, fa, "TREE_VIEW")  # the DB allows it (KI-08)
+    # KI-08: the DB refuses a second clan-wide row, so the third one is for another branch.
+    second_limited = await world.fa(clan, fa, "TREE_VIEW", branch_id=other_branch)
     other = await member_in(world, clan)
     await world.grant(other, "FAMILY_ADMIN", clan)
     other_assignment = await world.fa(clan, other, FA_CODE)
-    ids = [wide.assignment_id, limited.assignment_id, duplicate.assignment_id]
+    ids = [wide.assignment_id, limited.assignment_id, second_limited.assignment_id]
     other_id = other_assignment.assignment_id
 
     assert (await delete_admin(real_client, token, clan.clan_id, fa.user_id)).status_code == 204

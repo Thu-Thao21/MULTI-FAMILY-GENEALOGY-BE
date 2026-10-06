@@ -407,6 +407,21 @@ class FamilyAdminAssignment(Base):
     """Maps public.family_admin_assignments."""
 
     __tablename__ = "family_admin_assignments"
+    __table_args__ = (
+        # Migration 0002 (KI-08): at most one ACTIVE assignment per (clan, user, branch); a NULL
+        # branch_id (clan-wide) counts as one value. Needs PostgreSQL 15+. The membership row
+        # lock in the use case stays: it turns the race into a clean 409 instead of an
+        # IntegrityError, and the index is the last line of defence.
+        Index(
+            "uq_family_admin_active_assignment",
+            "clan_id",
+            "user_id",
+            "branch_id",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+            postgresql_nulls_not_distinct=True,
+        ),
+    )
 
     assignment_id: Mapped[uuid.UUID] = _uuid_pk()
     user_id: Mapped[uuid.UUID] = mapped_column(

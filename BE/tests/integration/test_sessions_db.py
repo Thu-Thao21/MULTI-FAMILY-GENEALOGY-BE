@@ -7,7 +7,7 @@ from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.exc import MultipleResultsFound
+from sqlalchemy.exc import IntegrityError
 
 from app.core.errors import AppError
 from app.dependencies.auth import resolve_principal
@@ -153,16 +153,18 @@ async def test_expired_temporary_timestamp_ignored_when_change_not_required(sess
     assert (await _resolve(session, token)).requires_password_change is False
 
 
-async def test_db_does_not_enforce_unique_token_hash_known_issue(session, world):
-    """Documents KI-04: user_sessions.token_jti_hash has no unique index.
+async def test_db_rejects_a_duplicate_token_hash(session, world):
+    """KI-04 closed by migration 0002: user_sessions.token_jti_hash is unique.
 
-    A duplicate hash is accepted by the DB, and the lookup then raises. Tokens are 256-bit
-    random so a real collision is not expected; the point is that the DB cannot prevent it.
+    Tokens are 256-bit random so a real collision is not expected; the DB now guarantees it,
+    so get_session_by_token_hash can never meet two rows (no MultipleResultsFound, no 500).
     """
     from app.core.tokens import hash_session_token
 
     a, b = await world.user(), await world.user()
     token = await world.session_for(a)
-    await world.session_for(b, token=token)  # same token -> same hash, no IntegrityError
-    with pytest.raises(MultipleResultsFound):
-        await UserAccessRepository(session).get_session_by_token_hash(hash_session_token(token))
+    with pytest.raises(IntegrityError):
+        async with session.begin_nested():
+            await world.session_for(b, token=token)  # same token -> same hash
+    found = await UserAccessRepository(session).get_session_by_token_hash(hash_session_token(token))
+    assert found is not None and found.user_id == a.user_id

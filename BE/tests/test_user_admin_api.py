@@ -779,6 +779,27 @@ def test_lost_race_on_the_role_row_is_409_and_rolled_back(w, monkeypatch):
     assert w.db.rollbacks == 1 and w.db.commits == 0
 
 
+def test_lost_race_on_the_assignment_index_is_409_and_rolled_back(w, monkeypatch):
+    """Migration 0002 (KI-08): uq_family_admin_active_assignment is the last line of defence.
+
+    A request that gets past the membership lock and loses at INSERT gets the same 409 as the
+    one that loses at the lock, never a 500, and nothing stays written.
+    """
+    clan, _bo, token = w.bo()
+    member = make_member(w, clan)
+
+    async def collide(*_args, **_kwargs):
+        raise IntegrityError(
+            "INSERT family_admin_assignments", {}, Exception("uq_family_admin_active_assignment")
+        )
+
+    monkeypatch.setattr(w.family, "create_fa_assignment", collide)
+    r = post_admin(w, token, clan, member.user_id)
+    assert (r.status_code, code(r)) == (409, "STATE_CONFLICT")
+    assert w.db.rollbacks == 1 and w.db.commits == 0
+    assert w.repo.audit == [] and w.family.assignments == []
+
+
 def test_missing_family_admin_role_is_a_500_not_a_leak(w):
     clan, _bo, token = w.bo()
     member = make_member(w, clan)

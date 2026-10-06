@@ -6,6 +6,7 @@ The race itself is tested in test_last_sa_concurrency.py.
 from __future__ import annotations
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.core.errors import AppError
 from app.dependencies.permissions import ensure_not_last_system_admin
@@ -76,10 +77,15 @@ async def test_guard_passes_when_target_is_already_not_active(session, world):
     assert not await _conflict(session, locked)
 
 
-async def test_duplicate_sa_grants_of_one_user_do_not_inflate_the_count(session, world):
-    """Two active grants for the same user (the DB allows it, see KI-03) are still one SA."""
+async def test_duplicate_sa_grant_is_rejected_by_the_db_and_the_count_stays_one(session, world):
+    """KI-03 closed by migration 0002: the DB refuses a second active SA grant for one user.
+
+    count_active_system_admins still uses COUNT(DISTINCT user_id) as a defence in depth.
+    """
     sa = await _only_sa(world)
-    await world.grant(sa, "SYSTEM_ADMIN")  # duplicate active grant
+    with pytest.raises(IntegrityError):
+        async with session.begin_nested():
+            await world.grant(sa, "SYSTEM_ADMIN")  # duplicate active grant
     repo = UserAccessRepository(session)
     assert await repo.count_active_system_admins() == 1
     assert await _conflict(session, sa)

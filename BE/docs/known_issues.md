@@ -27,21 +27,26 @@ Mô tả gốc:
 - **Ảnh hưởng hiện tại:** Chưa có route nào gọi hai hàm này.
 - **Xử lý ở Mốc D:** Nếu chốt D01 dùng Firebase cho mật khẩu thì xóa module này. Nếu cần mật khẩu cục bộ thì thiết kế lại theo mục 5, không cắt input âm thầm.
 
-## KI-03 uq_active_user_role_scope không chặn gán trùng role cấp hệ thống (clan_id NULL)
+## KI-03 uq_active_user_role_scope không chặn gán trùng role cấp hệ thống (clan_id NULL) — Đã áp dụng lên dev_minhquan, production chưa
+
+> **Trạng thái:** revision `0002_integrity_constraints` **đã áp dụng lên dev_minhquan ngày 06/10/2026**, **production chưa**. Mục "Hiện trạng" bên dưới mô tả database **chưa** có migration (như production hiện nay). Xem [`migrations.md`](migrations.md).
 
 - **Bảng/index:** `user_roles`, `uq_active_user_role_scope` = `UNIQUE (user_id, role_id, clan_id) WHERE revoked_at IS NULL`.
 - **Hiện trạng:** PostgreSQL coi hai giá trị NULL là khác nhau, nên với `clan_id IS NULL` (role cấp hệ thống, tức mọi dòng `SYSTEM_ADMIN`) index không bao giờ báo trùng. Một user có thể có nhiều dòng `SYSTEM_ADMIN` còn hiệu lực. Trong clan (`clan_id` không NULL) index chặn đúng.
-- **Bằng chứng:** `tests/integration/test_user_roles_unique_index.py`. `test_db_accepts_duplicate_system_admin_grant_current_behaviour` ghi lại hành vi hiện tại; `test_db_should_reject_duplicate_system_admin_grant` là `xfail(strict=True)` mô tả hành vi mong muốn.
+- **Bằng chứng (trước migration):** `tests/integration/test_user_roles_unique_index.py` từng có `test_db_accepts_duplicate_system_admin_grant_current_behaviour` (ghi lại hành vi) và `test_db_should_reject_duplicate_system_admin_grant` (`xfail(strict=True)`, hành vi mong muốn). Cả hai đã được thay bằng `test_db_rejects_duplicate_system_admin_grant`.
 - **Ảnh hưởng hiện tại:** Không làm sai quyền: `has_active_role` chỉ hỏi "có ít nhất một dòng", và `count_active_system_admins` dùng `COUNT(DISTINCT user_id)` nên guard "SA cuối cùng" không bị đếm dôi (có test). Rủi ro còn lại là dữ liệu rác và việc thu hồi chỉ một dòng không làm mất quyền SA.
 - **Việc cần làm trong code:** Khi cấp SA, kiểm tra `has_active_role(user, 'SYSTEM_ADMIN', clan_id=None)` trước khi INSERT, trong cùng transaction; khi thu hồi, đặt `revoked_at` cho mọi dòng còn hiệu lực của user.
-- **Đề xuất cho lead quyết định (không tự áp dụng):** migration thay index bằng `UNIQUE NULLS NOT DISTINCT (user_id, role_id, clan_id) WHERE revoked_at IS NULL` (PostgreSQL 15+), hoặc thêm index riêng `UNIQUE (user_id, role_id) WHERE clan_id IS NULL AND revoked_at IS NULL`. Cần dọn dòng trùng đã có trước khi tạo index. Khi migration được duyệt: xóa test "current_behaviour" và bỏ `xfail` ở test còn lại.
+- **Quyết định của trưởng nhóm:** thay index cùng tên bằng `UNIQUE NULLS NOT DISTINCT (user_id, role_id, clan_id) WHERE revoked_at IS NULL` (PostgreSQL 15+). Migration kiểm tra dòng trùng trước và dừng với thông báo rõ nếu có (không đổi gì).
+- **Đã làm (đã áp dụng lên dev_minhquan, 155 test tích hợp pass):** migration `0002`, ORM khai báo `postgresql_nulls_not_distinct=True`. Index trên dev: `UNIQUE (user_id, role_id, clan_id) NULLS NOT DISTINCT WHERE revoked_at IS NULL`. Test `test_user_roles_unique_index.py`: bỏ test `current_behaviour`, bỏ `xfail` của test SA trùng (nay `test_db_rejects_duplicate_system_admin_grant`, pass thật), thêm test cấp lại sau khi thu hồi và SA ở hai user. **Các test này cần migration đã áp dụng lên DB chúng chạy.** Code kiểm `has_active_role` trước khi INSERT vẫn nên giữ.
 
-## KI-04 user_sessions.token_jti_hash không có unique index
+## KI-04 user_sessions.token_jti_hash không có unique index — Đã áp dụng lên dev_minhquan, production chưa
+
+> **Trạng thái:** revision `0002_integrity_constraints` **đã áp dụng lên dev_minhquan ngày 06/10/2026**, **production chưa**. Mục "Hiện trạng" bên dưới mô tả database chưa có migration. Xem [`migrations.md`](migrations.md).
 
 - **Bảng/index:** `user_sessions` chỉ có `user_sessions_pkey`, `idx_user_sessions_user`, `idx_user_sessions_active`. Kế hoạch mục 4 yêu cầu kiểm tra unique token hash; DB hiện chưa có.
 - **Hiện trạng:** DB nhận hai phiên cùng `token_jti_hash`; khi đó `get_session_by_token_hash` ném `MultipleResultsFound` (lỗi 500 thay vì `SESSION_INVALID`). Token 256-bit ngẫu nhiên nên va chạm thực tế không đáng kể, nhưng DB không bảo đảm.
-- **Bằng chứng:** `test_db_does_not_enforce_unique_token_hash_known_issue` trong `tests/integration/test_sessions_db.py`.
-- **Đề xuất cho lead:** migration `UNIQUE (token_jti_hash)` (cột đang nullable; unique cho phép nhiều NULL).
+- **Bằng chứng (trước migration):** test cũ `test_db_does_not_enforce_unique_token_hash_known_issue` trong `tests/integration/test_sessions_db.py`; nay đã đổi thành `test_db_rejects_a_duplicate_token_hash` (cần migration đã áp dụng).
+- **Quyết định của trưởng nhóm:** `CREATE UNIQUE INDEX uq_user_sessions_token_jti_hash ON user_sessions (token_jti_hash)` (cột vẫn nullable; nhiều NULL vẫn được). Test mới: `tests/integration/test_db_constraints.py`.
 
 ## KI-05 Chưa có API reset mật khẩu (`/auth/password-reset/request`, `/confirm`)
 
@@ -63,13 +68,17 @@ Mô tả gốc:
   - Phạm vi chi/ngành: `POST` luôn tạo assignment toàn clan (không nhận `branch_id`), `PUT` chỉ tác động lên assignment toàn clan; assignment theo chi/ngành chỉ có thể tạo bằng SQL hoặc dữ liệu seed, và chỉ `DELETE` mới thu hồi được. Bảng `branches` chưa có model. `authorize()` vẫn kiểm `branch_id` của tài nguyên.
   - Đề bạt qua lời mời (`FAMILY_ADMIN_INVITE`, D05) chưa làm.
 
-## KI-08 DB không chặn hai assignment FA còn hiệu lực cho cùng (clan, user) — còn mở ở tầng DB
+## KI-08 DB không chặn hai assignment FA còn hiệu lực cho cùng (clan, user) — Đã áp dụng lên dev_minhquan, production chưa
+
+> **Trạng thái:** revision `0002_integrity_constraints` **đã áp dụng lên dev_minhquan ngày 06/10/2026**, **production chưa**. Tầng DB **vẫn còn mở ở production**; mục "Bảng" và "Hiện trạng" bên dưới mô tả database chưa có migration. Xem [`migrations.md`](migrations.md).
 
 - **Bảng:** `family_admin_assignments` chỉ có khóa chính; không có unique trên `(clan_id, user_id)` (kể cả `WHERE revoked_at IS NULL`; `branch_id` NULL cũng không bị unique).
 - **Code bảo vệ (Mốc F2), không phải DB:** mọi đề bạt xếp hàng trên dòng `clan_memberships (clan, user)` bằng `FOR NO KEY UPDATE`; request thứ hai thấy assignment của request đầu và trả `409`. `PUT` và `DELETE` khóa các dòng assignment của user (`FOR NO KEY UPDATE`, `ORDER BY assignment_id`). Dữ liệu trùng chỉ có thể xuất hiện nếu ghi thẳng vào DB (SQL, import, hoặc code tương lai bỏ qua các hàm này). `uq_active_user_role_scope` là lớp bảo vệ thứ hai ở DB, nhưng chỉ cho dòng `user_roles`, không cho assignment.
-- **Hiện trạng với dữ liệu trùng đã có:** `PUT .../permissions` trả `409 STATE_CONFLICT` khi user có nhiều hơn một assignment toàn clan còn hiệu lực; `authorize()` hợp (union) quyền của mọi assignment còn hiệu lực; `DELETE` thu hồi tất cả. Test: `test_branch_limited_and_duplicate_assignments_on_db`, `test_revoke_takes_every_active_assignment_and_leaves_other_users_alone`.
-- **Test đồng thời** (`tests/integration/test_family_admin_concurrency.py`): hai đề bạt cùng lúc chỉ một thắng; test đối chứng (bỏ khóa membership) cho thấy hai assignment trùng xuất hiện, tức là chỉ có khóa trong code đứng giữa.
-- **Đề xuất cho lead (không tự áp dụng):** index unique trên `(clan_id, user_id, branch_id)` với `NULLS NOT DISTINCT` và `WHERE revoked_at IS NULL` (PostgreSQL 15+). Cần dọn dòng trùng trước khi tạo index. Đây là lớp bảo vệ ở tầng DB; khóa trong code vẫn nên giữ.
+- **Hiện trạng với dữ liệu trùng đã có:** `PUT .../permissions` trả `409 STATE_CONFLICT` khi user có nhiều hơn một assignment toàn clan còn hiệu lực; `authorize()` hợp (union) quyền của mọi assignment còn hiệu lực; `DELETE` thu hồi tất cả. Test (tên hiện tại): `test_branch_limited_assignment_is_invisible_to_put_and_a_second_clan_wide_one_is_rejected`, `test_revoke_takes_every_active_assignment_and_leaves_other_users_alone`; dữ liệu trùng chỉ còn được dựng bằng fake (`test_branch_limited_assignment_alone_is_404_and_two_clan_wide_is_409`, `test_revoke_takes_every_active_assignment_including_branch_limited_and_duplicates`).
+- **Test đồng thời** (`tests/integration/test_family_admin_concurrency.py`): hai đề bạt cùng lúc chỉ một thắng; test đối chứng (bỏ khóa membership) cho thấy hai assignment trùng xuất hiện trên DB **chưa migrate**, tức là chỉ có khóa trong code đứng giữa. Sau migration test đó đổi thành "chỉ một request thắng".
+- **Quyết định của trưởng nhóm:** `CREATE UNIQUE INDEX uq_family_admin_active_assignment ON family_admin_assignments (clan_id, user_id, branch_id) NULLS NOT DISTINCT WHERE revoked_at IS NULL` (PostgreSQL 15+). Khóa trong code vẫn giữ: khóa biến cuộc đua thành `409` sạch, index là lớp cuối (request lọt qua khóa sẽ nhận `IntegrityError`, đã được ánh xạ thành `409`).
+- **Đã làm (đã áp dụng lên dev_minhquan, 155 test tích hợp pass):** migration `0002`, ORM khai báo index, test mới `tests/integration/test_db_constraints.py` và `test_lost_race_on_the_assignment_index_is_409_and_rolled_back` (đơn vị). Ba test tích hợp từng dựa vào "DB cho phép assignment trùng" đã đổi: `test_branch_limited_assignment_is_invisible_to_put_and_a_second_clan_wide_one_is_rejected`, test thu hồi mọi assignment (dùng chi/ngành thứ hai thay cho dòng trùng), và test đối chứng của `test_family_admin_concurrency.py` (nay: bỏ khóa membership thì index vẫn để đúng một request thắng). **Các test này cần migration đã áp dụng.**
+- **Hệ quả sau khi áp dụng:** nhánh `409` của `PUT .../permissions` khi có nhiều assignment toàn clan không còn đạt được trên DB đã migrate; code giữ lại cho DB chưa migrate và test bằng fake.
 
 ## KI-09 Danh sách quyền ủy quyền được: chỉ cấm `ADMIN_MANAGE`
 
@@ -104,5 +113,19 @@ Mô tả gốc:
 
 - **Đã làm (Mốc G):** `docker build` thành công, kiểm tra nội dung `/app` của image (không có `.env`, service account, `scripts/`, `tests/`, `docs/`), cấu hình `USER`, `HEALTHCHECK`, `EXPOSE` và phiên bản gói cài khớp bộ đã test.
 - **Chưa làm:** chạy container với database và Firebase thật, kiểm tra `HEALTHCHECK` ở trạng thái chạy, và quét lỗ hổng của lớp hệ điều hành (`python:3.13-slim`) bằng công cụ quét image.
-- **Alembic:** image chứa `alembic/` và `alembic.ini` nhưng thư mục `alembic/versions/` chưa tồn tại (chờ baseline của trưởng nhóm), nên `alembic upgrade` trong image chưa dùng được.
+- **Alembic:** image chứa `alembic/` (nay có `versions/` với hai revision) và `alembic.ini`, nhưng không đặt `ALLOW_MIGRATE` và `MIGRATE_EXPECT_FINGERPRINT`, nên container không tự chạy migration. Chưa thử `alembic` bên trong container thật.
+
+## KI-15 Email không phân biệt hoa/thường: DB chặn, nhưng `get_user_by_email` so khớp chính xác
+
+- **Quyết định (gói migration):** `uq_users_email_lower` (UNIQUE `lower(email)`) nằm trong migration `0002` (**đã áp dụng lên dev_minhquan ngày 06/10/2026, production chưa**, xem `migrations.md`). `users_email_key` (so khớp chính xác) vẫn giữ. Email vẫn lưu đúng chữ hoa/thường người dùng nhập (quyết định 24); `get_user_by_email` cố ý **không** đổi, vẫn so khớp chính xác.
+- **Hệ quả:** `get_user_by_email("A@x.com")` không tìm thấy dòng `a@x.com`, nhưng INSERT `A@x.com` khi đã có `a@x.com` sẽ bị DB từ chối bằng `IntegrityError` (constraint `uq_users_email_lower`).
+- **Việc bắt buộc cho Mốc E:** mọi code tạo `users` (đăng ký, cấp Owner, tạo tài khoản) phải bắt `IntegrityError` của `uq_users_email_lower` (và `users_email_key`) rồi rollback và trả `409`, không để thành `500`. Cần test thật trên DB.
+- **Ngoài phạm vi:** chưa thêm unique cho `account_invitations.email`, `business_registrations.representative_email`, `email_delivery_logs.recipient_email`, `person_contacts.email`: một địa chỉ được phép lặp ở các bảng đó.
+
+## KI-16 `database/initial_schema.sql` đã lỗi thời, không dùng để dựng database mới
+
+- **Hiện trạng:** file là bản export cũ. So với schema thật của nhánh dev (`docs/schema_user_access.txt`, `docs/schema_family.txt`) nó **thiếu 6 bảng**: `credential_metadata`, `user_sessions`, `login_history`, `clan_memberships`, `clan_ownership_history`, `family_admin_permissions`. Nó cũng thiếu cột `users.username` và các index như `uq_active_user_role_scope`, `idx_user_sessions_user`, `idx_user_sessions_active`.
+- **Hệ quả:** **không dùng file này để dựng database mới.** Một database dựng từ nó không có schema mà ORM và migration `0002` cần; `0002` sẽ dừng với thông báo thiếu bảng (kiểm tra tiền điều kiện) và không đổi gì. Baseline `0001_baseline` rỗng nghĩa là "schema của dev đã có sẵn", không phải "file này đã chạy".
+- **Quyết định của trưởng nhóm:** chưa làm bây giờ. Việc dựng database mới (xuất `pg_dump --schema-only` từ nhánh dev làm file baseline, hoặc đưa DDL đầy đủ vào `0001`) làm **sau Mốc E**. Cho đến lúc đó, migration chỉ áp dụng được lên database đã có schema của dev. File đã có dòng cảnh báo ở đầu.
+- **Liên quan:** `docs/migrations.md` mục 3.
 

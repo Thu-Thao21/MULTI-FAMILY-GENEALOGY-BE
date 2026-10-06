@@ -34,6 +34,9 @@ class User(Base):
         UniqueConstraint("email", name="users_email_key"),
         UniqueConstraint("firebase_uid", name="users_firebase_uid_key"),
         UniqueConstraint("username", name="users_username_key"),
+        # Migration 0002: e-mail is unique regardless of case. users_email_key (exact match)
+        # stays. Registration code (Mốc E) must catch the IntegrityError and answer 409.
+        Index("uq_users_email_lower", text("lower(email)"), unique=True),
     )
 
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -128,6 +131,9 @@ class UserSession(Base):
     __table_args__ = (
         Index("idx_user_sessions_active", "user_id", "revoked_at", "expires_at"),
         Index("idx_user_sessions_user", "user_id"),
+        # Migration 0002 (KI-04). The column stays nullable: NULLs are distinct, so any
+        # number of rows without a hash is allowed.
+        Index("uq_user_sessions_token_jti_hash", "token_jti_hash", unique=True),
     )
 
     session_id: Mapped[uuid.UUID] = mapped_column(
@@ -287,6 +293,9 @@ class UserRole(Base):
             "clan_id",
             unique=True,
             postgresql_where=text("revoked_at IS NULL"),
+            # Migration 0002 (KI-03): NULL clan_id (system scope, e.g. SYSTEM_ADMIN) counts as
+            # one value, so a duplicate active system grant is rejected. Needs PostgreSQL 15+.
+            postgresql_nulls_not_distinct=True,
         ),
     )
 
