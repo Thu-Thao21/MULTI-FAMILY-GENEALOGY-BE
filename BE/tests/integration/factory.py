@@ -20,11 +20,15 @@ from app.db.postgres import get_db
 from app.dependencies.auth import Principal, get_principal_allow_restricted
 from app.dependencies.permissions import Action, clan_scope_from_path, require_action
 from app.models.family.entities import (
+    BusinessRegistration,
     Clan,
     ClanMembership,
     ClanOwnershipHistory,
     FamilyAdminAssignment,
     FamilyAdminPermission,
+    IdempotencyKey,
+    ProvisioningJob,
+    SubscriptionPlan,
 )
 from app.models.user_access.entities import (
     CredentialMetadata,
@@ -188,6 +192,96 @@ class World:
             {"b": branch_id, "c": clan.clan_id},
         )
         return branch_id
+
+    async def plan(self, status: str = "ACTIVE") -> SubscriptionPlan:
+        """A plan of our own (inside the rolled-back transaction); real plans are never touched."""
+        plan = SubscriptionPlan(
+            plan_id=uuid.uuid4(),
+            code=f"ITEST-{uuid.uuid4().hex[:12].upper()}",
+            name="Integration Test Plan",
+            price=0,
+            billing_period_months=12,
+            status=status,
+        )
+        self.s.add(plan)
+        await self.s.flush()
+        return plan
+
+    async def registration(
+        self,
+        plan: SubscriptionPlan,
+        *,
+        email: str | None = None,
+        clan_name: str | None = None,
+        status: str = "PENDING",
+    ) -> BusinessRegistration:
+        tag = uuid.uuid4().hex[:12]
+        row = BusinessRegistration(
+            registration_id=uuid.uuid4(),
+            requested_plan_id=plan.plan_id,
+            representative_name="Integration Test Applicant",
+            representative_email=email or f"itest-reg-{tag}{EMAIL_DOMAIN}",
+            clan_name=clan_name or f"Itest Clan {tag}",
+            status=status,
+            tracking_code_hash=hash_session_token(uuid.uuid4().hex),  # stands in for sha256(tracking code)
+        )
+        self.s.add(row)
+        await self.s.flush()
+        return row
+
+    async def job(
+        self,
+        clan: Clan,
+        *,
+        status: str = "PENDING",
+        email: str | None = None,
+        needs_cleanup: bool = False,
+        firebase_user_created: bool | None = None,
+        lease_expires_in: timedelta | None = None,
+        requested_by: User | None = None,
+    ) -> ProvisioningJob:
+        """A provisioning job with the uid the CHECK demands ('own-' + job_id)."""
+        job_id = uuid.uuid4()
+        if status == "RUNNING" and lease_expires_in is None:
+            lease_expires_in = timedelta(minutes=1)
+        row = ProvisioningJob(
+            job_id=job_id,
+            clan_id=clan.clan_id,
+            status=status,
+            requested_by=requested_by.user_id if requested_by else None,
+            email=email or f"itest-job-{uuid.uuid4().hex[:12]}{EMAIL_DOMAIN}",
+            display_name="Integration Test Owner",
+            firebase_uid=f"own-{job_id}",
+            firebase_user_created=needs_cleanup if firebase_user_created is None else firebase_user_created,
+            needs_cleanup=needs_cleanup,
+            lease_expires_at=now() + lease_expires_in if lease_expires_in else None,
+        )
+        self.s.add(row)
+        await self.s.flush()
+        return row
+
+    async def idempotency(
+        self,
+        actor: User,
+        *,
+        endpoint: str = "business.create",
+        key: str | None = None,
+        status: str = "IN_PROGRESS",
+        response_status: int | None = None,
+    ) -> IdempotencyKey:
+        row = IdempotencyKey(
+            idempotency_id=uuid.uuid4(),
+            actor_id=actor.user_id,
+            endpoint=endpoint,
+            idempotency_key=uuid.uuid4().hex if key is None else key,
+            request_hash="a" * 64,
+            status=status,
+            response_status=response_status,
+            expires_at=now() + timedelta(days=7),
+        )
+        self.s.add(row)
+        await self.s.flush()
+        return row
 
     async def business_owner(self, clan_status: str = "ACTIVE") -> tuple[Clan, User]:
         """Clan + BO that satisfies all three BO conditions."""

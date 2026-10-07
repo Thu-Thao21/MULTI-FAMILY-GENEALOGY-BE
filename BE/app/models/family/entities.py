@@ -80,6 +80,15 @@ class BusinessRegistration(Base):
         UniqueConstraint(
             "tracking_code_hash", name="business_registrations_tracking_code_hash_key"
         ),
+        # Migration 0003: two PENDING registrations with the same e-mail and clan name,
+        # ignoring case, cannot coexist. The application answers 409 DUPLICATE_RESOURCE.
+        Index(
+            "uq_registration_pending_same_applicant",
+            text("lower(representative_email)"),
+            text("lower(clan_name)"),
+            unique=True,
+            postgresql_where=text("status = 'PENDING'"),
+        ),
     )
 
     registration_id: Mapped[uuid.UUID] = _uuid_pk()
@@ -734,3 +743,145 @@ class EmailDeliveryAttempt(Base):
     provider_message_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     attempted_at: Mapped[datetime] = _now_ts()
+
+
+# ---------------------------------------------------------------------------
+# Owner provisioning and idempotency (Mốc E, migration 0003)
+# ---------------------------------------------------------------------------
+
+
+class ProvisioningJob(Base):
+    """Maps public.provisioning_jobs (migration 0003).
+
+    The durable record of "create the Owner account": a Firebase user and a set of DB rows
+    that no single transaction can cover. Holds NO password (the temporary password exists
+    only in memory and in the one response that shows it).
+
+    firebase_uid is always 'own-' || job_id (CHECK): a retry can find the user this job
+    created, and a clean-up may delete only that uid, never a user found by e-mail.
+    """
+
+    __tablename__ = "provisioning_jobs"
+    __table_args__ = (
+        CheckConstraint("job_type IN ('OWNER_PROVISIONING')", name="provisioning_jobs_job_type_check"),
+        CheckConstraint(
+            "status IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED_RETRYABLE', 'FAILED')",
+            name="provisioning_jobs_status_check",
+        ),
+        CheckConstraint("attempt_count >= 0", name="provisioning_jobs_attempt_count_check"),
+        CheckConstraint(
+            "firebase_uid = 'own-' || job_id::text", name="provisioning_jobs_firebase_uid_check"
+        ),
+        CheckConstraint(
+            "needs_cleanup = false OR (status = 'FAILED' AND firebase_user_created)",
+            name="provisioning_jobs_needs_cleanup_check",
+        ),
+        CheckConstraint(
+            "status <> 'RUNNING' OR lease_expires_at IS NOT NULL",
+            name="provisioning_jobs_running_lease_check",
+        ),
+        # One job per clan unless it failed for good; a failed job that still needs a
+        # Firebase clean-up keeps blocking the clan and the e-mail.
+        Index(
+            "uq_provisioning_job_live_per_clan",
+            "clan_id",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('PENDING', 'RUNNING', 'FAILED_RETRYABLE', 'SUCCEEDED') OR needs_cleanup"
+            ),
+        ),
+        Index(
+            "uq_provisioning_job_live_email",
+            text("lower(email)"),
+            unique=True,
+            postgresql_where=text("status IN ('PENDING', 'RUNNING', 'FAILED_RETRYABLE') OR needs_cleanup"),
+        ),
+        Index("idx_provisioning_jobs_clan_created", "clan_id", text("created_at DESC")),
+    )
+
+    job_id: Mapped[uuid.UUID] = _uuid_pk()
+    job_type: Mapped[str] = mapped_column(
+        String(50), nullable=False, server_default=text("'OWNER_PROVISIONING'::character varying")
+    )
+    clan_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        _fk("clans.clan_id", "provisioning_jobs_clan_id_fkey", "CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(
+        String(30), nullable=False, server_default=text("'PENDING'::character varying")
+    )
+    requested_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        _fk("users.user_id", "provisioning_jobs_requested_by_fkey", "SET NULL"),
+        nullable=True,
+    )
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    phone: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    firebase_uid: Mapped[str] = mapped_column(String(255), nullable=False)
+    firebase_user_created: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    needs_cleanup: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        _fk("users.user_id", "provisioning_jobs_user_id_fkey", "SET NULL"),
+        nullable=True,
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    lease_expires_at: Mapped[Optional[datetime]] = _opt_ts()
+    error_code: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = _now_ts()
+    updated_at: Mapped[datetime] = _now_ts()
+    completed_at: Mapped[Optional[datetime]] = _opt_ts()
+
+
+class IdempotencyKey(Base):
+    """Maps public.idempotency_keys (migration 0003).
+
+    One row per (actor, endpoint, Idempotency-Key). request_hash covers the path parameters
+    and the normalized body. response_body NEVER holds a password.
+    """
+
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        UniqueConstraint(
+            "actor_id", "endpoint", "idempotency_key", name="uq_idempotency_actor_endpoint_key"
+        ),
+        CheckConstraint(
+            "status IN ('IN_PROGRESS', 'COMPLETED')", name="idempotency_keys_status_check"
+        ),
+        CheckConstraint(
+            "char_length(idempotency_key) BETWEEN 8 AND 128",
+            name="idempotency_keys_key_length_check",
+        ),
+        CheckConstraint(
+            "char_length(request_hash) = 64", name="idempotency_keys_request_hash_check"
+        ),
+        CheckConstraint(
+            "status <> 'COMPLETED' OR response_status IS NOT NULL",
+            name="idempotency_keys_completed_check",
+        ),
+    )
+
+    idempotency_id: Mapped[uuid.UUID] = _uuid_pk()
+    actor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        _fk("users.user_id", "idempotency_keys_actor_id_fkey", "CASCADE"),
+        nullable=False,
+    )
+    endpoint: Mapped[str] = mapped_column(String(100), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'IN_PROGRESS'::character varying")
+    )
+    resource_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    resource_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
+    response_status: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    response_body: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = _now_ts()
+    expires_at: Mapped[datetime] = _req_ts()

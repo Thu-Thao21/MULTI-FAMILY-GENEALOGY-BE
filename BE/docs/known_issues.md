@@ -129,3 +129,19 @@ Mô tả gốc:
 - **Quyết định của trưởng nhóm:** chưa làm bây giờ. Việc dựng database mới (xuất `pg_dump --schema-only` từ nhánh dev làm file baseline, hoặc đưa DDL đầy đủ vào `0001`) làm **sau Mốc E**. Cho đến lúc đó, migration chỉ áp dụng được lên database đã có schema của dev. File đã có dòng cảnh báo ở đầu.
 - **Liên quan:** `docs/migrations.md` mục 3.
 
+
+## KI-17 Bộ giới hạn tần suất (Mốc E) đếm theo từng process, không dùng chung
+
+- **Quyết định (kế hoạch Mốc E, bước E3):** các endpoint công khai ghi vào DB hoặc dò mã (`POST /business-registrations`, `POST /business-registrations/track`) có bộ giới hạn tần suất đặt trong bộ nhớ của process, trả `429 RATE_LIMITED` kèm `Retry-After`. **Chưa cài**: ghi ở đây trước để không ai nhầm nó là bảo vệ chống tấn công phân tán.
+- **Hệ quả:**
+  - Bộ đếm sống trong **từng process**. Chạy N worker hoặc N container thì mức cho phép thực tế là N lần mức cấu hình, và các instance không biết nhau.
+  - Khởi động lại process thì bộ đếm về 0.
+  - Không chống được kẻ tấn công đổi IP. Nó chỉ làm chậm spam đơn giản và dò mã từ một nguồn.
+- **Bật/tắt và cấu hình:** bật hoặc tắt bằng biến môi trường (mặc định bật); ngưỡng cấu hình được.
+- **IP của người gọi:** **không tin `X-Forwarded-For`** trừ khi bật cờ `TRUST_PROXY_HEADERS`. Mặc định dùng IP của kết nối trực tiếp, nên **sau reverse proxy mọi người dùng chung một IP và bị giới hạn chung** (liên quan KI-11). Chỉ bật `TRUST_PROXY_HEADERS` khi proxy là đường vào duy nhất và đã đặt danh sách proxy tin cậy; bật sai cho phép kẻ gọi giả IP để né giới hạn.
+- **Việc cần lead quyết định khi triển khai nhiều instance:** bộ đếm dùng chung (Redis hoặc bảng DB) hoặc đặt giới hạn ở reverse proxy. Tới lúc đó, coi bộ đếm này là lớp giảm nhẹ chứ không phải biện pháp đủ.
+- **Liên quan:** KI-06 (`POST /auth/session` cũng chưa có giới hạn).
+
+## KI-18 `provisioning_jobs.clan_id` là `ON DELETE CASCADE`
+
+- `provisioning_jobs.clan_id` khai báo `ON DELETE CASCADE` (migration 0003, đã áp dụng lên dev_minhquan ngày 06/10/2026, production chưa): nếu sau này có chức năng xóa clan thì job `needs_cleanup` cũng bị xóa theo, mất dấu vết duy nhất của user Firebase còn phải dọn. **Hiện chưa có chức năng xóa clan**; chức năng đó khi làm phải chặn xóa clan còn job `needs_cleanup` (hoặc đổi khóa ngoại sang `RESTRICT` bằng migration).

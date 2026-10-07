@@ -29,7 +29,7 @@ $env:ALLOW_DB_TESTS = "1"
 - Thiếu `ALLOW_DB_TESTS=1` thì toàn bộ nhóm này bị skip. Thiếu `-m integration` thì không chạy.
 - Mỗi test chạy trong một transaction và ROLLBACK ở cuối; dữ liệu tự tạo, không phụ thuộc seed. Không DDL, không ghi `roles`, `permissions`, `role_permissions` (chỉ SELECT role theo code).
 - Kết nối tới Neon chậm (vài giây mỗi lần mở, ~0,3 giây mỗi truy vấn), cả nhóm chạy vài phút.
-- **Cần migration đã áp dụng (gói migration, `docs/migrations.md`; đã áp dụng lên dev_minhquan ngày 06/10/2026):** `test_db_constraints.py`, `test_user_roles_unique_index.py` (KI-03), `test_db_rejects_a_duplicate_token_hash` (`test_sessions_db.py`), `test_duplicate_sa_grant_is_rejected_by_the_db_and_the_count_stays_one` (`test_system_admin_guard.py`) và vài test Family Admin đã đổi theo KI-08 (`test_user_admin_db.py`, `test_family_admin_lifecycle_db.py`, `test_family_admin_concurrency.py`) kỳ vọng DB đã có bốn index mới. Trên DB **chưa** migrate chúng fail, và đó là cách phát hiện thiếu migration. `tests/test_migration_guard.py` không cần DB.
+- **Cần migration đã áp dụng (gói migration, `docs/migrations.md`; đã áp dụng lên dev_minhquan ngày 06/10/2026):** `test_db_constraints.py`, `test_db_provisioning.py` (migration 0003, áp dụng lên dev ngày 06/10/2026), `test_user_roles_unique_index.py` (KI-03), `test_db_rejects_a_duplicate_token_hash` (`test_sessions_db.py`), `test_duplicate_sa_grant_is_rejected_by_the_db_and_the_count_stays_one` (`test_system_admin_guard.py`) và vài test Family Admin đã đổi theo KI-08 (`test_user_admin_db.py`, `test_family_admin_lifecycle_db.py`, `test_family_admin_concurrency.py`) kỳ vọng DB đã có bốn index mới. Trên DB **chưa** migrate chúng fail, và đó là cách phát hiện thiếu migration. `tests/test_migration_guard.py` không cần DB.
 - Bỏ test đồng thời: `-m "integration and not concurrency"`. Chỉ chạy test đồng thời: `-m concurrency`.
 - Test `concurrency` **commit thật**, dùng user `itest-conc-*` và xóa trong `finally`. Chúng cần DB không còn System Admin ACTIVE nào khác (guard đếm toàn bộ); nếu có (ví dụ SA của seed dev) thì tự skip và nêu lý do. Muốn chạy: `seed_dev.py --cleanup` trước, hoặc dùng nhánh DB riêng.
 - **Trước khi chạy, dọn seed** (`seed_dev.py --cleanup`): khi DB còn System Admin ACTIVE khác (ví dụ `dev-sa`), 3 test "SA cuối" trong `test_last_sa_concurrency.py` tự skip.
@@ -115,7 +115,23 @@ Chạy từ `BE`, Python 3.13.7, `.venv` của dự án, sau `seed_dev.py --clea
 
 Tổng cộng 457 test. Sau lần chạy, DB không còn dòng rác: 0 user, 0 clan, 0 audit_logs, 0 phiên; `roles`/`permissions`/`role_permissions` giữ nguyên (4/18/0). Mốc F2 thêm: nhóm test vòng đời Family Admin (đơn vị, DB thật, đồng thời) và test dev seed vẫn nhất quán. Test cũ của Mốc F `test_every_code_in_the_permissions_table_is_accepted` (ủy quyền mọi mã, kể cả `ADMIN_MANAGE`) đã đổi thành `test_every_delegable_code_in_the_permissions_table_is_accepted` theo quyết định Q1: mọi mã trừ `ADMIN_MANAGE` được nhận, thêm `ADMIN_MANAGE` thì `403`.
 
-### Gói migration, sau khi áp dụng lên dev_minhquan (06/10/2026)
+### Mốc E, bước E2: migration 0003 đã áp dụng lên dev_minhquan (06/10/2026)
+
+Chạy sau `alembic upgrade head` lên nhánh dev (`0003_provisioning_idempotency`), DB không còn dữ liệu seed.
+
+| Lệnh | Kết quả |
+| --- | --- |
+| `pytest -q` | **417 passed**, 222 deselected (nhóm `integration`), 0 failed. Thêm 54 test so với gói migration 0002: `test_migration_0003.py` |
+| `ALLOW_DB_TESTS=1 pytest -m integration tests/integration/test_db_provisioning.py` | Lần đầu 65 passed, 2 failed (lỗi của test: cột `varchar` từ chối chuỗi quá dài bằng lỗi kiểu dữ liệu trước khi CHECK được xét); sửa test, chạy lại **67 passed** |
+| `ALLOW_DB_TESTS=1 pytest -m integration -q` (cả bộ, một lần) | **222 passed**, 0 failed, 0 skipped, **0 xfailed**, 24 phút 04 giây |
+| `scripts/check_orm_vs_db.py` | 0 errors, 0 INFO |
+| `python -c "import app.main"` | MAIN OK |
+
+Tổng cộng 639 test (417 + 222). So với gói migration 0002: thêm 67 test tích hợp (`test_db_provisioning.py`) và 54 test không cần DB (`test_migration_0003.py`); `test_migration_guard.py` chỉ đổi một test (kiểm đầu chuỗi revision), không đổi số lượng. Sau lần chạy, DB không còn dòng rác: 0 user, 0 clan, 0 job, 0 khóa idempotency, 0 audit_logs, 0 hồ sơ đăng ký; `roles`/`permissions`/`role_permissions` giữ nguyên (4/18/0); `alembic_version` = `0003_provisioning_idempotency`. `subscription_plans` trên dev có 0 dòng: test tích hợp tự tạo gói trong giao dịch rollback; các bước E3 trở đi cần dữ liệu gói để chạy luồng thật.
+
+Kiểm chứng test bằng đột biến (áp dụng, chạy test, khôi phục, kiểm sha256) cho `test_migration_0003.py`: 32 đột biến, đều bị bắt. Gồm bỏ hoặc nới `provisioning_jobs_firebase_uid_check` (A2), bỏ `needs_cleanup` khỏi hai index và khỏi CHECK (A5), bỏ từng bước kiểm tra tiền điều kiện, in email trong báo cáo trùng, thêm cột mật khẩu, câu lệnh chỉ chứa chú thích, `CONCURRENTLY`, ORM lệch migration, và năm đột biến cho việc downgrade từ chối khi còn job `needs_cleanup` (bỏ kiểm tra, kiểm tra sau cảnh báo, đếm mọi job, cho lọt một dòng, thông báo nêu uid).
+
+### Gói migration, sau khi áp dụng lên dev_minhquan (06/10/2026, trước Mốc E)
 
 Chạy sau `alembic upgrade head` lên nhánh dev (`0002_integrity_constraints`), DB không còn dữ liệu seed.
 
@@ -150,7 +166,8 @@ Nhóm test theo nội dung:
 | Phân quyền, tenant, SA cuối | `test_permissions.py`, `integration/test_http_access.py`, `integration/test_system_admin_guard.py`, `integration/test_user_roles_unique_index.py`, `integration/test_last_sa_concurrency.py` |
 | Quản trị người dùng, ủy quyền FA | `test_user_admin_api.py`, `integration/test_user_admin_db.py`, `integration/test_user_admin_concurrency.py` |
 | Vòng đời Family Admin (đề bạt, thu hồi, tính nhất quán của dev seed) | `test_user_admin_api.py` (mục Mốc F2), `integration/test_family_admin_lifecycle_db.py`, `integration/test_family_admin_concurrency.py` |
-| Migration: fingerprint, guard `ALLOW_MIGRATE`, SQL xem trước, kiểm tra tiền điều kiện (không cần DB) | `test_migration_guard.py` |
+| Migration: fingerprint, guard `ALLOW_MIGRATE`, SQL xem trước, kiểm tra tiền điều kiện của 0002 và 0003, từ chối downgrade khi còn việc dọn Firebase (không cần DB) | `test_migration_guard.py`, `test_migration_0003.py` |
+| Ràng buộc toàn vẹn của migration 0003 (job Owner, idempotency, hồ sơ PENDING trùng; cần 0003 đã áp dụng) | `integration/test_db_provisioning.py` |
 | Ràng buộc toàn vẹn của migration 0002 (KI-03, KI-04, KI-08, email; cần migration đã áp dụng) | `integration/test_db_constraints.py`, `integration/test_user_roles_unique_index.py` |
 | Hợp đồng OpenAPI so với `api_contract.md` | `test_openapi_contract.py` |
 | CORS (mọi loại response, kể cả 500) | `test_cors.py` |

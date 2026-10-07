@@ -1,6 +1,6 @@
 # Migration (Alembic)
 
-> **Cảnh báo.** Hai revision dưới đây đã áp dụng lên nhánh **dev_minhquan** (06/10/2026, nhật ký ở mục 11). **Chưa chạy production.** Chỉ chạy production sau khi nhóm đồng ý (mục 5): dev đã diễn tập thành công.
+> **Cảnh báo.** Ba revision `0001`, `0002` và `0003` đã áp dụng lên nhánh **dev_minhquan** (06/10/2026, nhật ký ở mục 11 và 13). **Chưa chạy production.** Chỉ chạy production sau khi nhóm đồng ý (mục 5): dev đã diễn tập thành công.
 
 ## 1. Trạng thái
 
@@ -8,8 +8,9 @@
 | --- | --- | --- |
 | `0001_baseline` | Rỗng. Ghi nhận "các bảng đã có sẵn" | Đã áp dụng lên dev_minhquan; production chưa |
 | `0002_integrity_constraints` | KI-03, KI-04, KI-08 và unique `lower(email)` (mục 6) | Đã áp dụng lên dev_minhquan; production chưa |
+| `0003_provisioning_idempotency` | Bảng `provisioning_jobs`, `idempotency_keys` và `uq_registration_pending_same_applicant` (mục 12) | Đã áp dụng lên dev_minhquan (E2, 06/10/2026); production chưa |
 
-Lịch sử là một đường thẳng: `0001_baseline` rồi `0002_integrity_constraints` (đầu duy nhất, có test).
+Lịch sử là một đường thẳng: `0001_baseline`, `0002_integrity_constraints`, rồi `0003_provisioning_idempotency` (đầu duy nhất, có test).
 
 ## 2. Yêu cầu
 
@@ -112,7 +113,7 @@ SELECT lower(email), count(*) FROM users GROUP BY lower(email) HAVING count(*) >
 
 ## 8. Hoàn tác
 
-`alembic downgrade 0001_baseline` bỏ bốn index mới và dựng lại `uq_active_user_role_scope` đúng như trước (NULL khác nhau). Hoàn tác chỉ nới ràng buộc nên không bao giờ lỗi vì dữ liệu. `downgrade base` chỉ xóa dòng trong `alembic_version`; bảng `alembic_version` vẫn còn.
+`alembic downgrade 0001_baseline` bỏ bốn index mới và dựng lại `uq_active_user_role_scope` đúng như trước (NULL khác nhau). Hoàn tác chỉ nới ràng buộc nên không bao giờ lỗi vì dữ liệu. **Riêng `0003` thì khác:** hoàn tác nó **xóa hai bảng cùng mọi dòng trong đó** (mục 12). `downgrade base` chỉ xóa dòng trong `alembic_version`; bảng `alembic_version` vẫn còn.
 
 ## 9. Việc cho các mốc sau
 
@@ -126,6 +127,8 @@ SELECT lower(email), count(*) FROM users GROUP BY lower(email) HAVING count(*) >
 | `tests/test_migration_guard.py` (không cần DB) | Fingerprint, guard (hàm và qua `python -m alembic` thật với host không tồn tại), SQL xem trước, lịch sử revision, kiểm tra tiền điều kiện của 0002, không có câu lệnh chỉ chứa chú thích |
 | `tests/integration/test_db_constraints.py` | KI-04, KI-08, email, định nghĩa thật của bốn index trong `pg_indexes`, truy vấn kiểm tra trùng chạy trên dữ liệu thật |
 | `tests/integration/test_user_roles_unique_index.py` | KI-03 (hết `xfail`) |
+| `tests/test_migration_0003.py` (không cần DB) | Revision 0003: kiểm tra tiền điều kiện (mọi lần từ chối xảy ra trước DDL), đúng các câu lệnh và thứ tự, các CHECK bảo vệ việc dọn Firebase, cảnh báo mất dữ liệu của downgrade, SQL xem trước qua `python -m alembic` thật, và đối chiếu từng cột, CHECK, index giữa migration và ORM |
+| `tests/integration/test_db_provisioning.py` | Từng ràng buộc và index của revision 0003 trên DB thật; **cần 0003 đã áp dụng** (mục 12) |
 
 Các test tích hợp mới **cần migration đã áp dụng** lên database chúng chạy; trên database chưa migrate chúng fail, và đó là cách phát hiện thiếu migration.
 
@@ -155,3 +158,73 @@ uq_users_email_lower              CREATE UNIQUE INDEX uq_users_email_lower ON pu
 ```
 
 Production: **chưa chạy**. Cần nhóm đồng ý, snapshot hoặc nhánh sao lưu, truy vấn kiểm tra trùng ở mục 7, và fingerprint riêng của production (mục 5).
+
+## 12. Revision `0003_provisioning_idempotency` (Mốc E): đã áp dụng lên dev, production chưa
+
+> **Trạng thái:** **đã áp dụng lên dev_minhquan ngày 06/10/2026** (nhật ký ở mục 13), **chưa production.** Cần PostgreSQL 15 trở lên và database đang ở đúng revision `0002_integrity_constraints`.
+
+Chỉ có **bảng mới và một index**; không đổi bảng cũ.
+
+| Đối tượng | Mục đích |
+| --- | --- |
+| Bảng `provisioning_jobs` | Sổ bền của việc "tạo tài khoản Owner": một user Firebase và nhiều dòng DB mà không giao dịch nào bao trùm được. Không có cột nào chứa mật khẩu |
+| Bảng `idempotency_keys` | Sổ của header `Idempotency-Key` cho `POST .../business` và `POST .../owner`. `response_body` không bao giờ chứa mật khẩu (mã ứng dụng bảo đảm, có test ở bước E5, E6a) |
+| Index `uq_registration_pending_same_applicant` | Hai hồ sơ `PENDING` cùng email và cùng tên họ (không phân biệt hoa/thường) không thể cùng tồn tại. Ứng dụng trả `409 DUPLICATE_RESOURCE` |
+
+**Hai quy tắc ở tầng DB bảo vệ việc dọn user Firebase:**
+
+- **Chỉ xóa đúng uid của chính job.** `provisioning_jobs_firebase_uid_check` buộc `firebase_uid = 'own-' || job_id`. Một job không thể trỏ tới uid khác; việc dọn chỉ được xóa uid này, **không bao giờ xóa theo email**.
+- **Job còn user Firebase mồ côi thì chặn clan và email.** `needs_cleanup` chỉ bật được khi `status = 'FAILED'` và `firebase_user_created` (`provisioning_jobs_needs_cleanup_check`). Hai index `uq_provisioning_job_live_per_clan` và `uq_provisioning_job_live_email` đều tính cả dòng `needs_cleanup`, nên chưa dọn xong thì không tạo được job mới cho clan hay email đó. Ứng dụng kiểm tra trước và trả `409`; index là lớp cuối.
+
+Các ràng buộc còn lại: một job một clan trừ khi đã `FAILED` hẳn (kể cả `SUCCEEDED`: mỗi clan đúng một job Owner); job `RUNNING` bắt buộc có hạn khóa; trạng thái, loại job, số lần thử và độ dài `Idempotency-Key` (8 đến 128 ký tự), độ dài `request_hash` (đúng 64) đều có CHECK; một khóa `COMPLETED` bắt buộc có `response_status`; khóa duy nhất theo (người gọi, endpoint, key).
+
+**Kiểm tra trước khi chạy** (chỉ ở chế độ online, theo thứ tự, mọi lần từ chối xảy ra **trước** DDL và không đổi gì): PostgreSQL 15 trở lên; `alembic_version` đúng là `0002_integrity_constraints` (một dòng duy nhất); schema 0002 để lại có đủ (`users`, `clans`, `business_registrations`, `uq_users_email_lower`, `uq_active_clan_owner`); ba đối tượng mới chưa tồn tại (nếu ai đó tạo tay thì dừng, nêu tên); không có hồ sơ `PENDING` trùng. Khi có trùng, migration in **id hồ sơ** của từng nhóm (không in email, vì là dữ liệu cá nhân) và hướng dẫn xử lý bằng tay: xem lại và từ chối các hồ sơ thừa, không xóa.
+
+**Hoàn tác xóa dữ liệu, và từ chối khi còn việc dọn Firebase.** `downgrade` bỏ index, `idempotency_keys` và `provisioning_jobs` **cùng mọi dòng**. Một job `FAILED` có `needs_cleanup = true` là dấu vết duy nhất của một user Firebase còn phải xóa, nên lệnh online **từ chối chạy** khi còn dòng như vậy: dừng trước mọi DDL, không đổi gì, và thông báo chỉ nêu **số dòng** (không có email, không có uid). Muốn hoàn tác, dọn xong trước (chạy lại các job đó cho tới khi `needs_cleanup` về `false`). Khi không còn dòng cần dọn, lệnh in cảnh báo kèm số job và số khóa idempotency sắp bị xóa rồi mới chạy. Bản xem trước SQL (offline, không kết nối DB nên không kiểm được) có chú thích `WARNING` và ghi rõ rằng lệnh online sẽ từ chối. Ngoài việc từ chối đó, hoàn tác không bị chặn thêm bằng biến môi trường: guard `ALLOW_MIGRATE` và fingerprint đã là cổng. Test: `tests/test_migration_0003.py` (từ chối, không có câu lệnh nào chạy, thông báo không chứa email hay uid) và một đột biến "bỏ kiểm tra" làm test đỏ.
+
+Quy trình áp dụng vẫn như mục 5: xem trước SQL, lấy fingerprint, áp dụng lên dev, diễn tập `downgrade -1` rồi `upgrade head` (khi bảng còn trống), rồi mới tới production sau khi nhóm đồng ý.
+
+```powershell
+.venv\Scripts\python.exe -m alembic upgrade 0002_integrity_constraints:head --sql
+.venv\Scripts\python.exe -m alembic downgrade 0003_provisioning_idempotency:0002_integrity_constraints --sql
+```
+
+ORM đã khai báo hai entity mới (`ProvisioningJob`, `IdempotencyKey`) và index mới trên `BusinessRegistration`. Sau khi áp dụng, `scripts/check_orm_vs_db.py` ra 0 errors, 0 INFO (trước đó báo thiếu hai bảng và một index, đúng như dự kiến).
+
+## 13. Nhật ký áp dụng revision 0003
+
+### 06/10/2026: dev_minhquan (bước E2 của Mốc E)
+
+Đích: `database=mfgms_ai`, fingerprint `3ff0cec7` (đã xác nhận là nhánh dev_minhquan). `ALLOW_MIGRATE=1` và `MIGRATE_EXPECT_FINGERPRINT=3ff0cec7` chỉ đặt trong lệnh chạy, **không ghi vào `.env`**. Trước khi chạy: DB ở `0002_integrity_constraints`, các bảng nghiệp vụ đều 0 dòng, `subscription_plans` cũng 0 dòng.
+
+Trước khi áp dụng có một sửa nhỏ so với bản xem trước E1: `downgrade` của 0003 **từ chối** khi còn job `needs_cleanup` (mục 12), có test và đột biến.
+
+| Bước | Lệnh | Kết quả |
+| --- | --- | --- |
+| 1 | `alembic upgrade head` | Thoát 0; `alembic current` ra `0003_provisioning_idempotency (head)` |
+| 2 | Truy vấn chỉ đọc (`pg_constraint`, `pg_indexes`, `information_schema`) | Hai bảng đúng cột; 6 CHECK của `provisioning_jobs` và 4 CHECK của `idempotency_keys` đúng tên và biểu thức; ba khóa ngoại; bốn index đúng định nghĩa (bên dưới) |
+| 3 | `scripts/check_orm_vs_db.py` | 0 errors, 0 INFO; độ phủ cột `provisioning_jobs` 18/18, `idempotency_keys` 12/12 |
+| 4 | `alembic downgrade -1` | Thoát 0; in cảnh báo "0 rows, none needing a Firebase clean-up"; hai bảng và các index biến mất; `alembic current` về `0002_integrity_constraints` |
+| 4 | `alembic upgrade head` lần hai | Thoát 0; `alembic current` ra `0003_provisioning_idempotency (head)`; định nghĩa các đối tượng giống bước 2; `check_orm_vs_db` vẫn 0 errors, 0 INFO |
+| 5 | `pytest -q` | 417 passed, 222 deselected |
+| 6 | `ALLOW_DB_TESTS=1 pytest -m integration tests/integration/test_db_provisioning.py` | Lần đầu 65 passed, 2 failed: cả hai là lỗi của test (cột `varchar(128)` và `varchar(64)` từ chối chuỗi quá dài bằng lỗi kiểu dữ liệu, trước khi CHECK được xét). Đã sửa test; chạy lại 67 passed |
+| 6 | `ALLOW_DB_TESTS=1 pytest -m integration` (cả bộ, một lần) | 222 passed, 0 failed, 0 xfailed, 24 phút 04 giây |
+
+Sau khi chạy: 0 user, 0 clan, 0 job, 0 khóa idempotency, 0 audit_logs, 0 hồ sơ đăng ký; `roles`/`permissions`/`role_permissions` = 4/18/0; `alembic_version` = `0003_provisioning_idempotency`.
+
+Lưu ý khi đọc kết quả trên PostgreSQL 18: `pg_constraint` liệt kê thêm các dòng `NOT NULL` (loại `n`); `check_orm_vs_db.py` và test chỉ xét loại `c` nên không bị ảnh hưởng.
+
+Định nghĩa các đối tượng mới trên dev:
+
+```
+uq_provisioning_job_live_per_clan
+  CREATE UNIQUE INDEX uq_provisioning_job_live_per_clan ON public.provisioning_jobs USING btree (clan_id) WHERE (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'RUNNING'::character varying, 'FAILED_RETRYABLE'::character varying, 'SUCCEEDED'::character varying])::text[])) OR needs_cleanup)
+uq_provisioning_job_live_email
+  CREATE UNIQUE INDEX uq_provisioning_job_live_email ON public.provisioning_jobs USING btree (lower((email)::text)) WHERE (((status)::text = ANY ((ARRAY['PENDING'::character varying, 'RUNNING'::character varying, 'FAILED_RETRYABLE'::character varying])::text[])) OR needs_cleanup)
+idx_provisioning_jobs_clan_created
+  CREATE INDEX idx_provisioning_jobs_clan_created ON public.provisioning_jobs USING btree (clan_id, created_at DESC)
+uq_registration_pending_same_applicant
+  CREATE UNIQUE INDEX uq_registration_pending_same_applicant ON public.business_registrations USING btree (lower((representative_email)::text), lower((clan_name)::text)) WHERE ((status)::text = 'PENDING'::text)
+```
+
+Production: **chưa chạy.** Cần nhóm đồng ý, snapshot hoặc nhánh sao lưu, truy vấn kiểm tra trùng hồ sơ `PENDING` ở mục 12, và fingerprint riêng của production (mục 5).

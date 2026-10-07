@@ -198,9 +198,10 @@ def test_the_fingerprint_command_prints_only_the_database_and_the_fingerprint():
 # ---------------------------------------------------------------- migration chain
 
 
-def test_the_history_is_one_line_baseline_then_integrity_constraints():
+def test_the_history_is_one_line_baseline_then_0002_then_0003():
     script = ScriptDirectory.from_config(Config(str(BE_DIR / "alembic.ini")))
-    assert script.get_heads() == ["0002_integrity_constraints"]
+    assert script.get_heads() == ["0003_provisioning_idempotency"]
+    assert script.get_revision("0003_provisioning_idempotency").down_revision == "0002_integrity_constraints"
     assert script.get_revision("0002_integrity_constraints").down_revision == "0001_baseline"
     assert script.get_revision("0001_baseline").down_revision is None
 
