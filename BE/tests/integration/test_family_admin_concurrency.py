@@ -27,8 +27,11 @@ import uuid
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, func, or_, select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.pool import NullPool
+
+from app.db.postgres import make_engine
+from tests.integration.diagnostics import describe_error, is_error
 
 from app.controllers.auth_access.use_cases import ClientInfo
 from app.controllers.auth_access.user_admin_use_cases import (
@@ -115,7 +118,7 @@ async def committed():
     """A committed ACTIVE clan with its Business Owner and one ACTIVE plain member."""
     from app.core.config import settings
 
-    engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
+    engine = make_engine(settings.DATABASE_URL, poolclass=NullPool)
     maker = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with maker() as s, s.begin():
@@ -203,14 +206,14 @@ CLIENT = ClientInfo(None, None)
 
 
 async def _guarded(coro):
-    """'ok' on success, the AppError code, or 'ERROR:<driver error name>' (e.g. a deadlock)."""
+    """'ok' on success, the AppError code, or describe_error(): 'ERROR:<type>:<sqlstate>:<message>'."""
     try:
         await coro
         return "ok"
     except AppError as exc:
         return str(exc.code)
     except Exception as exc:  # noqa: BLE001 - a deadlock or a 500 must be reported by name
-        return f"ERROR:{type(getattr(exc, 'orig', exc)).__name__}"
+        return describe_error(exc)
 
 
 async def run_assign(
@@ -291,7 +294,7 @@ async def within(*coros, timeout=120):
 
 
 def no_errors(results) -> None:
-    assert not any(str(r).startswith("ERROR:") for r in results), results  # no deadlock, no 500
+    assert not any(is_error(r) for r in results), results  # no deadlock, no 500
 
 
 # ----- POST vs POST -----

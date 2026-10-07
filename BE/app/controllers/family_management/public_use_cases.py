@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from sqlalchemy.exc import IntegrityError
 
 from app.controllers.auth_access.use_cases import ClientInfo, UnitOfWork
+from app.core.db_errors import constraint_name  # noqa: F401  (also used by name in tests)
 from app.core.errors import AppError
 from app.core.request_id import get_request_id
 from app.core.tokens import generate_tracking_code, hash_tracking_code
@@ -50,12 +51,6 @@ MAX_TRACKING_CODE_ATTEMPTS = 3
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def constraint_name(exc: IntegrityError) -> str | None:
-    """The unique index, constraint or foreign key the database reports (psycopg diagnostics)."""
-    diag = getattr(exc.orig, "diag", None)
-    return getattr(diag, "constraint_name", None)
 
 
 def _invalid_plan() -> AppError:

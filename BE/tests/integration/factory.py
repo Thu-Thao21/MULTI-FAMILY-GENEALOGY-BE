@@ -214,17 +214,26 @@ class World:
         email: str | None = None,
         clan_name: str | None = None,
         status: str = "PENDING",
+        name: str = "Integration Test Applicant",
+        phone: str | None = None,
+        origin_place: str | None = None,
+        created_at: datetime | None = None,
     ) -> BusinessRegistration:
         tag = uuid.uuid4().hex[:12]
         row = BusinessRegistration(
             registration_id=uuid.uuid4(),
             requested_plan_id=plan.plan_id,
-            representative_name="Integration Test Applicant",
+            representative_name=name,
             representative_email=email or f"itest-reg-{tag}{EMAIL_DOMAIN}",
+            representative_phone=phone,
             clan_name=clan_name or f"Itest Clan {tag}",
+            origin_place=origin_place,
             status=status,
             tracking_code_hash=hash_session_token(uuid.uuid4().hex),  # stands in for sha256(tracking code)
         )
+        if created_at is not None:
+            row.created_at = created_at
+            row.updated_at = created_at
         self.s.add(row)
         await self.s.flush()
         return row
@@ -371,7 +380,8 @@ def build_app(session) -> FastAPI:
 
 
 def build_full_app(session, *, rate_limiters=None) -> FastAPI:
-    """The REAL routers (auth, user administration, public registration) on a real DB session.
+    """The REAL routers (auth, user administration, public registration, registration administration)
+    on a real DB session.
 
     Use this when the route itself is under test; build_app() above is the older stub
     app kept for the C3 authorization tests. The rate limiters are OFF by default so a test
@@ -380,6 +390,9 @@ def build_full_app(session, *, rate_limiters=None) -> FastAPI:
     from app.controllers.auth_access.router import router as auth_router
     from app.controllers.auth_access.user_admin_router import router as user_admin_router
     from app.controllers.family_management.public_router import router as public_router
+    from app.controllers.family_management.registration_admin_router import (
+        router as registration_admin_router,
+    )
     from app.core.rate_limit import RateLimiters, SlidingWindowLimiter
 
     app = FastAPI()
@@ -388,6 +401,7 @@ def build_full_app(session, *, rate_limiters=None) -> FastAPI:
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(user_admin_router, prefix="/api/v1")
     app.include_router(public_router, prefix="/api/v1")
+    app.include_router(registration_admin_router, prefix="/api/v1")
     app.state.rate_limiters = rate_limiters or RateLimiters(
         enabled=False,
         registration=SlidingWindowLimiter(5, 3600),

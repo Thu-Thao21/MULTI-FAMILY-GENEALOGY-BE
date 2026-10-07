@@ -159,3 +159,33 @@ Mô tả gốc:
 - **Hệ quả:** trên production, cho đến khi nhập gói, `GET /service-plans` trả danh sách rỗng và không ai đăng ký được (mọi `requested_plan_id` đều `422`). Cần có gói trước khi mở đăng ký công khai.
 - **Ngoài phạm vi Sprint 1:** thanh toán và hoàn thiện gói dịch vụ (đổi gói, hết hạn, gia hạn, thanh toán thật) thuộc **Sprint 6, task 3.6.8.6** trong project plan. Sprint 1 chỉ chọn gói lúc đăng ký và để SA kích hoạt thủ công (D03).
 - **Liên quan:** KI-17 (giới hạn tần suất của endpoint đăng ký), `docs/api_contract.md` quyết định 36.
+
+## KI-20 Audit của `PATCH /admin/users/{id}/status` còn chứa nội dung lý do, khác với audit duyệt hồ sơ
+
+- **Hiện trạng:** `PATCH /admin/users/{user_id}/status` (Mốc F, quyết định 21) ghi `reason` do SA nhập thẳng vào cột `audit_logs.reason`. Audit của `POST /admin/business-registrations/{id}/review` (Mốc E, bước E4, quyết định 47) thì **không**: chỉ ghi độ dài lý do (`new_data.reason_length`), còn `audit_logs.reason` luôn `NULL`.
+- **Vì sao đáng ghi:** hai audit không cùng một quy tắc. Lý do khóa tài khoản là văn bản tự do của SA và có thể chứa dữ liệu cá nhân (tên, email, số điện thoại của người bị khóa), trong khi `audit_logs` là bảng không có quyền xóa theo từng người. Quy tắc 3.5 của `docs/security_review.md` (audit không chứa email) hiện chỉ được kiểm chứng cho các trường cố định, không cho văn bản tự do.
+- **Quyết định cho Sprint 1:** giữ nguyên hành vi của `PATCH .../status` (không đổi endpoint cũ trong E4), nên lý do khóa tài khoản vẫn nằm trong `audit_logs.reason`. **Nhóm quyết định sau** giữa: (a) giữ nguyên và coi lý do khóa tài khoản là nội dung quản trị hợp lệ của audit, (b) chuyển sang kiểu "chỉ ghi độ dài" như review và lưu lý do ở bảng riêng có kiểm soát truy cập, (c) bỏ cột lý do khỏi audit.
+- **Liên quan:** `docs/api_contract.md` quyết định 21 và 47; `docs/security_review.md` mục 3.5 và mục 10.
+
+## KI-21 Bảng `idempotency_keys` phình dần: chưa có tác vụ dọn
+
+- **Hiện trạng:** mỗi lần `POST /admin/business-registrations/{id}/business` thành công (và sau này `POST /admin/clans/{id}/owner`) để lại một dòng `idempotency_keys` hết hạn sau 7 ngày. **Không có tác vụ nào xóa dòng hết hạn.** Hết hạn chỉ được xét khi đọc: một dòng quá hạn bị ghi đè tại chỗ khi cùng key được dùng lại, còn dòng không ai dùng lại thì nằm mãi trong bảng.
+- **Vì sao chấp nhận trong Sprint 1:** chỉ SA gọi, vài chục request mỗi ngày; không có hiệu ứng phụ nào ngoài kích thước bảng. Chỉ mục duy nhất `uq_idempotency_actor_endpoint_key` giữ tra cứu nhanh.
+- **Việc cần làm sau:** một tác vụ định kỳ `DELETE FROM idempotency_keys WHERE expires_at < now() - interval '1 day'` (kèm giới hạn số dòng mỗi lần), hoặc dọn theo lô khi khởi động. Chưa có chỗ chạy tác vụ nền (cùng lý do với KI-17), nên để nhóm quyết định cùng lúc.
+- **Liên quan:** `docs/api_contract.md` quyết định về idempotency; migration 0003.
+
+## KI-22 `clan_subscriptions` không chụp giá và điều khoản của gói
+
+- **Hiện trạng:** `clan_subscriptions` chỉ lưu `plan_id`, ngày bắt đầu, ngày kết thúc, trạng thái và `auto_renew`. Không có giá, chu kỳ hay giới hạn tại thời điểm đăng ký, và không có liên kết tới hồ sơ đăng ký.
+- **Hệ quả:** nếu sau này gói đổi giá, đổi giới hạn hoặc ngừng bán thì không còn dấu vết điều khoản mà clan đã được cấp. Thanh toán thật và đổi gói thuộc Sprint 6 (task 3.6.8.6), nên đây là việc của Sprint đó: cần cột chụp (giá, chu kỳ, giới hạn) hoặc bảng phiên bản gói, qua migration riêng.
+- **Hiện tại:** ngày của gói đăng ký lúc tạo Business chỉ là tạm thời (bắt đầu lúc tạo, kết thúc sau `billing_period_months` tháng); E7 đặt lại lúc kích hoạt clan.
+
+## KI-23 Neon cắt kết nối trong lần chạy integration dài: nguyên nhân chưa xác định
+
+- **Hiện tượng:** trong lần chạy integration 43 phút của E4 có 4 lỗi `server closed the connection unexpectedly` ở các test cũ của E3. Chạy riêng lại thì cả 4 pass.
+- **Cái đã biết:** `DATABASE_URL` trỏ vào pooler của Neon (PgBouncer chế độ transaction). Ba lỗi nằm ở các test đầu tiên dùng fixture `session` sau một file đồng thời dài (pool của fixture có đúng 2 kết nối nhàn rỗi), khớp với việc kết nối nhàn rỗi bị cắt. Lỗi thứ tư là hai racer bị rớt giữa giao dịch trên kết nối mới (`NullPool`); lúc đó helper chỉ ghi tên loại lỗi nên không biết sqlstate.
+- **Nguyên nhân phía Neon: CHƯA XÁC ĐỊNH.** Các giả thuyết: ngưỡng nhàn rỗi của pooler, **tự tạm dừng (autosuspend) của compute** (mặc định khoảng 5 phút không hoạt động trên nhiều gói), bảo trì. Việc cần làm của người có quyền Neon Console: xem cấu hình autosuspend của branch dev_minhquan và log kết nối quanh thời điểm lỗi; nếu autosuspend tắt được trên branch dev thì ghi lại.
+- **Đã làm (E4b):** engine dùng `pool_pre_ping=True`, `pool_recycle=1800`, `connect_timeout=15` (`ENGINE_OPTIONS` trong `app/db/postgres.py`, dùng chung với test qua `make_engine`). Test tích hợp báo lỗi hạ tầng dưới dạng `ERROR:<loại>:<sqlstate hoặc no-sqlstate>:<60 ký tự đầu thông điệp đã lọc>`: không có sqlstate nghĩa là kết nối bị đứt; `40P01`, `23xxx`, `55P03` là lỗi thật của mã. **Không thử lại ở đâu cả.**
+- **Giới hạn:** `pool_pre_ping` chỉ thay kết nối chết lúc lấy ra khỏi pool. Kết nối đứt giữa giao dịch vẫn là lỗi (ở ứng dụng là `503 DATABASE_UNAVAILABLE`) và pre-ping tốn thêm một vòng gọi mỗi lần lấy kết nối.
+- **Bài học liên quan (E5):** pooler chế độ transaction **không reset trạng thái cấp session**. Một đột biến đặt `lock_timeout = 10s` ở cấp session đã làm nhiễm một kết nối server và gây hai lỗi ở lần chạy cả bộ liền sau (một test thấy `SHOW lock_timeout` là `10s` sau commit, một test đồng thời bị `55P03`). Mã thật chỉ dùng `set_config(..., true)` (trong giao dịch) nên không dính; quy tắc: **không bao giờ đặt `SET` hay `set_config(..., false)` trên DB đi qua pooler**, và đột biến loại này chỉ chạy ở mức đơn vị.
+- **Liên quan:** `docs/testing.md` mục 5 (E4b và E5).

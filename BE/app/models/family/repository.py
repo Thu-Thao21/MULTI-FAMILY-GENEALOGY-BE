@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user_access.entities import User
@@ -97,6 +97,122 @@ class FamilyRepository:
             RegistrationAttachment.registration_id == registration_id
         )
         return list((await self._session.execute(stmt)).scalars().all())
+
+    # ----- Registration administration for the System Admin (Mốc E, step E4) -----
+    # Registrations exist before any clan, so none of these take a clan_id. Flush only.
+
+    @staticmethod
+    def _registration_filters(
+        status: str | None,
+        q: str | None,
+        created_from: datetime | None,
+        created_to: datetime | None,
+    ) -> list:
+        conditions = []
+        if status is not None:
+            conditions.append(BusinessRegistration.status == status)
+        if q:
+            # Case-insensitive substring; LIKE wildcards in the input are escaped.
+            escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = f"%{escaped}%"
+            conditions.append(
+                or_(
+                    BusinessRegistration.clan_name.ilike(pattern, escape="\\"),
+                    BusinessRegistration.representative_name.ilike(pattern, escape="\\"),
+                    BusinessRegistration.representative_email.ilike(pattern, escape="\\"),
+                )
+            )
+        if created_from is not None:
+            conditions.append(BusinessRegistration.created_at >= created_from)  # inclusive
+        if created_to is not None:
+            conditions.append(BusinessRegistration.created_at < created_to)  # exclusive
+        return conditions
+
+    async def list_registrations_page(
+        self,
+        *,
+        status: str | None,
+        q: str | None,
+        created_from: datetime | None,
+        created_to: datetime | None,
+        limit: int,
+        offset: int,
+    ):
+        """Rows for the SA list. Only the columns the list shows are selected, so the
+        applicant's e-mail and phone are never loaded just to list registrations."""
+        stmt = (
+            select(
+                BusinessRegistration.registration_id,
+                BusinessRegistration.clan_name,
+                BusinessRegistration.representative_name,
+                BusinessRegistration.requested_plan_id,
+                SubscriptionPlan.code.label("requested_plan_code"),
+                BusinessRegistration.status,
+                BusinessRegistration.created_at,
+                BusinessRegistration.reviewed_at,
+            )
+            .join(SubscriptionPlan, SubscriptionPlan.plan_id == BusinessRegistration.requested_plan_id)
+            .where(*self._registration_filters(status, q, created_from, created_to))
+            .order_by(BusinessRegistration.created_at.desc(), BusinessRegistration.registration_id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return list((await self._session.execute(stmt)).all())
+
+    async def count_registrations(
+        self,
+        *,
+        status: str | None,
+        q: str | None,
+        created_from: datetime | None,
+        created_to: datetime | None,
+    ) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(BusinessRegistration)
+            .where(*self._registration_filters(status, q, created_from, created_to))
+        )
+        return int((await self._session.execute(stmt)).scalar_one())
+
+    async def get_registration_with_plan(self, registration_id: uuid.UUID):
+        """(registration, plan code) or None."""
+        stmt = (
+            select(BusinessRegistration, SubscriptionPlan.code)
+            .join(SubscriptionPlan, SubscriptionPlan.plan_id == BusinessRegistration.requested_plan_id)
+            .where(BusinessRegistration.registration_id == registration_id)
+        )
+        return (await self._session.execute(stmt)).first()
+
+    async def lock_registration(self, registration_id: uuid.UUID) -> BusinessRegistration | None:
+        """The registration row, locked FOR NO KEY UPDATE and re-read from the database.
+
+        NO KEY UPDATE (not FOR UPDATE): the history row and the audit row reference this row
+        and the reviewer, and those foreign keys need KEY SHARE. populate_existing: after a
+        lock wait the row must be re-read, never taken from an older copy in the session.
+        """
+        stmt = (
+            select(BusinessRegistration)
+            .where(BusinessRegistration.registration_id == registration_id)
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def apply_registration_review(
+        self,
+        registration: BusinessRegistration,
+        *,
+        status: str,
+        reviewed_by: uuid.UUID,
+        rejection_reason: str | None,
+        now: datetime,
+    ) -> None:
+        registration.status = status
+        registration.reviewed_by = reviewed_by
+        registration.reviewed_at = now
+        registration.rejection_reason = rejection_reason
+        registration.updated_at = now
+        await self._session.flush()
 
     # ----- Plans (global catalog) -----
 
@@ -233,6 +349,54 @@ class FamilyRepository:
         """Idempotency check: one registration creates at most one clan."""
         stmt = select(Clan).where(Clan.registration_id == registration_id)
         return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def create_clan(
+        self,
+        *,
+        registration_id: uuid.UUID,
+        clan_code: str,
+        name: str,
+        created_by: uuid.UUID,
+        now: datetime,
+    ) -> Clan:
+        """A new clan in PENDING. Written inside a SAVEPOINT: when the unique index of the clan code
+        or of the registration rejects it, only the savepoint is rolled back and the caller's
+        transaction stays usable (so the caller can draw another code). The IntegrityError is
+        re-raised for the caller to read (constraint name); it never commits."""
+        clan = Clan(
+            clan_id=uuid.uuid4(), registration_id=registration_id, clan_code=clan_code, name=name,
+            status="PENDING", created_by=created_by, created_at=now, updated_at=now,
+        )
+        async with self._session.begin_nested():
+            self._session.add(clan)
+            await self._session.flush()
+        return clan
+
+    async def create_clan_profile(
+        self, *, clan_id: uuid.UUID, origin_place: str | None, now: datetime
+    ) -> ClanProfile:
+        profile = ClanProfile(clan_id=clan_id, origin_place=origin_place, updated_at=now)
+        self._session.add(profile)
+        await self._session.flush()
+        return profile
+
+    async def create_subscription(
+        self,
+        *,
+        clan_id: uuid.UUID,
+        plan_id: uuid.UUID,
+        starts_at: datetime,
+        ends_at: datetime,
+        status: str,
+        now: datetime,
+    ) -> ClanSubscription:
+        subscription = ClanSubscription(
+            subscription_id=uuid.uuid4(), clan_id=clan_id, plan_id=plan_id, starts_at=starts_at,
+            ends_at=ends_at, status=status, auto_renew=False, created_at=now,
+        )
+        self._session.add(subscription)
+        await self._session.flush()
+        return subscription
 
     async def get_clan_profile(self, clan_id: uuid.UUID) -> ClanProfile | None:
         stmt = select(ClanProfile).where(ClanProfile.clan_id == clan_id)

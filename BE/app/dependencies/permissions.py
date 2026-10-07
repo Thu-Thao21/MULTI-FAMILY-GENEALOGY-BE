@@ -34,6 +34,7 @@ from app.core.errors import AppError
 from app.db.postgres import get_db
 from app.dependencies.auth import Principal, get_principal, get_user_access_repo
 from app.models.family.entities import Clan, ClanMembership, ClanOwnershipHistory
+from app.models.family.idempotency_repository import IdempotencyRepository
 from app.models.family.repository import FamilyRepository
 from app.models.user_access.entities import User as UserEntity
 from app.models.user_access.repository import SYSTEM_ADMIN_ROLE, UserAccessRepository
@@ -321,6 +322,10 @@ def clan_scope_from_path(param: str = "clan_id") -> ScopeResolver:
 
 async def get_family_repo(db: AsyncSession = Depends(get_db)) -> FamilyRepository:
     return FamilyRepository(db)
+
+
+async def get_idempotency_repo(db: AsyncSession = Depends(get_db)) -> IdempotencyRepository:
+    return IdempotencyRepository(db)
 
 
 def require_action(action: Action, scope: ScopeResolver = system_scope):

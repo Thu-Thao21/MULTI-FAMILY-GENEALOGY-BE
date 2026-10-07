@@ -16,8 +16,9 @@ from pathlib import Path
 import httpx
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.postgres import make_engine
 from tests.integration.factory import World, build_app, build_full_app
 
 ENV_FLAG = "ALLOW_DB_TESTS"
@@ -40,7 +41,7 @@ def pytest_collection_modifyitems(config, items):
 async def engine():
     from app.core.config import settings
 
-    eng = create_async_engine(settings.DATABASE_URL, pool_size=2, max_overflow=0)
+    eng = make_engine(settings.DATABASE_URL, pool_size=2, max_overflow=0)
     try:
         yield eng
     finally:

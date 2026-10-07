@@ -169,6 +169,27 @@ def test_list_users_search_is_case_insensitive_and_email_is_not_changed(w):
     assert [i["email"] for i in r.json()["items"]] == ["Mixed.Case@Example.test"]
 
 
+@pytest.mark.parametrize("q", ["%00", "a%00b", "a%07b", "a%0Ab", "a%09b", "a%0Db", "%7F", "a%1Bb"],
+                         ids=["nul", "nul-inside", "bell", "lf", "tab", "cr", "delete", "escape"])
+def test_list_users_search_with_a_control_character_is_422_not_a_500(w, q):
+    """E4 fix: a NUL in q used to reach the database driver and become a 500."""
+    _sa, token = w.sa()
+    r = w.client.get(f"/api/v1/admin/users?q={q}", headers=h(token))
+    assert (r.status_code, code(r)) == (422, "VALIDATION_ERROR")
+
+
+@pytest.mark.parametrize("q", ["", "%20%20", "ab", "x" * 255])
+def test_list_users_search_keeps_its_old_rules_empty_means_no_filter(w, q):
+    _sa, token = w.sa()
+    assert w.client.get(f"/api/v1/admin/users?q={q}", headers=h(token)).status_code == 200
+
+
+def test_list_users_search_longer_than_255_is_still_422(w):
+    _sa, token = w.sa()
+    r = w.client.get(f"/api/v1/admin/users?q={'x' * 256}", headers=h(token))
+    assert (r.status_code, code(r)) == (422, "VALIDATION_ERROR")
+
+
 # ----- GET /admin/users/{id} -----
 
 

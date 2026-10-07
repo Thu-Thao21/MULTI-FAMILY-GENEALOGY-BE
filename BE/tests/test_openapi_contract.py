@@ -98,6 +98,30 @@ EXPECTED: dict[tuple[str, str], dict] = {
         response="BusinessRegistrationTrackResponse", params=set(),
         errors={404: {"NOT_FOUND"}, 422: V422, 429: {"RATE_LIMITED"}, 500: BOOM, 503: DB},
     ),
+    # Mốc E, step E4: System Admin administration of registrations (authentication required).
+    ("get", "/admin/business-registrations"): dict(
+        success=200, request=None, response="Page_BusinessRegistrationSummary_",
+        params={"page", "page_size", "status", "q", "created_from", "created_to"},
+        errors={401: AUTHED_401, 403: AUTHED_403_FULL, 422: V422, 500: BOOM, 503: DB},
+    ),
+    ("get", "/admin/business-registrations/{registration_id}"): dict(
+        success=200, request=None, response="BusinessRegistrationDetail", params={"registration_id"},
+        errors={401: AUTHED_401, 403: AUTHED_403_FULL, 404: {"NOT_FOUND"}, 422: V422, 500: BOOM, 503: DB},
+    ),
+    ("post", "/admin/business-registrations/{registration_id}/review"): dict(
+        success=200, request="RegistrationReviewRequest", response="RegistrationReviewResponse",
+        params={"registration_id"},
+        errors={401: AUTHED_401, 403: AUTHED_403_FULL, 404: {"NOT_FOUND"}, 409: {"STATE_CONFLICT"},
+                422: V422, 500: BOOM, 503: DB},
+    ),
+    # Mốc E, step E5: create the Business of an APPROVED registration (Idempotency-Key required).
+    ("post", "/admin/business-registrations/{registration_id}/business"): dict(
+        success=201, request="BusinessCreateRequest", response="BusinessCreateResponse",
+        params={"registration_id", "Idempotency-Key"},
+        errors={401: AUTHED_401, 403: AUTHED_403_FULL, 404: {"NOT_FOUND"},
+                409: {"STATE_CONFLICT", "DUPLICATE_RESOURCE", "IDEMPOTENCY_KEY_CONFLICT"},
+                422: V422, 500: BOOM, 503: DB},
+    ),
     ("put", "/clans/{clan_id}/admins/{user_id}/permissions"): dict(
         success=200, request="FamilyAdminPermissionsUpdateRequest",
         response="FamilyAdminPermissionsResponse", params={"clan_id", "user_id"},
@@ -123,6 +147,10 @@ def ref_name(schema: dict | None) -> str | None:
     if not schema:
         return None
     ref = schema.get("$ref")
+    if ref is None:  # an OPTIONAL body is anyOf [model, null]
+        options = [o for o in schema.get("anyOf", []) if o.get("type") != "null"]
+        if len(options) == 1:
+            ref = options[0].get("$ref")
     return ref.split("/")[-1] if ref else None
 
 
@@ -253,7 +281,7 @@ def test_contract_only_gaps_are_the_documented_ones():
 def test_known_not_implemented_endpoints_are_still_not_in_openapi(spec):
     """Mốc E and reset endpoints are in the contract but must not appear half-built."""
     not_built = {
-        "/admin/business-registrations", "/auth/password-reset/request",
+        "/auth/password-reset/request",
         "/auth/password-reset/confirm", "/admin/provisioning-jobs/{job_id}",
     }
     for path in not_built:
@@ -279,6 +307,46 @@ def test_the_contract_lists_every_error_status_a_guest_endpoint_declares(spec, k
     for status, codes in declared_errors(spec["paths"][PREFIX + key[1]][key[0]]).items():
         if status in (404, 409):
             assert named.get(str(status)) in codes, (key, status)
+
+
+SA_REGISTRATION_ENDPOINTS = [
+    ("get", "/admin/business-registrations"),
+    ("get", "/admin/business-registrations/{registration_id}"),
+    ("post", "/admin/business-registrations/{registration_id}/review"),
+    ("post", "/admin/business-registrations/{registration_id}/business"),
+]
+
+
+@pytest.mark.parametrize("key", SA_REGISTRATION_ENDPOINTS)
+def test_the_contract_lists_every_error_status_an_sa_registration_endpoint_declares(spec, key):
+    """E4 reverse check: nothing the code can answer is missing from the contract."""
+    contract = parse_contract()[key]
+    listed = {int(status) for status, _name in re.findall(r"`(\d{3})(?: ([A-Z_]+))?`", contract["errors"])}
+    declared = set(declared_errors(spec["paths"][PREFIX + key[1]][key[0]])) - {500, 503}
+    assert declared <= listed, f"{key}: the contract does not list {sorted(declared - listed)}"
+    named = dict(re.findall(r"`(\d{3}) ([A-Z_]+)`", contract["errors"]))
+    for status, codes in declared_errors(spec["paths"][PREFIX + key[1]][key[0]]).items():
+        if status in (404, 409):
+            assert named.get(str(status)) in codes, (key, status)
+
+
+@pytest.mark.parametrize("key", SA_REGISTRATION_ENDPOINTS)
+def test_sa_registration_endpoints_are_authenticated(spec, key):
+    declared = declared_errors(spec["paths"][PREFIX + key[1]][key[0]])
+    assert declared[401] == AUTHED_401 and "FORBIDDEN" in declared[403]
+    assert 429 not in declared  # not rate limited
+
+
+def test_the_business_endpoint_requires_the_idempotency_key_header_and_takes_an_optional_body(spec):
+    op = spec["paths"][PREFIX + "/admin/business-registrations/{registration_id}/business"]["post"]
+    header = next(p for p in op["parameters"] if p["name"] == "Idempotency-Key")
+    assert header["in"] == "header" and header["required"] is True
+    assert header["schema"]["minLength"] == 8 and header["schema"]["maxLength"] == 128
+    assert header["schema"].get("pattern")
+    assert op["requestBody"].get("required") is not True  # no body at all means "generate the clan code"
+    assert next(p for p in op["parameters"] if p["name"] == "registration_id")["required"] is True
+    declared = declared_errors(op)
+    assert declared[409] == {"STATE_CONFLICT", "DUPLICATE_RESOURCE", "IDEMPOTENCY_KEY_CONFLICT"}
 
 
 @pytest.mark.parametrize("key", GUEST_ENDPOINTS)

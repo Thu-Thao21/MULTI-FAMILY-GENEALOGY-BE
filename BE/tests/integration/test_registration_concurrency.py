@@ -27,8 +27,11 @@ from decimal import Decimal
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, func, select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.pool import NullPool
+
+from app.db.postgres import make_engine
+from tests.integration.diagnostics import describe_error, is_error
 
 from app.controllers.auth_access.use_cases import ClientInfo
 from app.controllers.family_management.public_use_cases import create_registration
@@ -101,7 +104,7 @@ async def committed_plan():
     """(session maker, plan_id): a committed ACTIVE plan of our own."""
     from app.core.config import settings
 
-    engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
+    engine = make_engine(settings.DATABASE_URL, poolclass=NullPool)
     maker = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with maker() as s, s.begin():
@@ -146,7 +149,7 @@ async def run_registration(maker, plan_id, email, clan_name, *, check_barrier=No
         except AppError as exc:
             return str(exc.code)
         except Exception as exc:  # noqa: BLE001 - a driver error here is exactly what must not happen
-            return f"ERROR:{type(exc).__name__}"
+            return describe_error(exc)
 
 
 async def within(*coroutines, seconds: float = 180.0) -> list:
@@ -166,8 +169,8 @@ async def state(maker, plan_id, email: str) -> dict:
 
 
 def no_errors(results) -> None:
-    errors = [r for r in results if str(r).startswith("ERROR")]
-    assert not errors, f"driver errors (deadlock, 500): {errors}"
+    errors = [r for r in results if is_error(r)]
+    assert not errors, f"driver errors (deadlock, 500, or a dropped connection: see the sqlstate): {errors}"
 
 
 # ------------------------------------------------------------------ identical applicants

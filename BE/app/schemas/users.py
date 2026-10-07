@@ -17,6 +17,7 @@ from app.schemas.common import (
     PageParams,
     RequestModel,
     ResponseModel,
+    UserSearchText,
     UtcDatetime,
 )
 
@@ -36,8 +37,9 @@ PermissionCode = Annotated[
 
 class AdminUserListQuery(PageParams):
     status: Optional[UserStatus] = None
-    q: Optional[Annotated[str, StringConstraints(strip_whitespace=True, max_length=255)]] = (
-        Field(default=None, description="Search on email / display_name.")
+    q: Optional[UserSearchText] = Field(
+        default=None,
+        description="Search on email / display_name. Control characters are rejected (422).",
     )
 
 

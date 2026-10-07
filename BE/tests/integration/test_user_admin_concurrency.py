@@ -30,6 +30,7 @@ from app.models.user_access.entities import AuditLog, User
 from app.models.user_access.repository import UserAccessRepository
 from app.schemas.errors import ErrorCode
 from app.schemas.users import UserStatusUpdateRequest
+from tests.integration.diagnostics import describe_error, is_error
 from tests.integration.test_last_sa_concurrency import (  # noqa: F401  (fixture)
     two_committed_sas,
 )
@@ -54,7 +55,7 @@ class SlowCommit:
 
 
 async def _attempt(maker, barrier, actor_id, target_id, status: str = "LOCKED"):
-    """One real request. Returns 'ok', the AppError code, or 'ERROR:<driver error name>'."""
+    """One real request. Returns 'ok', the AppError code, or describe_error(): 'ERROR:<type>:<sqlstate>:<message>'."""
     async with maker() as s:
         try:
             await barrier.wait()
@@ -70,7 +71,7 @@ async def _attempt(maker, barrier, actor_id, target_id, status: str = "LOCKED"):
         except AppError as exc:
             return str(exc.code)
         except Exception as exc:  # noqa: BLE001 - a deadlock must be reported by name
-            return f"ERROR:{type(getattr(exc, 'orig', exc)).__name__}"
+            return describe_error(exc)
 
 
 async def _race(maker, *requests):
@@ -110,7 +111,7 @@ async def test_two_sas_locking_each_other_one_wins_one_conflicts_no_deadlock(two
     results = await _race(maker, (a_id, b_id, status), (b_id, a_id, status))
 
     assert sorted(results) == sorted(["ok", str(ErrorCode.STATE_CONFLICT)]), results
-    assert not any(r.startswith("ERROR:") for r in results)  # no deadlock, no 500
+    assert not any(is_error(r) for r in results)  # no deadlock, no 500
     assert await _active_among(maker, [a_id, b_id]) == 1
     assert await _audit_count(maker, [a_id, b_id]) == 1  # only the winner is audited
 
@@ -137,7 +138,7 @@ async def test_unlocking_one_sa_while_the_other_locks_it_is_serialized(two_commi
     # other SA. Whatever the order, the end state keeps at least one ACTIVE SA.
     results = await _race(maker, (a_id, b_id, "ACTIVE"), (a_id, a_id, "LOCKED"))
 
-    assert not any(r.startswith("ERROR:") for r in results), results
+    assert not any(is_error(r) for r in results), results
     assert await _active_among(maker, [a_id, b_id]) >= 1
 
 
@@ -165,4 +166,4 @@ async def test_control_user_row_first_with_for_update_deadlocks(two_committed_sa
     maker, a_id, b_id = two_committed_sas
     results = await _race(maker, (a_id, b_id, "LOCKED"), (b_id, a_id, "LOCKED"))
 
-    assert any(r == "ERROR:DeadlockDetected" for r in results), results
+    assert any(r.startswith("ERROR:DeadlockDetected:40P01:") for r in results), results  # sqlstate 40P01

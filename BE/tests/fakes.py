@@ -17,8 +17,12 @@ from app.models.family.entities import (
     Clan,
     ClanMembership,
     ClanOwnershipHistory,
+    ClanProfile,
+    ClanSubscription,
     FamilyAdminAssignment,
+    IdempotencyKey,
     PlanFeatureLimit,
+    RegistrationAttachment,
     RegistrationStatusHistory,
     SubscriptionPlan,
 )
@@ -88,6 +92,14 @@ class FakeIdentityProvider:
         if self.set_password_error is not None:
             raise self.set_password_error
         self.password_changes.append(uid)
+
+
+class _SqlStateError(Exception):
+    """Stands in for a psycopg error that carries a SQLSTATE (e.g. 55P03 lock_not_available)."""
+
+    def __init__(self, sqlstate: str) -> None:
+        super().__init__("simulated")
+        self.sqlstate = sqlstate
 
 
 class _DbError(Exception):
@@ -450,6 +462,149 @@ class FakeFamilyRepo:
         self.calls.append("get_registration_by_tracking_hash")
         return next((r for r in self.registrations if r.tracking_code_hash == tracking_code_hash), None)
 
+    # --- Mốc E, step E4: registration administration for the System Admin ---
+    registration_attachments: list[RegistrationAttachment] = field(default_factory=list)
+
+    def add_registration(
+        self, plan, *, name="Tran Thi Test", email=None, clan_name=None, status="PENDING",
+        created_at=None, phone="+84 912 345 678", origin_place="Itest Village", reviewed_by=None,
+        reviewed_at=None, rejection_reason=None,
+    ) -> BusinessRegistration:
+        tag = uuid.uuid4().hex[:8]
+        row = BusinessRegistration(
+            registration_id=uuid.uuid4(), requested_plan_id=plan.plan_id, representative_name=name,
+            representative_email=email or f"applicant-{tag}@example.test",
+            representative_phone=phone, clan_name=clan_name or f"Ho Test {tag}", origin_place=origin_place,
+            status=status, tracking_code_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+            reviewed_by=reviewed_by, reviewed_at=reviewed_at, rejection_reason=rejection_reason,
+            created_at=created_at or NOW, updated_at=created_at or NOW,
+        )
+        self.registrations.append(row)
+        return row
+
+    def add_history(self, registration, from_status, to_status, *, changed_by=None, reason=None, at=None):
+        row = RegistrationStatusHistory(
+            history_id=uuid.uuid4(), registration_id=registration.registration_id, from_status=from_status,
+            to_status=to_status, changed_by=changed_by, reason=reason, changed_at=at or NOW,
+        )
+        self.registration_history.append(row)
+        return row
+
+    def add_attachment(self, registration, file_name="doc.pdf"):
+        row = RegistrationAttachment(
+            attachment_id=uuid.uuid4(), registration_id=registration.registration_id, file_name=file_name,
+            storage_key="secret/storage/key/" + uuid.uuid4().hex, mime_type="application/pdf", uploaded_at=NOW,
+        )
+        self.registration_attachments.append(row)
+        return row
+
+    def _matches(self, r, status, q, created_from, created_to) -> bool:
+        if status is not None and r.status != status:
+            return False
+        if q:
+            needle = q.lower()  # a literal substring: %, _ and backslash are ordinary characters
+            haystack = (r.clan_name, r.representative_name, r.representative_email)
+            if not any(needle in value.lower() for value in haystack):
+                return False
+        if created_from is not None and r.created_at < created_from:
+            return False
+        if created_to is not None and r.created_at >= created_to:
+            return False
+        return True
+
+    async def list_registrations_page(self, *, status, q, created_from, created_to, limit, offset):
+        self.calls.append("list_registrations_page")
+        rows = [r for r in self.registrations if self._matches(r, status, q, created_from, created_to)]
+        rows.sort(key=lambda r: (r.created_at, str(r.registration_id)), reverse=True)
+        return [
+            SimpleNamespace(
+                registration_id=r.registration_id, clan_name=r.clan_name,
+                representative_name=r.representative_name, requested_plan_id=r.requested_plan_id,
+                requested_plan_code=self.plans[r.requested_plan_id].code, status=r.status,
+                created_at=r.created_at, reviewed_at=r.reviewed_at,
+            )
+            for r in rows[offset: offset + limit]
+        ]
+
+    async def count_registrations(self, *, status, q, created_from, created_to):
+        self.calls.append("count_registrations")
+        return sum(1 for r in self.registrations if self._matches(r, status, q, created_from, created_to))
+
+    async def get_registration_with_plan(self, registration_id):
+        self.calls.append("get_registration_with_plan")
+        row = next((r for r in self.registrations if r.registration_id == registration_id), None)
+        return None if row is None else (row, self.plans[row.requested_plan_id].code)
+
+    async def lock_registration(self, registration_id):
+        self.calls.append("lock_registration")
+        if self.lock_wait_error:
+            raise OperationalError("SELECT ... FOR NO KEY UPDATE", {}, _SqlStateError("55P03"))
+        return next((r for r in self.registrations if r.registration_id == registration_id), None)
+
+    async def apply_registration_review(self, registration, *, status, reviewed_by, rejection_reason, now):
+        self.calls.append("apply_registration_review")
+        registration.status = status
+        registration.reviewed_by = reviewed_by
+        registration.reviewed_at = now
+        registration.rejection_reason = rejection_reason
+        registration.updated_at = now
+
+    async def list_registration_status_history(self, registration_id):
+        self.calls.append("list_registration_status_history")
+        return sorted((h for h in self.registration_history if h.registration_id == registration_id),
+                      key=lambda h: h.changed_at)
+
+    async def list_registration_attachments(self, registration_id):
+        self.calls.append("list_registration_attachments")
+        return [a for a in self.registration_attachments if a.registration_id == registration_id]
+
+    async def get_clan_by_registration_id(self, registration_id):
+        self.calls.append("get_clan_by_registration_id")
+        return next((c for c in self.clans.values() if c.registration_id == registration_id), None)
+
+    # --- Mốc E, step E5: create the Business (clan, profile, subscription) ---
+    clan_profiles: list[ClanProfile] = field(default_factory=list)
+    subscriptions: list[ClanSubscription] = field(default_factory=list)
+    # Constraint names to raise (as IntegrityError) from the next create_clan calls, before any
+    # real check: an unknown name reaches the use case as an unexpected IntegrityError.
+    create_clan_errors: list[str] = field(default_factory=list)
+    # The names of the unique indexes the database would enforce are still checked after those.
+    lock_wait_error: bool = False  # lock_registration times out (SQLSTATE 55P03)
+
+    async def get_clan_by_code(self, clan_code):
+        self.calls.append("get_clan_by_code")
+        return next((c for c in self.clans.values() if c.clan_code == clan_code), None)
+
+    async def create_clan(self, *, registration_id, clan_code, name, created_by, now):
+        self.calls.append("create_clan")
+        if self.create_clan_errors:
+            raise IntegrityError("INSERT clans", {}, _DbError(self.create_clan_errors.pop(0)))
+        if any(c.clan_code == clan_code for c in self.clans.values()):
+            raise IntegrityError("INSERT clans", {}, _DbError("clans_clan_code_key"))
+        if any(c.registration_id == registration_id for c in self.clans.values()):
+            raise IntegrityError("INSERT clans", {}, _DbError("clans_registration_id_key"))
+        clan = Clan(
+            clan_id=uuid.uuid4(), registration_id=registration_id, clan_code=clan_code, name=name,
+            status="PENDING", created_by=created_by, created_at=now, updated_at=now,
+        )
+        self.clans[clan.clan_id] = clan
+        return clan
+
+    async def create_clan_profile(self, *, clan_id, origin_place, now):
+        self.calls.append("create_clan_profile")
+        row = ClanProfile(clan_id=clan_id, origin_place=origin_place, updated_at=now)
+        self.clan_profiles.append(row)
+        return row
+
+    async def create_subscription(self, *, clan_id, plan_id, starts_at, ends_at, status, now):
+        self.calls.append("create_subscription")
+        row = ClanSubscription(
+            subscription_id=uuid.uuid4(), clan_id=clan_id, plan_id=plan_id, starts_at=starts_at,
+            ends_at=ends_at, status=status, auto_renew=False, created_at=now,
+        )
+        self.subscriptions.append(row)
+        return row
+
     def add_clan(self, status: str = "ACTIVE") -> Clan:
         clan = Clan(clan_id=uuid.uuid4(), clan_code=uuid.uuid4().hex[:8], name="Clan", status=status)
         self.clans[clan.clan_id] = clan
@@ -584,3 +739,113 @@ class FakeFamilyRepo:
             for m in self.memberships
             if m.user_id == user_id and m.revoked_at is None and m.status != "REVOKED"
         ]
+
+
+@dataclass
+class FakeIdempotencyRepo:
+    """In-memory idempotency_keys with the unique key (actor, endpoint, key) and the same protocol
+    as IdempotencyRepository. `calls` can be the SAME list as the family fake, to see the order."""
+
+    calls: list[str] = field(default_factory=list)
+    rows: list[IdempotencyKey] = field(default_factory=list)
+    lock_timeout_seconds: int | None = None
+    wait_error: bool = False  # the INSERT waits for a lock and times out (SQLSTATE 55P03)
+    vanish_once: bool = False  # the conflicting row disappears between INSERT and SELECT
+
+    def _find(self, actor_id, endpoint, key):
+        return next(
+            (r for r in self.rows
+             if r.actor_id == actor_id and r.endpoint == endpoint and r.idempotency_key == key), None)
+
+    async def set_lock_timeout(self, seconds):
+        self.calls.append("idem.set_lock_timeout")
+        self.lock_timeout_seconds = seconds
+
+    async def insert_in_progress(self, *, actor_id, endpoint, idempotency_key, request_hash, created_at, expires_at):
+        self.calls.append("idem.insert")
+        if self.wait_error:
+            raise OperationalError("INSERT idempotency_keys", {}, _SqlStateError("55P03"))
+        if self._find(actor_id, endpoint, idempotency_key) is not None:
+            return None
+        row = IdempotencyKey(
+            idempotency_id=uuid.uuid4(), actor_id=actor_id, endpoint=endpoint,
+            idempotency_key=idempotency_key, request_hash=request_hash, status="IN_PROGRESS",
+            created_at=created_at, expires_at=expires_at,
+        )
+        self.rows.append(row)
+        return row
+
+    async def lock_existing(self, *, actor_id, endpoint, idempotency_key):
+        self.calls.append("idem.lock_existing")
+        row = self._find(actor_id, endpoint, idempotency_key)
+        if self.vanish_once and row is not None:
+            self.vanish_once = False
+            self.rows.remove(row)
+            return None
+        return row
+
+    async def reset(self, row, *, request_hash, created_at, expires_at):
+        self.calls.append("idem.reset")
+        row.request_hash, row.status, row.created_at, row.expires_at = request_hash, "IN_PROGRESS", created_at, expires_at
+        row.resource_type = row.resource_id = row.response_status = row.response_body = None
+
+    async def complete(self, row, *, response_status, response_body, resource_type, resource_id):
+        self.calls.append("idem.complete")
+        row.status, row.response_status, row.response_body = "COMPLETED", response_status, response_body
+        row.resource_type, row.resource_id = resource_type, resource_id
+
+    def rollback_uncommitted(self, committed: list) -> None:
+        """What a rollback does to the rows written since the last commit."""
+        self.rows[:] = committed
+
+
+class FakeTx(FakeDb):
+    """A unit of work that really rolls back what the E5 fakes wrote.
+
+    The harness calls begin() at the start of each request (as a new database transaction would
+    start); commit() makes the current state the new baseline; rollback() restores the baseline.
+    Covers the idempotency rows, the clans, profiles, subscriptions and audit rows.
+    """
+
+    def __init__(self, *, idem=None, family=None, users=None) -> None:
+        super().__init__(repo=users)
+        self.idem, self.family, self.users = idem, family, users
+        self._baseline = None
+        self.events: list[str] = []
+
+    def _capture(self):
+        import copy
+
+        return {
+            "idem": [copy.copy(r) for r in self.idem.rows] if self.idem is not None else None,
+            "clans": dict(self.family.clans) if self.family is not None else None,
+            "profiles": list(self.family.clan_profiles) if self.family is not None else None,
+            "subscriptions": list(self.family.subscriptions) if self.family is not None else None,
+            "audit": list(self.users.audit) if self.users is not None else None,
+        }
+
+    def begin(self) -> None:
+        self._baseline = self._capture()
+
+    async def commit(self) -> None:
+        self.events.append("commit")
+        await super().commit()
+        self._baseline = self._capture()
+
+    async def rollback(self) -> None:
+        self.events.append("rollback")
+        await super().rollback()
+        b = self._baseline
+        if b is None:
+            return
+        if self.idem is not None:
+            import copy
+
+            self.idem.rows[:] = [copy.copy(r) for r in b["idem"]]
+        if self.family is not None:
+            self.family.clans.clear()
+            self.family.clans.update(b["clans"])
+            self.family.clan_profiles[:] = b["profiles"]
+            self.family.subscriptions[:] = b["subscriptions"]
+        if self.users is not None:
+            self.users.audit[:] = b["audit"]

@@ -116,6 +116,46 @@ Chạy từ `BE`, Python 3.13.7, `.venv` của dự án, sau `seed_dev.py --clea
 
 Tổng cộng 457 test. Sau lần chạy, DB không còn dòng rác: 0 user, 0 clan, 0 audit_logs, 0 phiên; `roles`/`permissions`/`role_permissions` giữ nguyên (4/18/0). Mốc F2 thêm: nhóm test vòng đời Family Admin (đơn vị, DB thật, đồng thời) và test dev seed vẫn nhất quán. Test cũ của Mốc F `test_every_code_in_the_permissions_table_is_accepted` (ủy quyền mọi mã, kể cả `ADMIN_MANAGE`) đã đổi thành `test_every_delegable_code_in_the_permissions_table_is_accepted` theo quyết định Q1: mọi mã trừ `ADMIN_MANAGE` được nhận, thêm `ADMIN_MANAGE` thì `403`.
 
+### Mốc E, bước E4b và E5: kết nối bền hơn, idempotency, tạo Business (08/10/2026)
+
+Chạy trên nhánh dev (`0003_provisioning_idempotency`, fingerprint 3ff0cec7), không migrate, không seed thêm; ba gói `DEV-` giữ nguyên.
+
+| Lệnh | Kết quả |
+| --- | --- |
+| `pytest -q` | **1052 passed**, 351 deselected (nhóm `integration`), 0 failed, 64 giây. Thêm 218 test so với E4 (834): 23 của E4b (cấu hình engine, chẩn đoán lỗi), 195 của E5 và CORS |
+| `ALLOW_DB_TESTS=1 pytest -m integration` hai file mới (`test_business_create_db.py`, `test_business_create_concurrency.py`) | **44 passed** ngay lần đầu, 14 phút 28 giây |
+| `ALLOW_DB_TESTS=1 pytest -m integration -q` (cả bộ, một lần duy nhất) | **349 passed, 2 failed**, 53 phút 24 giây. Hai lỗi đều có nguyên nhân giải thích được (xem dưới); chạy riêng lại hai test đó: **2 passed**. Không chạy lại cả bộ |
+| `python -c "import app.main"` | MAIN OK |
+
+Tổng cộng 1403 test (1052 + 351). Số lỗi hạ tầng "server closed the connection" của E4 **không lặp lại** trong lần chạy này (sau khi engine dùng `pool_pre_ping`, `pool_recycle` và `connect_timeout`; chưa đủ một lần chạy để kết luận nguyên nhân phía Neon, KI-23).
+
+**Hai lỗi của lần chạy cả bộ: do chính đột biến của tôi làm nhiễm pooler.**
+- `test_business_create_db.py::test_set_lock_timeout_is_local_to_the_transaction` thấy `SHOW lock_timeout` vẫn là `10s` sau commit, và `test_family_admin_concurrency.py::test_put_then_delete_race_leaves_no_permissions_on_the_revoked_assignment` bị `55P03 canceling statement due to lock timeout` (sqlstate hiện rõ nhờ phần B của E4b).
+- Nguyên nhân: đột biến DB "lock timeout theo session" (`set_config(..., false)`) chạy ngay trước lần chạy cả bộ đã đặt `lock_timeout = 10s` ở **cấp session** trên một kết nối server của pooler Neon. PgBouncer chế độ transaction **không reset trạng thái session**, nên kết nối đó được giao cho client khác, và test khác chạm 10 giây chờ khóa. Mã thật dùng `is_local = true` (chỉ trong giao dịch) nên không có rủi ro này; đúng là điều test đầu tiên bảo vệ.
+- Kiểm chứng: sau lần chạy, một truy vấn chỉ đọc mở 12 giao dịch đồng thời (12 backend khác nhau) cho `lock_timeout = 0` ở cả 12; hai test chạy riêng đều pass. Đây là suy luận từ các dấu hiệu khớp nhau, không phải bằng chứng trực tiếp.
+- **Bài học cho đột biến:** không bao giờ chạy đột biến thay đổi trạng thái session (SET, `set_config(..., false)`) trên DB đi qua pooler; chỉ dùng đột biến mức đơn vị cho loại đó (đột biến này vẫn bị bắt ở mức đơn vị bởi `test_business_create_repository_sql.py::test_the_lock_timeout_is_local_to_the_transaction_and_a_bound_parameter`). Đã ghi vào KI-23.
+
+Sau các lần chạy, DB dev: 0 user, 0 clan, 0 hồ sơ đăng ký, 0 lịch sử trạng thái, 0 audit_logs, 0 provisioning_jobs, 0 idempotency_keys, 0 clan_subscriptions, 0 phiên, 0 vai trò người dùng; `subscription_plans` đúng **3** với 6 dòng `plan_feature_limits`; `roles`/`permissions`/`role_permissions` giữ nguyên (4/18/0); `alembic_version` = `0003_provisioning_idempotency`.
+
+**Lỗi của test mới ở E5 (đã sửa trong test, không phải trong mã ứng dụng):** `LockedThenWait` và các helper đồng thời chạy đúng ngay lần đầu; các sửa là ở test đơn vị (kỳ vọng `commit` trước `rollback` khi commit hỏng, quy tắc `text()` của test bảo mật buộc dùng `set_config` có tham số thay cho `SET LOCAL` dạng f-string, so sánh `calls` thay vì tìm chữ trong docstring).
+
+### Mốc E, bước E4: SA xem và duyệt hồ sơ (07/10/2026)
+
+Chạy trên nhánh dev (`0003_provisioning_idempotency`, fingerprint 3ff0cec7), không migrate, không seed thêm; ba gói `DEV-` giữ nguyên.
+
+| Lệnh | Kết quả |
+| --- | --- |
+| `pytest -q` | **834 passed**, 307 deselected (nhóm `integration`), 0 failed, 61 giây. Thêm 163 test so với E3 (671) |
+| `ALLOW_DB_TESTS=1 pytest -m integration` hai file mới (`test_registration_admin_db.py`, `test_registration_review_concurrency.py`) | Lần đầu 33 passed, 4 failed, đều là lỗi của test (xem dưới); sau khi sửa: **37 passed** |
+| `ALLOW_DB_TESTS=1 pytest -m integration -q` (cả bộ, một lần duy nhất) | **302 passed, 5 failed**, 43 phút 33 giây. 4 lỗi là `server closed the connection unexpectedly` (Neon cắt kết nối trong lần chạy dài) ở test cũ của E3; chạy riêng lại 4 test đó: **4 passed**. Lỗi thứ năm là test mới `test_different_registrations_are_reviewed_in_parallel_...` (xem dưới); sau khi sửa file đó chạy riêng: **8 passed**. Không chạy lại cả bộ |
+| `python -c "import app.main"` | MAIN OK |
+
+Tổng cộng 1141 test (834 + 307). Số lần chạy cả bộ không đạt 0 failed trong một lượt: 5 lỗi trên đều có nguyên nhân đã giải thích (4 lỗi hạ tầng, 1 lỗi của test mới), nhưng chưa có một lượt cả bộ nào xanh hoàn toàn sau khi sửa.
+
+**Lỗi của test mới (đã sửa trong test, không phải trong mã ứng dụng):** `INSERT`/`begin()` sai trên session đã autobegin; kỳ vọng tìm kiếm sai (`clan <tag>` không khớp `Clan Beta <tag>`); các test "có bị chặn không" dùng thời gian giữ 1,5 giây trong khi chi tiết hồ sơ cần bốn lượt gọi Neon (~1,4 giây), nên không phân biệt được chậm với bị chặn: nay giữ 6 giây và so với 3,6 giây; test song song so sánh với một lần duyệt đơn nhưng tính cả thời gian mở kết nối: nay tính từ lúc rào chắn được thả.
+
+Sau các lần chạy, DB dev: 0 user, 0 clan, 0 hồ sơ đăng ký, 0 lịch sử trạng thái, 0 audit_logs, 0 provisioning_jobs, 0 idempotency_keys, 0 clan_subscriptions, 0 phiên, 0 vai trò người dùng; `subscription_plans` đúng **3** với 6 dòng `plan_feature_limits`; `roles`/`permissions`/`role_permissions` giữ nguyên (4/18/0); `alembic_version` = `0003_provisioning_idempotency`.
+
 ### Mốc E, bước E3: Guest, bộ giới hạn tần suất, seed gói (07/10/2026)
 
 Chạy trên nhánh dev (`0003_provisioning_idempotency`), sau khi seed ba gói `DEV-` (`seed_dev.py --plans-only`, chạy hai lần: lần một tạo 3 gói và 6 dòng tính năng, lần hai tạo 0 dòng).
@@ -282,3 +322,48 @@ Lần chạy đầu có **2 đột biến sống sót**, do test yếu chứ kh�
 | Đăng ký trên DB thật | không bắt `IntegrityError` (cuộc đua đồng thời lộ lỗi driver); danh sách gói liệt kê mọi trạng thái | `integration/test_registration_concurrency.py::test_identical_registrations_at_the_same_instant_exactly_one_wins_and_the_rest_get_409`, `integration/test_registration_db.py::test_only_active_plans_are_listed_cheapest_first_with_their_features` |
 
 Các đột biến mức DB chạy trên nhánh dev: mọi test tích hợp đều rollback, test đồng thời tự dọn dữ liệu `itest-conc-` và không đụng gói `DEV-`. Sau đó DB vẫn đúng trạng thái ở mục 5.
+
+## 10. Kiểm chứng test bằng đột biến (Mốc E, bước E4)
+
+Cách làm như mục 8 và 9: áp từng đột biến lên mã thật, chạy các test liên quan, khôi phục, so sha256 với bản trước khi đột biến. Tổng cộng **73 lần đột biến, đều bị bắt, 0 sống sót**: 67 đột biến khác nhau chạy test không cần DB, 6 đột biến chạy trên DB dev (kèm 5 lần chạy lại cho các đột biến ban đầu chỉ bị bắt do lỗi phụ).
+
+| Nhóm | Đột biến | Test bắt được |
+| --- | --- | --- |
+| Khóa | đọc hồ sơ không khóa; `FOR UPDATE` thay `FOR NO KEY UPDATE`; bỏ mệnh đề khóa; bỏ `populate_existing` | `test_registration_admin_repository_sql.py::test_the_review_lock_is_for_no_key_update_and_rereads_the_row`, `test_registration_admin_api.py::test_the_registration_is_locked_first_the_users_row_never_and_the_repository_never_commits` |
+| Máy trạng thái | bỏ kiểm tra `PENDING`; cho duyệt lại hồ sơ `APPROVED` hoặc `REJECTED` | `test_registration_admin_api.py::test_only_a_pending_registration_can_be_reviewed_and_the_409_names_the_status`, `::test_both_decisions_are_final_a_second_review_in_any_direction_is_409` |
+| Ghi dữ liệu | bỏ lịch sử; bỏ audit; commit hai lần hoặc không commit; thiếu `reviewed_by`, `reviewed_at`, `from_status`, `changed_by`, `actor_id`, `old_data` | `::test_approving_updates_the_registration_writes_one_history_row_and_one_audit_row` |
+| Lý do | không bắt buộc khi `REJECTED`; chuỗi thường nhận NUL; ghi chú duyệt vào `rejection_reason`; `reason_visible_to_applicant` luôn đúng hoặc luôn sai | `::test_a_rejection_without_a_valid_reason_is_422_and_changes_nothing`, `::test_an_approval_note_is_internal_only_it_never_reaches_rejection_reason_or_the_audit`, `::test_rejecting_needs_a_reason_and_makes_it_visible_to_the_applicant` |
+| Audit và log | audit chứa nội dung lý do, email, tên, tên họ; `audit_logs.reason` có giá trị; log chứa lý do | `::test_the_audit_row_holds_no_personal_data_no_clan_name_and_never_the_reason_text`, `::test_the_reason_the_applicant_and_the_request_never_reach_a_log` |
+| Thông điệp `409` và gói | thông điệp không nêu trạng thái; bỏ kiểm tra gói khi duyệt; chỉ kiểm tra gói thiếu; kiểm tra gói cả khi từ chối | `::test_approving_needs_a_plan_that_is_still_active`, `::test_rejecting_does_not_look_at_the_plan[INACTIVE]` |
+| Danh sách | lộ email; bỏ lọc trạng thái; bỏ tìm kiếm (use case và SQL); sắp xếp tăng dần hoặc thiếu khóa phụ; `LIKE` phân biệt hoa/thường; không thoát ký tự đại diện; tìm cả điện thoại; mốc ngày lệch một đơn vị (hai phía); tổng bằng độ dài trang hoặc bỏ bộ lọc; bỏ kiểm tra thứ tự ngày; `page_size` trên 100; chọn cột email | `test_registration_admin_repository_sql.py` (SQL thật), `test_registration_admin_api.py::test_the_list_shows_exactly_the_planned_fields_and_none_of_the_personal_contact_data`, `::test_paging_and_the_total_follow_the_filters`, `::test_bad_paging_is_422_and_the_largest_page_is_accepted` |
+| Chi tiết | lộ `storage_key`, `tracking_code_hash`; đảo thứ tự lịch sử; không hiện `clan_id`; mã lạ không trả `404` (chi tiết và review) | `::test_the_detail_history_is_oldest_first_and_attachments_never_show_the_storage_key`, `::test_the_detail_never_shows_the_tracking_hash`, `::test_an_unknown_registration_is_404_and_a_bad_id_is_422` |
+| Router | bỏ phân quyền của danh sách hoặc chi tiết; review chỉ cần đăng nhập; gắn bộ giới hạn tần suất; bỏ `no-store`; bỏ IP thật của client | `::test_an_anonymous_caller_is_401_on_every_endpoint`, `::test_everyone_who_is_not_a_system_admin_gets_403_and_nothing_changes`, `::test_the_admin_endpoints_are_not_rate_limited_on_the_real_app`, `::test_the_admin_router_source_never_mentions_the_rate_limiter`, `::test_the_audit_row_records_the_connecting_address_not_a_forwarded_one` |
+| Kiểu văn bản | `SearchText` nhận ký tự điều khiển; `q` của `/admin/users` hoặc của hồ sơ về chuỗi thường | `test_text_types.py::test_search_text_rejects_every_control_character_including_nul`, `::test_exactly_these_fields_use_the_search_cleaner` |
+| Kê khai | đổi tên một phương thức repository toàn cục | `test_security_checks.py::test_family_repository_methods_without_clan_id_are_all_accounted_for` |
+| **Trên DB thật (6)** | bỏ khóa dòng (hai SA cùng thắng); bỏ kiểm tra `PENDING`; bỏ kiểm tra gói; `q` của `/admin/users` về chuỗi thường (**tái hiện lỗi `500` cũ**: `DataError` không xử lý); không thoát ký tự đại diện; audit chứa nội dung lý do | `integration/test_registration_review_concurrency.py::test_two_reviewers_approve_at_the_same_instant_exactly_one_wins`, `integration/test_registration_admin_db.py::test_both_decisions_are_final_on_the_real_database`, `::test_approving_needs_an_active_plan_but_rejecting_does_not`, `::test_a_control_character_in_the_search_is_422_never_a_500`, `::test_wildcards_and_backslash_in_the_search_are_ordinary_characters`, `::test_rejecting_stores_the_public_reason_and_the_audit_never_holds_it` |
+
+Lần chạy đầu có 1 đột biến "không tìm thấy" (mẫu văn bản của chính script đột biến sai, không phải test yếu) và 5 đột biến chỉ bị bắt do lỗi phụ (ngoại lệ không xử lý) chứ không do khẳng định định sẵn; đã chạy lại từng đột biến với đúng test dự kiến và cả sáu đều fail đúng chỗ. Các đột biến mức DB chạy trên nhánh dev: mọi test tích hợp đều rollback, test đồng thời tự dọn dữ liệu `itest-conc-rv-` và không đụng gói `DEV-`. Sau đó DB vẫn đúng trạng thái ở mục 5.
+
+## 11. Kiểm chứng test bằng đột biến (Mốc E, bước E4b và E5)
+
+Cách làm như mục 8 đến 10: áp từng đột biến lên mã thật, chạy các test liên quan, khôi phục, so sha256 với bản trước khi đột biến. Test chỉ đáng tin khi nó **fail**. Không có đột biến nào còn sống.
+
+**E4b (17 đột biến, đều bị bắt).** Bỏ hoặc đổi `pool_pre_ping`, `pool_recycle`, `connect_timeout`; ghi đè làm mất bộ tùy chọn; sửa cả dict dùng chung; dựng engine ngoài `make_engine` (ứng dụng và fixture); helper chẩn đoán không đọc sqlstate, không lọc URL, host, `host=`/`password=`, không cắt 60 ký tự, không gom một dòng, nhận nhầm lỗi hạ tầng, thêm hàm thử lại. Test bắt: `test_db_engine_config.py`, `test_integration_diagnostics.py`.
+
+**E5: 90 đột biến mức đơn vị + 12 mức DB thật, đều bị bắt.**
+
+| Nhóm | Đột biến | Test bắt được |
+| --- | --- | --- |
+| Hash | bỏ phương thức, endpoint, tham số đường dẫn hoặc body khỏi hash; không sắp xếp khóa; sha1; UUID không chuẩn tắc; use case bỏ tham số đường dẫn, không chuẩn hóa body, sai hằng endpoint | `test_idempotency_core.py::test_anything_that_makes_the_request_different_changes_the_hash`, `::test_the_hash_is_64_hex_characters_and_stable`, `test_business_create_api.py::test_the_key_row_is_completed_in_the_same_transaction_with_the_response_that_was_sent` |
+| Header | độ dài tối thiểu 4, tối đa 256; cho khoảng trắng; header tùy chọn; router không nhận header | `test_idempotency_core.py::test_the_key_is_8_to_128_printable_ascii_characters_without_spaces`, `::test_the_header_is_required` |
+| Claim | không đặt `lock_timeout` hoặc 60 giây; TTL 1 ngày; không so hash; bỏ kiểm tra hết hạn hoặc lệch biên; phát lại hàng đang chạy; không thử lại hàng biến mất, thử vô hạn | `test_idempotency_core.py::test_a_second_claim_of_a_completed_key_with_the_same_hash_is_a_replay`, `::test_the_same_key_with_another_hash_is_a_conflict_whatever_its_status`, `::test_the_expiry_boundary_counts_as_expired_and_one_second_before_does_not`, `::test_two_vanishing_rows_in_a_row_is_a_bug_not_a_race` |
+| Complete và `run_idempotent` | cho phép bí mật hoặc body không phải JSON; commit hai lần hoặc không commit; phát lại có commit; không rollback khi lỗi; không đổi `55P03` thành `409`; thiếu `Retry-After`; hàng `IN_PROGRESS` chạy lại việc; bỏ `complete` | `::test_a_stored_response_may_never_hold_a_secret`, `::test_a_success_runs_the_work_inside_the_claim_stores_the_response_and_commits_once`, `::test_an_error_in_the_work_rolls_back_and_the_key_is_not_stored`, `::test_a_lock_wait_timeout_is_409_with_retry_after_not_a_503` |
+| SQL | bỏ endpoint khỏi đích xung đột; hàng mới `COMPLETED`; khóa bỏ qua người gọi; `FOR UPDATE`; không đọc lại; `lock_timeout` theo session; `reset` giữ phản hồi cũ; repository commit; clan ngoài SAVEPOINT; clan `ACTIVE`; gói tự gia hạn; mất nơi gốc | `test_business_create_repository_sql.py` (SQL thật) |
+| Use case | bỏ kiểm tra `APPROVED`, "đã có clan", gói `ACTIVE`; gói không lấy từ hồ sơ; đọc hồ sơ không khóa; không kiểm trước mã SA nhập; không sinh lại mã, 10 lần thay vì 3, thử lại mọi `IntegrityError`, không ánh xạ chỉ mục hồ sơ, nuốt `IntegrityError` lạ; thiếu profile; subscription hay clan `ACTIVE`; ngày kết thúc bằng ngày bắt đầu; thiếu `created_by`, sai tên, không gắn hồ sơ; không audit, audit thiếu `clan_id` hoặc chứa email, tên họ, mã clan; log chứa mã clan | `test_business_create_api.py` (nhiều test, xem mục 11 của `security_review.md`) |
+| Router và CORS | không phân quyền; cho phép cache; không gửi header phát lại; gắn giới hạn tần suất; trạng thái 200; không expose `Idempotency-Replayed` | `::test_everyone_who_is_not_a_system_admin_gets_403_before_any_validation_or_lookup`, `::test_the_endpoint_is_not_rate_limited_and_a_browser_can_read_the_replay_marker`, `test_cors.py::test_a_cross_origin_page_may_read_the_replay_marker`, `test_openapi_contract.py` |
+| Ngày và mã clan | không cắt ngày cuối tháng, lệch tháng, không sang năm, cho tháng âm; bảng chữ có ký tự nhập nhằng, 6 ký tự, tiền tố khác, dùng `random` | `test_core_helpers_e5.py` |
+| **Trên DB thật (12)** | `INSERT` trơn không `ON CONFLICT`; key commit riêng ngay sau claim; clan không SAVEPOINT; đọc hồ sơ không khóa; bỏ kiểm tra gói, trạng thái; `lock_timeout` theo session; key không bao giờ hoàn tất; audit chứa email; không ánh xạ chỉ mục hồ sơ; không so hash; bỏ kiểm tra hết hạn | `integration/test_business_create_concurrency.py::test_the_same_key_at_the_same_instant_creates_one_business_and_both_get_the_same_answer`, `::test_a_request_that_dies_half_way_leaves_nothing_and_a_waiter_with_the_same_key_creates_it`, `::test_the_business_waits_for_a_review_that_approves_and_then_succeeds`, `integration/test_business_create_db.py` (các test tương ứng ở mục 11 của `security_review.md`) |
+
+Lần chạy đầu có **1 đột biến sống sót** (thử lại vô hạn khi hàng key biến mất, `range(50)` thay vì `range(2)`): test chỉ kiểm kết quả `INTERNAL_ERROR`, vốn giống nhau. Đã siết test (đếm đúng số lần chèn và đọc: 3 và 2) và đột biến bị bắt. Sáu đột biến ban đầu chỉ bị bắt do lỗi phụ (ngoại lệ không xử lý, dòng log lỗi) đã được chạy lại với đúng test dự kiến và đều fail đúng chỗ.
+
+**Cảnh báo về đột biến trên DB thật qua pooler:** đột biến `lock_timeout` theo session làm nhiễm kết nối server của pooler và gây hai lỗi ở lần chạy cả bộ liền sau (xem mục 5, E5). Từ nay đột biến kiểu đổi trạng thái session chỉ chạy ở mức đơn vị. Các đột biến mức DB khác chạy trên nhánh dev: mọi test tích hợp đều rollback, test đồng thời tự dọn dữ liệu `itest-conc-bc-` và không đụng gói `DEV-`.

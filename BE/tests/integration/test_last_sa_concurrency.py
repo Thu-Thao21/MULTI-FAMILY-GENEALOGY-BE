@@ -16,8 +16,10 @@ from datetime import datetime, timezone
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, func, or_, select, update
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.pool import NullPool
+
+from app.db.postgres import make_engine
 
 from app.core.errors import AppError
 from app.dependencies.permissions import ensure_not_last_system_admin
@@ -49,7 +51,7 @@ async def purge_prefixed_users(s) -> None:
 async def two_committed_sas():
     from app.core.config import settings
 
-    engine = create_async_engine(settings.DATABASE_URL, poolclass=NullPool)
+    engine = make_engine(settings.DATABASE_URL, poolclass=NullPool)
     maker = async_sessionmaker(engine, expire_on_commit=False)
     ids: list[uuid.UUID] = []
     try:

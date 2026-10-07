@@ -20,6 +20,7 @@ from app.schemas.common import (
     Phone,
     RequestModel,
     ResponseModel,
+    SearchText,
     SecretToken,
     Str255,
     UtcDatetime,
@@ -103,14 +104,30 @@ class BusinessRegistrationTrackResponse(ResponseModel):
 
 class BusinessRegistrationListQuery(PageParams):
     status: Optional[RegistrationStatus] = None
+    q: Optional[SearchText] = Field(
+        default=None,
+        description=(
+            "Case-insensitive substring of the clan name, the representative name or the "
+            "representative e-mail (2 to 100 characters, control characters are rejected)."
+        ),
+    )
+    created_from: Optional[UtcDatetime] = Field(
+        default=None, description="Inclusive lower bound of created_at (needs a time zone)."
+    )
+    created_to: Optional[UtcDatetime] = Field(
+        default=None, description="Exclusive upper bound of created_at (needs a time zone)."
+    )
 
 
 class BusinessRegistrationSummary(ResponseModel):
+    """One row of the SA list. It deliberately has NO e-mail, phone, place of origin, reason,
+    reviewer, history or attachments: those are in the detail only."""
+
     registration_id: uuid.UUID
     clan_name: str
     representative_name: str
-    representative_email: str
     requested_plan_id: uuid.UUID
+    requested_plan_code: str
     status: RegistrationStatus
     created_at: UtcDatetime
     reviewed_at: Optional[UtcDatetime] = None
@@ -134,6 +151,9 @@ class RegistrationAttachmentItem(ResponseModel):
 
 
 class BusinessRegistrationDetail(BusinessRegistrationSummary):
+    """The SA sees the applicant's personal data here (e-mail, phone)."""
+
+    representative_email: str
     representative_phone: Optional[str] = None
     origin_place: Optional[str] = None
     reviewed_by: Optional[uuid.UUID] = None
@@ -151,7 +171,14 @@ class BusinessRegistrationDetail(BusinessRegistrationSummary):
 
 class RegistrationReviewRequest(RequestModel):
     decision: ReviewDecision
-    reason: Optional[MultilineText] = None
+    reason: Optional[MultilineText] = Field(
+        default=None,
+        description=(
+            "Required when decision is REJECTED. WHEN REJECTED THE APPLICANT SEES THIS TEXT "
+            "(POST /business-registrations/track, public_reason). When APPROVED it is an optional "
+            "internal note kept in the status history, never shown to the applicant."
+        ),
+    )
 
     @model_validator(mode="after")
     def _reason_required_on_reject(self) -> "RegistrationReviewRequest":
@@ -165,6 +192,12 @@ class RegistrationReviewResponse(ResponseModel):
     status: RegistrationStatus
     reviewed_by: uuid.UUID
     reviewed_at: UtcDatetime
+    reason_visible_to_applicant: bool = Field(
+        description=(
+            "True only when the registration was REJECTED: the reason is then shown to the "
+            "applicant on tracking. False for an approval (its note is internal)."
+        )
+    )
 
 
 # ----- POST /admin/business-registrations/{id}/business (SA, Idempotency-Key) -----

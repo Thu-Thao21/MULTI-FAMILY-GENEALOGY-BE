@@ -40,12 +40,35 @@ class _Result:
     def first(self):
         return None
 
+    def all(self):  # row results (E4: the SA list selects columns, not entities)
+        return []
+
+
+class _Nested:
+    """`async with session.begin_nested()`: records that a SAVEPOINT was opened and how it ended."""
+
+    def __init__(self, session: "RecordingSession") -> None:
+        self._session = session
+
+    async def __aenter__(self):
+        self._session.savepoints.append("opened")
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self._session.savepoints.append("rolled back" if exc_type else "released")
+        return False
+
 
 class RecordingSession:
     def __init__(self) -> None:
         self.statements: list = []
         self.added: list = []
         self.flushes = 0
+        self.savepoints: list[str] = []
+        self.flush_error: Exception | None = None
+
+    def begin_nested(self) -> _Nested:
+        return _Nested(self)
 
     async def execute(self, stmt, *args, **kwargs):
         self.statements.append(stmt)
@@ -56,6 +79,8 @@ class RecordingSession:
 
     async def flush(self) -> None:
         self.flushes += 1
+        if self.flush_error is not None:
+            raise self.flush_error
 
 
 def compiled(session: RecordingSession, index: int = 0):

@@ -31,11 +31,12 @@ from app.schemas.business import (
     BusinessRegistrationTrackRequest,
     OwnerProvisionRequest,
 )
-from app.schemas.common import Email, MultilineText, Password, SecretToken, Str255
+from app.schemas.common import Email, MultilineText, Password, SearchText, SecretToken, Str255, UserSearchText
 
 LF, CR, TAB, NUL = "\n", "\r", "\t", "\x00"
 ONE_LINE_CLEANERS = {common._clean_one_line, common._clean_email}
-CLEANERS = ONE_LINE_CLEANERS | {common._clean_multiline}
+SEARCH_CLEANERS = {common._clean_search}  # E4: search boxes (never stored, never logged)
+CLEANERS = ONE_LINE_CLEANERS | {common._clean_multiline} | SEARCH_CLEANERS
 
 
 def ok(type_, value):
@@ -207,6 +208,39 @@ def test_the_secret_types_carry_no_cleaning_validator():
         assert not CLEANERS & set(validators)
 
 
+# ------------------------------------------------------------------ SearchText / UserSearchText (E4)
+
+
+def test_search_text_is_trimmed_collapsed_and_normalized_but_never_lower_cased():
+    nfd = unicodedata.normalize("NFD", "Nguyễn")
+    assert ok(SearchText, "  Họ   Nguyễn  ") == "Họ Nguyễn"
+    assert ok(SearchText, nfd) == unicodedata.normalize("NFC", "Nguyễn")
+    assert ok(SearchText, "MiXeD") == "MiXeD"  # case is the database's job (ILIKE)
+
+
+@pytest.mark.parametrize("bad", [NUL, "a" + NUL, "a\x07b", "a\x7fb", "a\x1bb", "a" + LF + "b", "a" + TAB + "b", "a" + CR + "b"])
+def test_search_text_rejects_every_control_character_including_nul(bad):
+    assert rejected(SearchText, bad) and rejected(UserSearchText, bad)
+
+
+@pytest.mark.parametrize("value, accepted", [("", False), ("a", False), (" a ", False), ("ab", True), ("x" * 100, True), ("x" * 101, False)])
+def test_search_text_is_2_to_100_characters_after_trimming(value, accepted):
+    assert rejected(SearchText, value) is not accepted
+
+
+@pytest.mark.parametrize("value, accepted", [("", True), ("   ", True), ("a", True), ("x" * 255, True), ("x" * 256, False)])
+def test_user_search_text_keeps_the_old_rules_0_to_255(value, accepted):
+    """GET /admin/users?q= keeps its behaviour: an empty q is still "no filter"."""
+    assert rejected(UserSearchText, value) is not accepted
+    if accepted:
+        assert ok(UserSearchText, value) == value.strip()
+
+
+def test_search_text_does_not_change_the_wildcards_it_receives():
+    # LIKE characters are escaped by the repository, not removed here.
+    assert ok(SearchText, "50%_\\") == "50%_\\"
+
+
 # ------------------------------------------------------------------ the set of fields that use the cleaners
 
 
@@ -254,6 +288,27 @@ def test_exactly_these_fields_use_the_one_line_cleaners():
         ("OwnerProvisionRequest", "display_name"),
         ("PasswordResetRequest", "email"),
     }
+
+
+def test_exactly_these_fields_use_the_search_cleaner():
+    users = {
+        (model.__name__, name)
+        for model in all_models()
+        for name, field in model.model_fields.items()
+        if _uses(field, SEARCH_CLEANERS)
+    }
+    assert users == {
+        ("BusinessRegistrationListQuery", "q"),
+        ("AdminUserListQuery", "q"),
+    }
+
+
+def test_the_search_cleaner_is_not_used_by_any_stored_field():
+    """A search text is a filter: it must never be the type of a field that is written."""
+    for model in all_models():
+        for name, field in model.model_fields.items():
+            if _uses(field, SEARCH_CLEANERS):
+                assert model.__name__.endswith("ListQuery"), (model.__name__, name)
 
 
 def test_no_secret_field_anywhere_uses_a_cleaner_or_is_a_plain_string():

@@ -39,6 +39,12 @@ def build_probe_app():
     async def ok():
         return {"ok": True}
 
+    @router.get("/probe/replay")
+    async def replay():
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse({"ok": True}, headers={"Idempotency-Replayed": "true", "Retry-After": "1"})
+
     @router.get("/probe/unauthenticated")
     async def unauthenticated():
         raise AppError(ErrorCode.UNAUTHENTICATED)
@@ -79,6 +85,7 @@ def assert_cors_ok(response, origin: str) -> None:
     assert response.headers.get("access-control-allow-credentials") == "true"
     exposed = response.headers.get("access-control-expose-headers", "")
     assert "X-Request-ID" in exposed and "Retry-After" in exposed
+    assert "Idempotency-Replayed" in exposed  # E5: the browser must be able to read the replay marker
     assert "Origin" in response.headers.get("vary", "")
 
 
@@ -184,6 +191,14 @@ def test_preflight_allows_the_headers_the_frontend_sends(probe, origin):
     for method in ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
         assert method in methods
     assert r.headers["X-Request-ID"]
+
+
+@pytest.mark.parametrize("origin", ORIGINS)
+def test_a_cross_origin_page_may_read_the_replay_marker(probe, origin):
+    r = probe.get("/probe/replay", headers={"Origin": origin})
+    assert r.headers["Idempotency-Replayed"] == "true"
+    exposed = [h.strip().lower() for h in r.headers["access-control-expose-headers"].split(",")]
+    assert {"idempotency-replayed", "retry-after", "x-request-id"} <= set(exposed)
 
 
 def test_preflight_from_foreign_origin_is_refused(probe):

@@ -87,6 +87,15 @@ def _clean_one_line(value: str) -> str:
     return value
 
 
+def _clean_search(value: str) -> str:
+    """Search text: no control characters (a NUL would make the driver raise), NFC, inner
+    whitespace collapsed so it matches the collapsed stored text. Length is checked by the
+    StringConstraints of each search type, before this runs."""
+    _reject_control_characters(value)
+    value = unicodedata.normalize("NFC", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
 def _clean_email(value: str) -> str:
     _reject_control_characters(value)
     value = unicodedata.normalize("NFC", value)
@@ -122,6 +131,19 @@ Str255 = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_TEXT_255),
     AfterValidator(_clean_one_line),
+]
+# Search text of the `q` query parameters. SearchText (2 to 100 characters) is for the
+# registration list; UserSearchText keeps the length rules the user list always had (1 to 255).
+# Both reject control characters, normalize to NFC and collapse inner whitespace.
+SearchText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=2, max_length=100),
+    AfterValidator(_clean_search),
+]
+UserSearchText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, max_length=MAX_TEXT_255),
+    AfterValidator(_clean_search),
 ]
 # Multi-line free text: the reason fields (PATCH /admin/users/{id}/status and the registration
 # review). Newline and tab are allowed, NUL and every other control character are not: a NUL

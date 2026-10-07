@@ -331,6 +331,15 @@ FAMILY_METHODS_WITHOUT_CLAN_ID = {
     "exists_pending_registration": "pre-clan: duplicate check on the applicant, returns a boolean",
     "create_registration": "pre-clan: a Guest registration (no clan yet)",
     "add_registration_status_history": "pre-clan: keyed by registration_id",
+    # Mốc E step E4: the System Admin administers registrations, which exist before any clan.
+    # Authorization (System Admin only, system scope) is done by require_action before these run.
+    "list_registrations_page": "pre-clan: SA-only list of registrations, keyed by filters",
+    "count_registrations": "pre-clan: SA-only count, same filters as the list",
+    "get_registration_with_plan": "pre-clan: SA-only detail, keyed by registration_id",
+    "lock_registration": "pre-clan: the review lock, keyed by registration_id",
+    "apply_registration_review": "pre-clan: write on the registration row locked just before",
+    # Mốc E step E5: the System Admin creates the Business of a registration (no clan exists yet).
+    "create_clan": "creates a clan (the clan_id is generated here); keyed by registration_id, SA only",
     "get_clan_by_code": "clan lookup by unique code, returns the clan itself",
     "get_clan_by_registration_id": "clan lookup by unique registration, returns the clan itself",
     "get_invitation_by_token_hash": "entry point by secret hash; caller must check clan_id",
