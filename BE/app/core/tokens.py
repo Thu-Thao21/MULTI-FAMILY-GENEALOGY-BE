@@ -18,3 +18,18 @@ def generate_session_token() -> str:
 
 def hash_session_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# ----- Business registration tracking code (Mốc E, step E3) -----
+# 32 random bytes = 256 bits of entropy (43 URL-safe characters). Only the SHA-256 hex digest is
+# stored (business_registrations.tracking_code_hash); the code itself is shown once, in the 201
+# response, and is never logged or audited.
+TRACKING_CODE_BYTES = 32
+
+
+def generate_tracking_code() -> str:
+    return secrets.token_urlsafe(TRACKING_CODE_BYTES)
+
+
+def hash_tracking_code(code: str) -> str:
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()

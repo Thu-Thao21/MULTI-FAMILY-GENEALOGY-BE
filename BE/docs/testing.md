@@ -30,6 +30,7 @@ $env:ALLOW_DB_TESTS = "1"
 - Mỗi test chạy trong một transaction và ROLLBACK ở cuối; dữ liệu tự tạo, không phụ thuộc seed. Không DDL, không ghi `roles`, `permissions`, `role_permissions` (chỉ SELECT role theo code).
 - Kết nối tới Neon chậm (vài giây mỗi lần mở, ~0,3 giây mỗi truy vấn), cả nhóm chạy vài phút.
 - **Cần migration đã áp dụng (gói migration, `docs/migrations.md`; đã áp dụng lên dev_minhquan ngày 06/10/2026):** `test_db_constraints.py`, `test_db_provisioning.py` (migration 0003, áp dụng lên dev ngày 06/10/2026), `test_user_roles_unique_index.py` (KI-03), `test_db_rejects_a_duplicate_token_hash` (`test_sessions_db.py`), `test_duplicate_sa_grant_is_rejected_by_the_db_and_the_count_stays_one` (`test_system_admin_guard.py`) và vài test Family Admin đã đổi theo KI-08 (`test_user_admin_db.py`, `test_family_admin_lifecycle_db.py`, `test_family_admin_concurrency.py`) kỳ vọng DB đã có bốn index mới. Trên DB **chưa** migrate chúng fail, và đó là cách phát hiện thiếu migration. `tests/test_migration_guard.py` không cần DB.
+- **Gói `DEV-` đã seed trên dev (Mốc E, E3):** các test tích hợp của hồ sơ đăng ký và seed gói (`test_registration_db.py`, `test_registration_concurrency.py`, `test_seed_plans.py`) **không bao giờ xóa hay sửa gói `DEV-`**. Mỗi test tự tạo gói riêng (`ITEST-...`, hoặc tiền tố `DEV-ITEST-<mã>-` cho test cleanup) và chỉ đếm hoặc liệt kê gói theo tiền tố của chính nó. Test cleanup luôn truyền tiền tố riêng; cleanup mặc định (tiền tố `DEV-`) không test nào gọi.
 - Bỏ test đồng thời: `-m "integration and not concurrency"`. Chỉ chạy test đồng thời: `-m concurrency`.
 - Test `concurrency` **commit thật**, dùng user `itest-conc-*` và xóa trong `finally`. Chúng cần DB không còn System Admin ACTIVE nào khác (guard đếm toàn bộ); nếu có (ví dụ SA của seed dev) thì tự skip và nêu lý do. Muốn chạy: `seed_dev.py --cleanup` trước, hoặc dùng nhánh DB riêng.
 - **Trước khi chạy, dọn seed** (`seed_dev.py --cleanup`): khi DB còn System Admin ACTIVE khác (ví dụ `dev-sa`), 3 test "SA cuối" trong `test_last_sa_concurrency.py` tự skip.
@@ -115,6 +116,20 @@ Chạy từ `BE`, Python 3.13.7, `.venv` của dự án, sau `seed_dev.py --clea
 
 Tổng cộng 457 test. Sau lần chạy, DB không còn dòng rác: 0 user, 0 clan, 0 audit_logs, 0 phiên; `roles`/`permissions`/`role_permissions` giữ nguyên (4/18/0). Mốc F2 thêm: nhóm test vòng đời Family Admin (đơn vị, DB thật, đồng thời) và test dev seed vẫn nhất quán. Test cũ của Mốc F `test_every_code_in_the_permissions_table_is_accepted` (ủy quyền mọi mã, kể cả `ADMIN_MANAGE`) đã đổi thành `test_every_delegable_code_in_the_permissions_table_is_accepted` theo quyết định Q1: mọi mã trừ `ADMIN_MANAGE` được nhận, thêm `ADMIN_MANAGE` thì `403`.
 
+### Mốc E, bước E3: Guest, bộ giới hạn tần suất, seed gói (07/10/2026)
+
+Chạy trên nhánh dev (`0003_provisioning_idempotency`), sau khi seed ba gói `DEV-` (`seed_dev.py --plans-only`, chạy hai lần: lần một tạo 3 gói và 6 dòng tính năng, lần hai tạo 0 dòng).
+
+| Lệnh | Kết quả |
+| --- | --- |
+| `pytest -q` | **671 passed**, 270 deselected (nhóm `integration`), 0 failed. Thêm 254 test so với E2 (417) |
+| `ALLOW_DB_TESTS=1 pytest -m integration` ba file mới (`test_registration_db.py`, `test_registration_concurrency.py`, `test_seed_plans.py`) | Lần đầu 42 passed, 1 failed: lỗi của test (sau `rollback()` các đối tượng ORM hết hạn nên test đọc lại `plan.plan_id` bị `MissingGreenlet`; mã ứng dụng không dính vì use case lấy `plan_id` từ trước). Sửa test, chạy lại riêng test đó: pass. 43 test của ba file đều pass |
+| `ALLOW_DB_TESTS=1 pytest -m integration -q` (cả bộ, một lần) | **270 passed**, 0 failed, 0 skipped, **0 xfailed**, 31 phút 57 giây. Thêm 48 test so với E2 (222): 25 đăng ký trên DB thật, 7 đồng thời, 11 seed, 5 trường lý do |
+| `scripts/check_orm_vs_db.py` | 0 errors, 0 INFO |
+| `python -c "import app.main"` | MAIN OK |
+
+Tổng cộng 941 test (671 + 270). Sau lần chạy, DB dev: 0 user, 0 clan, 0 hồ sơ đăng ký, 0 lịch sử trạng thái, 0 audit_logs, 0 provisioning_jobs, 0 idempotency_keys, 0 clan_subscriptions; `subscription_plans` đúng **3** (`DEV-TRIAL`, `DEV-STANDARD`, `DEV-LEGACY`) với 6 dòng `plan_feature_limits`, giữ nguyên định nghĩa đã seed; `roles`/`permissions`/`role_permissions` = 4/18/0; `alembic_version` = `0003_provisioning_idempotency`.
+
 ### Mốc E, bước E2: migration 0003 đã áp dụng lên dev_minhquan (06/10/2026)
 
 Chạy sau `alembic upgrade head` lên nhánh dev (`0003_provisioning_idempotency`), DB không còn dữ liệu seed.
@@ -166,6 +181,10 @@ Nhóm test theo nội dung:
 | Phân quyền, tenant, SA cuối | `test_permissions.py`, `integration/test_http_access.py`, `integration/test_system_admin_guard.py`, `integration/test_user_roles_unique_index.py`, `integration/test_last_sa_concurrency.py` |
 | Quản trị người dùng, ủy quyền FA | `test_user_admin_api.py`, `integration/test_user_admin_db.py`, `integration/test_user_admin_concurrency.py` |
 | Vòng đời Family Admin (đề bạt, thu hồi, tính nhất quán của dev seed) | `test_user_admin_api.py` (mục Mốc F2), `integration/test_family_admin_lifecycle_db.py`, `integration/test_family_admin_concurrency.py` |
+| Guest: gói dịch vụ, đăng ký hồ sơ, theo dõi (Mốc E, E3) | `test_service_plans_api.py`, `test_registration_api.py`, `test_public_repository_sql.py`, `integration/test_registration_db.py`, `integration/test_registration_concurrency.py` |
+| Bộ giới hạn tần suất và IP người gọi (Mốc E, E3) | `test_rate_limit.py`, `test_client_ip.py` |
+| Kiểu văn bản: làm sạch một dòng, nhiều dòng, bí mật không bị chuẩn hóa | `test_text_types.py`, `test_user_admin_api.py` (trường lý do), `integration/test_user_admin_db.py` (trường lý do trên DB thật) |
+| Seed gói dev (`seed_dev.py --plans-only`) | `test_seed_plans_definition.py`, `integration/test_seed_plans.py` |
 | Migration: fingerprint, guard `ALLOW_MIGRATE`, SQL xem trước, kiểm tra tiền điều kiện của 0002 và 0003, từ chối downgrade khi còn việc dọn Firebase (không cần DB) | `test_migration_guard.py`, `test_migration_0003.py` |
 | Ràng buộc toàn vẹn của migration 0003 (job Owner, idempotency, hồ sơ PENDING trùng; cần 0003 đã áp dụng) | `integration/test_db_provisioning.py` |
 | Ràng buộc toàn vẹn của migration 0002 (KI-03, KI-04, KI-08, email; cần migration đã áp dụng) | `integration/test_db_constraints.py`, `integration/test_user_roles_unique_index.py` |
@@ -234,3 +253,32 @@ Mỗi đột biến được áp dụng tạm thời lên mã thật, chạy cá
 
 **Bài học về thời gian (đã sửa trong test):** mỗi session mới cần ~4 giây để mở kết nối Neon, trong khi một request chỉ giữ khóa vài trăm mili giây. Lần đầu, các test "so le" (request thứ hai chờ sự kiện rồi mới chạy) không thật sự đồng thời: request thứ hai kết nối xong thì request thứ nhất đã commit, nên đột biến "bỏ khóa assignment" **không bị bắt** (4 test vẫn qua). Đã sửa bằng cách mở sẵn kết nối trước khi chờ sự kiện/barrier (`await session.connection()`), giữ commit lâu hơn (1,5 giây, hoặc 3,5 giây khi request sau cần nhiều truy vấn trước khi tới khóa), dùng sự kiện thay cho `sleep` cố định, và cho test deadlock gửi danh sách mã rỗng để thứ tự khóa xác định. Sau đó đột biến mới bị bắt. Khi viết test đồng thời mới, hãy luôn chạy thử một đột biến.
 
+## 9. Kiểm chứng test bằng đột biến (Mốc E, bước E3)
+
+Cách làm như mục 8: áp từng đột biến lên mã thật, chạy các test liên quan, khôi phục, so sha256 với bản trước khi đột biến. Test chỉ đáng tin khi nó **fail**. Tổng cộng **79 đột biến, đều bị bắt**.
+
+**Phần Guest và bộ giới hạn (60 đột biến, chỉ chạy test không cần DB).** Nhóm đã kiểm:
+
+- **Hồ sơ trùng và mã theo dõi:** không bắt `IntegrityError`, bỏ kiểm tra trước, lưu mã thô, entropy yếu (8 byte), ghi mã vào log, bỏ thử lại khi va chạm mã.
+- **Audit, lịch sử, dữ liệu:** audit chứa email, bỏ ghi audit hoặc lịch sử, gán người thực hiện, hạ chữ thường email khi lưu.
+- **Gói:** chấp nhận gói không `ACTIVE`, đổi `422` thành `404`, truy vấn tính năng lặp theo từng gói.
+- **Theo dõi:** lộ hash, lộ lý do khi không `REJECTED`, mã sai trả `403`, cắt khoảng trắng của mã, bỏ `no-store`.
+- **Bộ giới hạn:** router không gắn bộ giới hạn, lệch một đơn vị, bỏ quét rác, bỏ trần số khóa, đẩy nhầm khóa vừa dùng, không ghi nhớ thứ tự dùng, ghi cả lần bị từ chối, `Retry-After` sai hoặc thiếu, không khóa luồng, không bỏ lượt hết hạn, bỏ gom IPv6, một bộ đếm chung, bộ giới hạn tắt vẫn đếm.
+- **IP:** tin `X-Forwarded-For` mặc định, lấy phần tử bên trái, dùng giá trị rác, cảnh báo mọi lần, cảnh báo kèm giá trị header, cảnh báo cả khi tin proxy, bỏ qua header rỗng.
+- **Kiểu văn bản:** bỏ từng luật làm sạch (ký tự điều khiển, NFC, gộp khoảng trắng), hạ chữ thường email, NUL lọt vào văn bản nhiều dòng, bí mật bị trim hoặc đi qua bộ làm sạch.
+- **SQL thật của repository:** bỏ lọc `ACTIVE`, so sánh phân biệt hoa/thường, bỏ lọc `PENDING`, bỏ sắp xếp.
+
+Lần chạy đầu có **2 đột biến sống sót**, do test yếu chứ không phải do mã: làm tròn xuống chưa được phân biệt với làm tròn lên (phần dư lớn hơn 1 giây), và việc thiếu khóa không lộ ra dù đã ép chuyển luồng liên tục. Đã thêm `test_retry_after_is_rounded_up_not_down` và `test_every_check_runs_under_the_limiters_own_lock`; cả hai đột biến sau đó bị bắt. Lần chạy đột biến đầu tiên cũng bị crash vì script giải mã sai đầu ra pytest (cp1252); nguồn nguyên vẹn (637 test vẫn pass), script đã sửa rồi chạy lại.
+
+**Phần trường lý do, seed và vài đột biến trên DB thật (19 đột biến).**
+
+| Nhóm | Đột biến | Test bắt được |
+| --- | --- | --- |
+| Trường lý do | `reason` của `PATCH .../status` hoặc của review về lại chuỗi thường; không đổi CRLF thành LF | `test_text_types.py::test_exactly_the_reason_fields_use_multiline_text`, `::test_multiline_text_turns_crlf_into_lf_and_trims` |
+| Trường lý do trên DB thật | `reason` về chuỗi thường: **tái hiện lỗi cũ** (`DataError` không được xử lý, tức `500`) | `integration/test_user_admin_db.py::test_a_reason_with_nul_or_a_control_character_is_422_not_a_database_error` |
+| Seed | ghi đè gói đã có; luôn tạo (bỏ tra cứu); thêm tính năng đã có; không bổ sung tính năng thiếu; bỏ qua trạng thái của spec | `integration/test_seed_plans.py::test_the_seed_never_overwrites_what_exists`, `::test_running_the_seed_again_creates_no_row_at_all`, `::test_the_seed_creates_the_plans_and_their_features_with_the_specified_values` |
+| Định nghĩa seed | tiền tố `DEV-` bị xóa; một mã gói mất tiền tố; một tính năng lặp trong gói | `test_seed_plans_definition.py` |
+| Cleanup | xóa cả gói đang được tham chiếu; bỏ qua tiền tố; coi tiền tố là mẫu `LIKE`; không bảo vệ gói có gói đăng ký của clan; đếm sai số gói giữ lại | `integration/test_seed_plans.py::test_cleanup_deletes_unreferenced_prefixed_plans_and_keeps_referenced_or_foreign_ones`, `::test_cleanup_matches_the_prefix_literally_not_as_a_like_pattern` |
+| Đăng ký trên DB thật | không bắt `IntegrityError` (cuộc đua đồng thời lộ lỗi driver); danh sách gói liệt kê mọi trạng thái | `integration/test_registration_concurrency.py::test_identical_registrations_at_the_same_instant_exactly_one_wins_and_the_rest_get_409`, `integration/test_registration_db.py::test_only_active_plans_are_listed_cheapest_first_with_their_features` |
+
+Các đột biến mức DB chạy trên nhánh dev: mọi test tích hợp đều rollback, test đồng thời tự dọn dữ liệu `itest-conc-` và không đụng gói `DEV-`. Sau đó DB vẫn đúng trạng thái ở mục 5.

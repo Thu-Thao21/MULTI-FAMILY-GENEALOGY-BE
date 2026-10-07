@@ -192,6 +192,29 @@ async def test_can_lock_one_of_two_sas(real_client, session, world):
     assert code(await patch(real_client, token, sa.user_id, "DISABLED")) == "STATE_CONFLICT"
 
 
+@pytest.mark.parametrize("bad", ["suspicious\x00activity", "\x00", "bell\x07", "lone\rcr"])
+async def test_a_reason_with_nul_or_a_control_character_is_422_not_a_database_error(real_client, session, world, bad):
+    """A NUL used to reach the driver, which raises: that was a 500 on this SA endpoint."""
+    sa, token = await sa_token(world)
+    victim = await world.user()
+    victim_token = await world.session_for(victim)
+    r = await patch(real_client, token, victim.user_id, "LOCKED", bad)
+    assert (r.status_code, code(r)) == (422, "VALIDATION_ERROR")
+    await session.refresh(victim)
+    assert victim.status == "ACTIVE"  # nothing was changed
+    assert await audit_rows(session, victim.user_id) == []  # and nothing was audited
+    assert (await real_client.get("/api/v1/auth/me", headers=bearer(victim_token))).status_code == 200  # session alive
+
+
+async def test_a_multi_line_reason_is_stored_with_lf_line_ends(real_client, session, world):
+    sa, token = await sa_token(world)
+    victim = await world.user()
+    r = await patch(real_client, token, victim.user_id, "LOCKED", "first line\r\n\tsecond line")
+    assert r.status_code == 200
+    [log] = await audit_rows(session, victim.user_id)
+    assert log.reason == "first line\n\tsecond line"
+
+
 async def test_status_request_validation_and_missing_user(real_client, world):
     _sa, token = await sa_token(world)
     user = await world.user()

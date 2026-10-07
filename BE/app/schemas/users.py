@@ -13,8 +13,8 @@ from pydantic import Field, StringConstraints, field_validator
 
 from app.schemas.auth import MembershipStatus, MembershipSummary, UserStatus
 from app.schemas.common import (
+    MultilineText,
     PageParams,
-    ReasonText,
     RequestModel,
     ResponseModel,
     UtcDatetime,
@@ -65,7 +65,7 @@ class AdminUserDetail(AdminUserSummary):
 
 class UserStatusUpdateRequest(RequestModel):
     status: UserStatusTarget
-    reason: ReasonText
+    reason: MultilineText
 
 
 class UserStatusUpdateResponse(ResponseModel):

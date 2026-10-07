@@ -370,20 +370,29 @@ def build_app(session) -> FastAPI:
     return app
 
 
-def build_full_app(session) -> FastAPI:
-    """The REAL routers (auth + user administration) on a real DB session.
+def build_full_app(session, *, rate_limiters=None) -> FastAPI:
+    """The REAL routers (auth, user administration, public registration) on a real DB session.
 
     Use this when the route itself is under test; build_app() above is the older stub
-    app kept for the C3 authorization tests.
+    app kept for the C3 authorization tests. The rate limiters are OFF by default so a test
+    that registers several times is not throttled; pass `rate_limiters` to test the limit.
     """
     from app.controllers.auth_access.router import router as auth_router
     from app.controllers.auth_access.user_admin_router import router as user_admin_router
+    from app.controllers.family_management.public_router import router as public_router
+    from app.core.rate_limit import RateLimiters, SlidingWindowLimiter
 
     app = FastAPI()
     app.add_middleware(RequestIdMiddleware)
     register_exception_handlers(app)
     app.include_router(auth_router, prefix="/api/v1")
     app.include_router(user_admin_router, prefix="/api/v1")
+    app.include_router(public_router, prefix="/api/v1")
+    app.state.rate_limiters = rate_limiters or RateLimiters(
+        enabled=False,
+        registration=SlidingWindowLimiter(5, 3600),
+        track=SlidingWindowLimiter(20, 600),
+    )
 
     async def db_override():
         yield session

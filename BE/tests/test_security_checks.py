@@ -323,6 +323,14 @@ FAMILY_METHODS_WITHOUT_CLAN_ID = {
     "get_plan_by_code": "global catalog",
     "list_active_plans": "global catalog",
     "list_plan_feature_limits": "global catalog",
+    # Mốc E step E3: public catalog and Guest registration. No clan exists yet; the only keys
+    # are plan ids, the applicant (e-mail and clan name) and the secret tracking-code hash.
+    "list_active_plans_page": "global catalog: public, ACTIVE plans only",
+    "count_active_plans": "global catalog: public, ACTIVE plans only",
+    "list_feature_limits_for_plans": "global catalog: features of the plans on the page",
+    "exists_pending_registration": "pre-clan: duplicate check on the applicant, returns a boolean",
+    "create_registration": "pre-clan: a Guest registration (no clan yet)",
+    "add_registration_status_history": "pre-clan: keyed by registration_id",
     "get_clan_by_code": "clan lookup by unique code, returns the clan itself",
     "get_clan_by_registration_id": "clan lookup by unique registration, returns the clan itself",
     "get_invitation_by_token_hash": "entry point by secret hash; caller must check clan_id",

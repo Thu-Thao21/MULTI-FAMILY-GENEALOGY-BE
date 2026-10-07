@@ -6,15 +6,21 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy.exc import OperationalError
+from types import SimpleNamespace
+
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.core.firebase import InvalidIdToken, ProviderUnavailable, VerifiedIdentity
 from app.core.tokens import hash_session_token
 from app.models.family.entities import (
+    BusinessRegistration,
     Clan,
     ClanMembership,
     ClanOwnershipHistory,
     FamilyAdminAssignment,
+    PlanFeatureLimit,
+    RegistrationStatusHistory,
+    SubscriptionPlan,
 )
 from app.models.user_access.entities import CredentialMetadata, LoginHistory, User, UserSession
 
@@ -82,6 +88,14 @@ class FakeIdentityProvider:
         if self.set_password_error is not None:
             raise self.set_password_error
         self.password_changes.append(uid)
+
+
+class _DbError(Exception):
+    """Stands in for psycopg's error object: IntegrityError.orig.diag.constraint_name."""
+
+    def __init__(self, constraint_name: str) -> None:
+        super().__init__("simulated")
+        self.diag = SimpleNamespace(constraint_name=constraint_name)
 
 
 @dataclass
@@ -331,6 +345,110 @@ class FakeFamilyRepo:
     calls: list[str] = field(default_factory=list)
 
     users: dict[uuid.UUID, User] = field(default_factory=dict)  # for list_clan_members
+
+    # --- Mốc E, step E3: public catalog and Guest registration ---
+    plans: dict[uuid.UUID, SubscriptionPlan] = field(default_factory=dict)
+    plan_features: list[PlanFeatureLimit] = field(default_factory=list)
+    registrations: list[BusinessRegistration] = field(default_factory=list)
+    registration_history: list[RegistrationStatusHistory] = field(default_factory=list)
+    # Constraint names to raise (as IntegrityError) from the next create_registration calls.
+    create_registration_errors: list[str] = field(default_factory=list)
+    # True: exists_pending_registration says "no", so only the unique index can stop a duplicate.
+    precheck_blind: bool = False
+
+    def add_plan(
+        self, code: str, *, price="0.00", status="ACTIVE", features=(), months=12, **extra
+    ) -> SubscriptionPlan:
+        from decimal import Decimal
+
+        plan = SubscriptionPlan(
+            plan_id=uuid.uuid4(), code=code, name=f"Plan {code}", description=None,
+            price=Decimal(price), billing_period_months=months, status=status,
+            created_at=NOW, updated_at=NOW, **extra,
+        )
+        self.plans[plan.plan_id] = plan
+        for feature_code, enabled, limit in features:
+            self.plan_features.append(PlanFeatureLimit(
+                plan_feature_id=uuid.uuid4(), plan_id=plan.plan_id, feature_code=feature_code,
+                enabled=enabled, limit_value=None if limit is None else Decimal(str(limit)),
+                feature_metadata={},
+            ))
+        return plan
+
+    async def get_plan_by_id(self, plan_id):
+        self.calls.append("get_plan_by_id")
+        return self.plans.get(plan_id)
+
+    async def list_active_plans_page(self, *, limit, offset):
+        self.calls.append("list_active_plans_page")
+        rows = sorted(
+            (p for p in self.plans.values() if p.status == "ACTIVE"), key=lambda p: (p.price, p.code)
+        )
+        return rows[offset : offset + limit]
+
+    async def count_active_plans(self):
+        self.calls.append("count_active_plans")
+        return sum(1 for p in self.plans.values() if p.status == "ACTIVE")
+
+    async def list_feature_limits_for_plans(self, plan_ids):
+        self.calls.append("list_feature_limits_for_plans")
+        wanted = set(plan_ids)
+        return sorted(
+            (f for f in self.plan_features if f.plan_id in wanted),
+            key=lambda f: (str(f.plan_id), f.feature_code),
+        )
+
+    async def exists_pending_registration(self, *, email, clan_name):
+        self.calls.append("exists_pending_registration")
+        if self.precheck_blind:
+            return False
+        return self._pending_same(email, clan_name)
+
+    def _pending_same(self, email, clan_name) -> bool:
+        return any(
+            r.status == "PENDING"
+            and r.representative_email.lower() == email.lower()
+            and r.clan_name.lower() == clan_name.lower()
+            for r in self.registrations
+        )
+
+    async def create_registration(self, **v):
+        self.calls.append("create_registration")
+        if self.create_registration_errors:
+            name = self.create_registration_errors.pop(0)
+            raise IntegrityError("INSERT business_registrations", {}, _DbError(name))
+        # What the database would enforce, so the index path is reachable without a database.
+        if self._pending_same(v["representative_email"], v["clan_name"]):
+            raise IntegrityError(
+                "INSERT business_registrations", {}, _DbError("uq_registration_pending_same_applicant")
+            )
+        if any(r.tracking_code_hash == v["tracking_code_hash"] for r in self.registrations):
+            raise IntegrityError(
+                "INSERT business_registrations", {},
+                _DbError("business_registrations_tracking_code_hash_key"),
+            )
+        row = BusinessRegistration(
+            registration_id=v["registration_id"], requested_plan_id=v["requested_plan_id"],
+            representative_name=v["representative_name"], representative_email=v["representative_email"],
+            representative_phone=v["representative_phone"], clan_name=v["clan_name"],
+            origin_place=v["origin_place"], status="PENDING",
+            tracking_code_hash=v["tracking_code_hash"], created_at=v["now"], updated_at=v["now"],
+        )
+        self.registrations.append(row)
+        return row
+
+    async def add_registration_status_history(self, **v):
+        self.calls.append("add_registration_status_history")
+        row = RegistrationStatusHistory(
+            history_id=uuid.uuid4(), registration_id=v["registration_id"], from_status=v["from_status"],
+            to_status=v["to_status"], changed_by=v["changed_by"], reason=v["reason"], changed_at=v["now"],
+        )
+        self.registration_history.append(row)
+        return row
+
+    async def get_registration_by_tracking_hash(self, tracking_code_hash):
+        self.calls.append("get_registration_by_tracking_hash")
+        return next((r for r in self.registrations if r.tracking_code_hash == tracking_code_hash), None)
 
     def add_clan(self, status: str = "ACTIVE") -> Clan:
         clan = Clan(clan_id=uuid.uuid4(), clan_code=uuid.uuid4().hex[:8], name="Clan", status=status)

@@ -120,6 +120,105 @@ class FamilyRepository:
         stmt = select(PlanFeatureLimit).where(PlanFeatureLimit.plan_id == plan_id)
         return list((await self._session.execute(stmt)).scalars().all())
 
+    # ----- Public catalog and Guest registration (Mốc E, step E3) -----
+    # Global resources, no clan_id. Flush only; the use case commits.
+
+    async def list_active_plans_page(self, *, limit: int, offset: int) -> list[SubscriptionPlan]:
+        stmt = (
+            select(SubscriptionPlan)
+            .where(SubscriptionPlan.status == "ACTIVE")
+            .order_by(SubscriptionPlan.price.asc(), SubscriptionPlan.code.asc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def count_active_plans(self) -> int:
+        stmt = select(func.count()).select_from(SubscriptionPlan).where(
+            SubscriptionPlan.status == "ACTIVE"
+        )
+        return int((await self._session.execute(stmt)).scalar_one())
+
+    async def list_feature_limits_for_plans(
+        self, plan_ids: list[uuid.UUID]
+    ) -> list[PlanFeatureLimit]:
+        """One query for the features of a whole page of plans (no query per plan)."""
+        if not plan_ids:
+            return []
+        stmt = (
+            select(PlanFeatureLimit)
+            .where(PlanFeatureLimit.plan_id.in_(plan_ids))
+            .order_by(PlanFeatureLimit.plan_id, PlanFeatureLimit.feature_code)
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def exists_pending_registration(self, *, email: str, clan_name: str) -> bool:
+        """A PENDING registration of the same applicant, e-mail and clan name compared with
+        lower() on the database side, exactly like uq_registration_pending_same_applicant."""
+        stmt = (
+            select(BusinessRegistration.registration_id)
+            .where(
+                BusinessRegistration.status == "PENDING",
+                func.lower(BusinessRegistration.representative_email) == func.lower(email),
+                func.lower(BusinessRegistration.clan_name) == func.lower(clan_name),
+            )
+            .limit(1)
+        )
+        return (await self._session.execute(stmt)).first() is not None
+
+    async def create_registration(
+        self,
+        *,
+        registration_id: uuid.UUID,
+        requested_plan_id: uuid.UUID,
+        representative_name: str,
+        representative_email: str,
+        representative_phone: str | None,
+        clan_name: str,
+        origin_place: str | None,
+        tracking_code_hash: str,
+        now: datetime,
+    ) -> BusinessRegistration:
+        row = BusinessRegistration(
+            registration_id=registration_id,
+            requested_plan_id=requested_plan_id,
+            representative_name=representative_name,
+            representative_email=representative_email,
+            representative_phone=representative_phone,
+            clan_name=clan_name,
+            origin_place=origin_place,
+            status="PENDING",
+            tracking_code_hash=tracking_code_hash,
+            created_at=now,
+            updated_at=now,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def add_registration_status_history(
+        self,
+        *,
+        registration_id: uuid.UUID,
+        from_status: str | None,
+        to_status: str,
+        changed_by: uuid.UUID | None,
+        reason: str | None,
+        now: datetime,
+    ) -> RegistrationStatusHistory:
+        row = RegistrationStatusHistory(
+            history_id=uuid.uuid4(),
+            registration_id=registration_id,
+            from_status=from_status,
+            to_status=to_status,
+            changed_by=changed_by,
+            reason=reason,
+            changed_at=now,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
     # ----- Clan -----
 
     async def get_clan_by_id(self, clan_id: uuid.UUID) -> Clan | None:

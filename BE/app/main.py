@@ -11,8 +11,10 @@ from fastapi.responses import JSONResponse
 
 from app.controllers.auth_access.router import router as auth_router
 from app.controllers.auth_access.user_admin_router import router as user_admin_router
+from app.controllers.family_management.public_router import router as public_router
 from app.core.config import settings
 from app.core.errors import UnhandledErrorMiddleware, register_exception_handlers
+from app.core.rate_limit import build_rate_limiters
 from app.core.request_id import RequestIdMiddleware
 from app.core.startup_checks import ConfigurationError, validate_runtime_config
 from app.db.postgres import check_db, close_db, init_db
@@ -43,6 +45,8 @@ def create_app() -> FastAPI:
     )
     application.add_middleware(RequestIdMiddleware)
     register_exception_handlers(application)
+    # In-memory, per process (docs/known_issues.md KI-17). Tests replace it to use a fake clock.
+    application.state.rate_limiters = build_rate_limiters(settings)
     return application
 
 
@@ -93,5 +97,6 @@ async def readiness():
 app.include_router(health.router, prefix="/api")
 app.include_router(auth_router, prefix=API_PREFIX)
 app.include_router(user_admin_router, prefix=API_PREFIX)
+app.include_router(public_router, prefix=API_PREFIX)
 
 # To run: uvicorn app.main:app --reload --port 8001

@@ -226,6 +226,37 @@ def test_lock_revokes_every_session_and_audits(w):
     assert w.client.get("/api/v1/admin/users", headers=h(token)).status_code == 200
 
 
+@pytest.mark.parametrize(
+    "bad",
+    ["suspicious\x00activity", "\x00", "bell\x07", "lone\rcr", "\x1b[0m", "\x7f", "\x85", "   ", "x" * 2001],
+    ids=["nul-inside", "nul-alone", "bell", "lone-cr", "escape", "del", "c1", "blank", "too-long"],
+)
+def test_a_status_reason_with_a_control_character_is_422_and_changes_nothing(w, bad):
+    """A NUL used to reach the database driver and come back as a 500."""
+    sa, token = w.sa()
+    victim = w.user()
+    w.token(victim)
+    r = patch(w, token, victim.user_id, "LOCKED", bad)
+    assert (r.status_code, code(r)) == (422, "VALIDATION_ERROR")
+    assert "suspicious" not in r.json()["error"]["message"]  # the value is never echoed
+    assert victim.status == "ACTIVE" and w.db.commits == 0 and w.repo.audit == []
+    assert all(s.revoked_at is None for s in w.repo.sessions.values() if s.user_id == victim.user_id)  # nothing revoked
+
+
+def test_a_status_reason_may_span_several_lines_and_is_stored_with_lf(w):
+    sa, token = w.sa()
+    victim = w.user()
+    r = patch(w, token, victim.user_id, "LOCKED", "  first line\r\n\tsecond line\nthird  ")
+    assert r.status_code == 200
+    [log] = w.repo.audit
+    assert log["reason"] == "first line\n\tsecond line\nthird"
+
+
+def test_a_status_reason_at_the_length_limit_is_accepted(w):
+    sa, token = w.sa()
+    assert patch(w, token, w.user().user_id, "LOCKED", "x" * 2000).status_code == 200
+
+
 def test_unlock_changes_status_only(w):
     _sa, token = w.sa()
     user = w.user("LOCKED")

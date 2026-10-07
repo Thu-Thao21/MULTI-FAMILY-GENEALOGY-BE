@@ -95,6 +95,8 @@ Mô tả gốc:
 
 ## KI-11 Triển khai sau reverse proxy: `login_history` ghi IP của proxy
 
+> Bộ giới hạn tần suất của Mốc E (KI-17) có cờ `TRUST_PROXY_HEADERS` riêng. `ClientInfo` (audit, `login_history`) **không** dùng cờ đó và vẫn chỉ lấy IP kết nối trực tiếp: khi bật cờ, IP trong audit và IP bị giới hạn có thể khác nhau.
+
 - **Hiện trạng:** `ClientInfo.from_request` chỉ dùng IP của kết nối trực tiếp (`request.client.host`) và cố ý **không** tin `X-Forwarded-For`. Sau reverse proxy (nginx, load balancer, Cloud Run...), mọi dòng `login_history`, `user_sessions` và `audit_logs` sẽ mang IP của proxy.
 - **Việc cần làm khi triển khai:** chạy uvicorn với `--proxy-headers` kèm `--forwarded-allow-ips=<danh sách proxy tin cậy>` (không dùng `*` trừ khi proxy là đường vào duy nhất). Dockerfile hiện **chưa** bật các cờ này, theo quyết định của Mốc G.
 - **Rủi ro nếu bật sai:** tin `X-Forwarded-For` từ nguồn không tin cậy cho phép giả mạo IP trong nhật ký đăng nhập.
@@ -130,18 +132,30 @@ Mô tả gốc:
 - **Liên quan:** `docs/migrations.md` mục 3.
 
 
-## KI-17 Bộ giới hạn tần suất (Mốc E) đếm theo từng process, không dùng chung
+## KI-17 Bộ giới hạn tần suất (Mốc E) đếm theo từng process, không dùng chung — Đã cài (bước E3)
+
+> **Trạng thái:** bộ giới hạn đã cài ở bước E3 (`app/core/rate_limit.py`, `app/core/client_ip.py`), có test với đồng hồ giả. Các hạn chế dưới đây là hạn chế **của bản đã cài**, không phải kế hoạch.
 
 - **Quyết định (kế hoạch Mốc E, bước E3):** các endpoint công khai ghi vào DB hoặc dò mã (`POST /business-registrations`, `POST /business-registrations/track`) có bộ giới hạn tần suất đặt trong bộ nhớ của process, trả `429 RATE_LIMITED` kèm `Retry-After`. **Chưa cài**: ghi ở đây trước để không ai nhầm nó là bảo vệ chống tấn công phân tán.
 - **Hệ quả:**
   - Bộ đếm sống trong **từng process**. Chạy N worker hoặc N container thì mức cho phép thực tế là N lần mức cấu hình, và các instance không biết nhau.
   - Khởi động lại process thì bộ đếm về 0.
   - Không chống được kẻ tấn công đổi IP. Nó chỉ làm chậm spam đơn giản và dò mã từ một nguồn.
-- **Bật/tắt và cấu hình:** bật hoặc tắt bằng biến môi trường (mặc định bật); ngưỡng cấu hình được.
-- **IP của người gọi:** **không tin `X-Forwarded-For`** trừ khi bật cờ `TRUST_PROXY_HEADERS`. Mặc định dùng IP của kết nối trực tiếp, nên **sau reverse proxy mọi người dùng chung một IP và bị giới hạn chung** (liên quan KI-11). Chỉ bật `TRUST_PROXY_HEADERS` khi proxy là đường vào duy nhất và đã đặt danh sách proxy tin cậy; bật sai cho phép kẻ gọi giả IP để né giới hạn.
+- **Bật/tắt và cấu hình:** `RATE_LIMIT_ENABLED` (mặc định bật); `RATE_LIMIT_REGISTRATION_MAX` (5) và `RATE_LIMIT_REGISTRATION_WINDOW_SECONDS` (3600); `RATE_LIMIT_TRACK_MAX` (20) và `RATE_LIMIT_TRACK_WINDOW_SECONDS` (600); `RATE_LIMIT_MAX_KEYS` (10000). Giá trị không dương làm app dừng khi khởi động.
+- **Mạng dùng chung IP (mạng trường, quán cà phê, NAT của nhà mạng) có thể chặn cả nhóm khi demo.** Ngưỡng 5 đăng ký mỗi giờ tính theo IP, nên một lớp học hay một nhóm demo cùng nối chung một mạng sẽ dùng chung một bộ đếm: người thứ sáu trong giờ đó nhận `429`, dù mỗi người chỉ đăng ký một lần. **Cho ngày demo, đặt `RATE_LIMIT_REGISTRATION_MAX` cao hơn bằng biến môi trường** (ví dụ 50) rồi khởi động lại process; đặt lại mặc định sau buổi demo. Không cần sửa code. `RATE_LIMIT_ENABLED=false` tắt hẳn nhưng chỉ nên dùng trên máy dev.
+- **Body không phải JSON hợp lệ** bị từ chối trước khi bộ giới hạn chạy, nên không bị đếm (chỉ tốn một lần phân tích, không chạm DB).
+- **IP của người gọi:** **không tin `X-Forwarded-For`** trừ khi bật cờ `TRUST_PROXY_HEADERS` (khi đó dùng `TRUSTED_PROXY_COUNT`, mặc định 1, và đọc header từ bên phải). Nếu header đến mà cờ đang tắt, process ghi **một** WARNING (không kèm IP) để người vận hành biết đang đứng sau proxy mà chưa bật cờ. Mặc định dùng IP của kết nối trực tiếp, nên **sau reverse proxy mọi người dùng chung một IP và bị giới hạn chung** (liên quan KI-11). Chỉ bật `TRUST_PROXY_HEADERS` khi proxy là đường vào duy nhất và đã đặt danh sách proxy tin cậy; bật sai cho phép kẻ gọi giả IP để né giới hạn.
 - **Việc cần lead quyết định khi triển khai nhiều instance:** bộ đếm dùng chung (Redis hoặc bảng DB) hoặc đặt giới hạn ở reverse proxy. Tới lúc đó, coi bộ đếm này là lớp giảm nhẹ chứ không phải biện pháp đủ.
 - **Liên quan:** KI-06 (`POST /auth/session` cũng chưa có giới hạn).
 
 ## KI-18 `provisioning_jobs.clan_id` là `ON DELETE CASCADE`
 
 - `provisioning_jobs.clan_id` khai báo `ON DELETE CASCADE` (migration 0003, đã áp dụng lên dev_minhquan ngày 06/10/2026, production chưa): nếu sau này có chức năng xóa clan thì job `needs_cleanup` cũng bị xóa theo, mất dấu vết duy nhất của user Firebase còn phải dọn. **Hiện chưa có chức năng xóa clan**; chức năng đó khi làm phải chặn xóa clan còn job `needs_cleanup` (hoặc đổi khóa ngoại sang `RESTRICT` bằng migration).
+
+## KI-19 Gói dịch vụ production chưa có: nhóm quyết định rồi nhập qua kênh riêng
+
+- **Hiện trạng:** `GET /service-plans` và `POST /business-registrations` (Mốc E, bước E3) chạy trên bảng `subscription_plans`. Trên nhánh dev chỉ có ba gói do `scripts/seed_dev.py` tạo (`DEV-TRIAL`, `DEV-STANDARD`, `DEV-LEGACY` không còn bán, kèm `plan_feature_limits`). Đó là **dữ liệu dev**, tên và giá do dev đặt, không phải gói thật.
+- **Quyết định:** gói production (mã, tên, giá, thời hạn, giới hạn thành viên, Family Admin, dung lượng, tính năng) **do nhóm quyết định**, rồi **nhập qua một kênh riêng có kiểm soát**. **Không đưa dữ liệu gói vào migration** và không dùng `seed_dev.py` cho production: seed có cờ `ALLOW_DEV_SEED`, chỉ tạo mã tiền tố `DEV-`, và `--cleanup` chỉ xóa gói `DEV-` không được hồ sơ hay gói đăng ký của clan tham chiếu.
+- **Hệ quả:** trên production, cho đến khi nhập gói, `GET /service-plans` trả danh sách rỗng và không ai đăng ký được (mọi `requested_plan_id` đều `422`). Cần có gói trước khi mở đăng ký công khai.
+- **Ngoài phạm vi Sprint 1:** thanh toán và hoàn thiện gói dịch vụ (đổi gói, hết hạn, gia hạn, thanh toán thật) thuộc **Sprint 6, task 3.6.8.6** trong project plan. Sprint 1 chỉ chọn gói lúc đăng ký và để SA kích hoạt thủ công (D03).
+- **Liên quan:** KI-17 (giới hạn tần suất của endpoint đăng ký), `docs/api_contract.md` quyết định 36.

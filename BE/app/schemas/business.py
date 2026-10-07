@@ -15,9 +15,9 @@ from pydantic import Field, StringConstraints, model_validator
 from app.schemas.auth import ClanStatus
 from app.schemas.common import (
     Email,
+    MultilineText,
     PageParams,
     Phone,
-    ReasonText,
     RequestModel,
     ResponseModel,
     SecretToken,
@@ -151,7 +151,7 @@ class BusinessRegistrationDetail(BusinessRegistrationSummary):
 
 class RegistrationReviewRequest(RequestModel):
     decision: ReviewDecision
-    reason: Optional[ReasonText] = None
+    reason: Optional[MultilineText] = None
 
     @model_validator(mode="after")
     def _reason_required_on_reject(self) -> "RegistrationReviewRequest":

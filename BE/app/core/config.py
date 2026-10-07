@@ -42,6 +42,21 @@ class Settings(BaseSettings):
     FRONTEND_ORIGINS: str = "http://localhost:5173,http://localhost:8080"
     FRONTEND_URL: str = "http://localhost:5173"
 
+    # Rate limiting of the public endpoints (Mốc E, step E3): in memory, per process, per IP
+    # (docs/known_issues.md KI-17). Defaults: registration 5 per hour, track 20 per 10 minutes.
+    # Raise RATE_LIMIT_REGISTRATION_MAX for a demo on a shared network.
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_REGISTRATION_MAX: int = 5
+    RATE_LIMIT_REGISTRATION_WINDOW_SECONDS: int = 3600
+    RATE_LIMIT_TRACK_MAX: int = 20
+    RATE_LIMIT_TRACK_WINDOW_SECONDS: int = 600
+    RATE_LIMIT_MAX_KEYS: int = 10_000
+    # X-Forwarded-For is ignored unless this is true (the caller can write that header).
+    # TRUSTED_PROXY_COUNT is how many proxies sit in front of the app; the address is the
+    # Nth entry counted from the RIGHT of the header.
+    TRUST_PROXY_HEADERS: bool = False
+    TRUSTED_PROXY_COUNT: int = 1
+
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
     SMTP_USER: str = ""

@@ -4,6 +4,8 @@ Usage (from BE/, Windows):
     $env:ALLOW_DEV_SEED = "1"
     .venv\\Scripts\\python.exe scripts\\seed_dev.py            # create / top up
     .venv\\Scripts\\python.exe scripts\\seed_dev.py --cleanup  # delete DEV-* data only
+    .venv\\Scripts\\python.exe scripts\\seed_dev.py --plans-only  # only the DEV-* service plans
+    .venv\\Scripts\\python.exe scripts\\seed_dev.py --plans-only --cleanup  # only unreferenced DEV-* plans
 
 Rules:
   - Refuses to run unless ALLOW_DEV_SEED=1.
@@ -66,6 +68,32 @@ EXTRA_MEMBERS: list[tuple[str, str, str]] = [
 ]
 
 
+# Service plans for dev (Mốc E, step E3). The public catalog needs plans to show and to register
+# against. They are DEV data: production plans are decided by the team and entered through a
+# separate channel, never by this script or a migration (docs/known_issues.md KI-19).
+PLAN_PREFIX = "DEV-"
+PLANS: list[dict] = [
+    dict(
+        code="DEV-TRIAL", name="DEV Trial", status="ACTIVE", price="0.00", billing_period_months=1,
+        description="Gói dùng thử cho dev (không phải gói thật).",
+        max_members=20, max_family_admins=1, storage_mb=256,
+        features=[("MAX_PERSONS", True, 500), ("TREE_VIEW_3D", False, None)],
+    ),
+    dict(
+        code="DEV-STANDARD", name="DEV Standard", status="ACTIVE", price="199000.00", billing_period_months=12,
+        description="Gói tiêu chuẩn cho dev (không phải gói thật).",
+        max_members=200, max_family_admins=5, storage_mb=2048,
+        features=[("MAX_PERSONS", True, 5000), ("TREE_VIEW_3D", True, None), ("DATA_EXPORT", True, None)],
+    ),
+    dict(
+        code="DEV-LEGACY", name="DEV Legacy (ngừng bán)", status="INACTIVE", price="99000.00", billing_period_months=12,
+        description="Gói đã ngừng bán: để thử nhánh 'gói không hợp lệ' bằng tay.",
+        max_members=100, max_family_admins=2, storage_mb=1024,
+        features=[("TREE_VIEW_3D", False, None)],
+    ),
+]
+
+
 class SeedError(Exception):
     """Expected failure with a message that is safe to print."""
 
@@ -86,6 +114,88 @@ def email_of(key: str) -> str:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+async def seed_plans(session, specs: list[dict] | None = None) -> tuple[Counter, Counter]:
+    """Get-or-create the service plans and their feature limits. Returns (made, had).
+
+    Idempotent and non-destructive: a plan is looked up by its unique code and a feature by
+    (plan, feature_code). Anything that already exists is left exactly as it is (never
+    overwritten, so a hand edit survives); only what is missing is added.
+    """
+    from decimal import Decimal
+
+    from app.models.family.entities import PlanFeatureLimit, SubscriptionPlan
+    from app.models.family.repository import FamilyRepository
+
+    fam = FamilyRepository(session)
+    made: Counter = Counter()
+    had: Counter = Counter()
+    for spec in PLANS if specs is None else specs:
+        plan = await fam.get_plan_by_code(spec["code"])
+        if plan is None:
+            plan = SubscriptionPlan(
+                plan_id=uuid.uuid4(),
+                code=spec["code"],
+                name=spec["name"],
+                description=spec.get("description"),
+                price=Decimal(spec["price"]),
+                billing_period_months=spec["billing_period_months"],
+                max_members=spec.get("max_members"),
+                max_family_admins=spec.get("max_family_admins"),
+                storage_mb=spec.get("storage_mb"),
+                status=spec["status"],
+            )
+            session.add(plan)
+            await session.flush()
+            made["subscription_plans"] += 1
+        else:
+            had["subscription_plans"] += 1
+        present = {f.feature_code for f in await fam.list_plan_feature_limits(plan.plan_id)}
+        for feature_code, enabled, limit in spec.get("features", []):
+            if feature_code in present:
+                had["plan_feature_limits"] += 1
+                continue
+            session.add(
+                PlanFeatureLimit(
+                    plan_feature_id=uuid.uuid4(),
+                    plan_id=plan.plan_id,
+                    feature_code=feature_code,
+                    enabled=enabled,
+                    limit_value=None if limit is None else Decimal(str(limit)),
+                    feature_metadata={},
+                )
+            )
+            await session.flush()
+            made["plan_feature_limits"] += 1
+    return made, had
+
+
+async def cleanup_plans(session, prefix: str = PLAN_PREFIX) -> tuple[int, int]:
+    """Delete the plans whose code starts with `prefix` that nothing references. Returns
+    (deleted, kept). A plan used by a registration or by a clan subscription is kept (the
+    database would refuse to delete it anyway), and so is every plan without the prefix.
+    Its feature limits go with it (ON DELETE CASCADE)."""
+    from sqlalchemy import delete, exists, func, or_, select
+
+    from app.models.family.entities import BusinessRegistration, ClanSubscription, SubscriptionPlan
+
+    referenced = or_(
+        exists().where(BusinessRegistration.requested_plan_id == SubscriptionPlan.plan_id),
+        exists().where(ClanSubscription.plan_id == SubscriptionPlan.plan_id),
+    )
+    mine = SubscriptionPlan.code.startswith(prefix, autoescape=True)
+    kept = (
+        await session.execute(select(func.count()).select_from(SubscriptionPlan).where(mine, referenced))
+    ).scalar_one()
+    deleted = await session.execute(delete(SubscriptionPlan).where(mine, ~referenced))
+    return deleted.rowcount, kept
+
+
+def print_counts(title: str, made: Counter, had: Counter) -> None:
+    print(title)
+    for kind in sorted(set(made) | set(had)):
+        print(f"  {kind:<34} tạo mới: {made[kind]:>2}   đã có: {had[kind]:>2}")
 
 
 async def seed(session) -> Counter:
@@ -285,6 +395,10 @@ async def seed(session) -> Counter:
         await session.flush()
         mark("family_admin_permissions", True)
 
+    plans_made, plans_had = await seed_plans(session)
+    made.update(plans_made)
+    had.update(plans_had)
+
     kinds = sorted(set(made) | set(had))
     print("Seed dev (một transaction):")
     for kind in kinds:
@@ -316,17 +430,26 @@ async def cleanup(session) -> None:
             User.email.endswith(EMAIL_SUFFIX),
         )
     )
+    plans_deleted, plans_kept = await cleanup_plans(session)
     print("Cleanup dev (một transaction):")
     print(f"  clans đã xóa: {clans.rowcount}   users đã xóa: {users.rowcount}")
+    print(f"  gói {PLAN_PREFIX}* đã xóa: {plans_deleted}   gói giữ lại vì còn được tham chiếu: {plans_kept}")
 
 
-async def run(do_cleanup: bool) -> None:
+async def run(do_cleanup: bool, plans_only: bool = False) -> None:
     from app.db.postgres import async_session_maker, engine
 
     try:
         async with async_session_maker() as session:
             async with session.begin():
-                if do_cleanup:
+                if plans_only and do_cleanup:
+                    deleted, kept = await cleanup_plans(session)
+                    print("Cleanup gói dev (một transaction):")
+                    print(f"  gói {PLAN_PREFIX}* đã xóa: {deleted}   gói giữ lại vì còn được tham chiếu: {kept}")
+                elif plans_only:
+                    made, had = await seed_plans(session)
+                    print_counts("Seed gói dev (một transaction):", made, had)
+                elif do_cleanup:
                     await cleanup(session)
                 else:
                     await seed(session)
@@ -343,6 +466,11 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description="Seed (or clean) dev data on the real DB.")
     parser.add_argument("--cleanup", action="store_true", help="delete only DEV-* seed data")
+    parser.add_argument(
+        "--plans-only",
+        action="store_true",
+        help="only the DEV-* service plans (no users, clans or memberships); with --cleanup, only unreferenced DEV-* plans",
+    )
     args = parser.parse_args(argv)
 
     if os.environ.get(ENV_FLAG) != "1":
@@ -354,7 +482,7 @@ def main(argv: list[str] | None = None) -> int:
         # Import before asyncio.run: it installs the Windows selector loop policy psycopg needs.
         import app.db.postgres  # noqa: F401
 
-        asyncio.run(run(args.cleanup))
+        asyncio.run(run(args.cleanup, args.plans_only))
     except SeedError as exc:
         print(f"Lỗi seed: {exc}")
         return 1

@@ -1,6 +1,6 @@
 # Hợp đồng API Sprint 1 — MFGMS AI
 
-Trạng thái: **đề xuất**. Schema Pydantic đã có trong `app/schemas/`. Đã cài trong `main`: Mốc D `POST /auth/session`, `GET /auth/me`, `POST /auth/logout`, `POST /auth/change-password`; Mốc F `GET /admin/users`, `GET /admin/users/{id}`, `PATCH /admin/users/{id}/status`, `GET /clans/{id}/users`, `PUT /clans/{id}/admins/{user_id}/permissions`; Mốc F2 `POST /clans/{id}/admins`, `DELETE /clans/{id}/admins/{user_id}`. Các API khác chưa có endpoint. Tài liệu này là căn cứ để FE nối màn hình và để BE viết controller ở Mốc D, E, F. Nguồn: mục 6, 7, 8, 9 của `BE_Sprint1_Coding_Plan.md.md`.
+Trạng thái: **đề xuất**. Schema Pydantic đã có trong `app/schemas/`. Đã cài trong `main`: Mốc D `POST /auth/session`, `GET /auth/me`, `POST /auth/logout`, `POST /auth/change-password`; Mốc F `GET /admin/users`, `GET /admin/users/{id}`, `PATCH /admin/users/{id}/status`, `GET /clans/{id}/users`, `PUT /clans/{id}/admins/{user_id}/permissions`; Mốc F2 `POST /clans/{id}/admins`, `DELETE /clans/{id}/admins/{user_id}`; Mốc E bước E3 (Guest) `GET /service-plans`, `POST /business-registrations`, `POST /business-registrations/track`. Các API khác chưa có endpoint. Tài liệu này là căn cứ để FE nối màn hình và để BE viết controller ở Mốc D, E, F. Nguồn: mục 6, 7, 8, 9 của `BE_Sprint1_Coding_Plan.md.md`.
 
 ## Trạng thái cài đặt
 
@@ -18,7 +18,7 @@ Cập nhật 06/10/2026 (Mốc G). Chỉ ghi chú trạng thái; nội dung hợ
 | `GET /clans/{clan_id}/users` | Đã cài (Mốc F) | |
 | `PUT /clans/{clan_id}/admins/{user_id}/permissions` | Đã cài (Mốc F) | Sửa tập quyền; mã `ADMIN_MANAGE` bị `403` (quyết định 30) |
 | `POST /clans/{clan_id}/admins`, `DELETE /clans/{clan_id}/admins/{user_id}` | Đã cài (Mốc F2) | Đề bạt và thu hồi Family Admin (KI-07 đã xử lý) |
-| `GET /service-plans`, `POST /business-registrations`, `POST /business-registrations/track` | Chưa cài | Mốc E |
+| `GET /service-plans`, `POST /business-registrations`, `POST /business-registrations/track` | Đã cài (Mốc E, bước E3) | Guest, không cần xác thực. Có giới hạn tần suất trong bộ nhớ theo từng process (KI-17). Dữ liệu gói dev do `seed_dev.py` tạo (gói `DEV-`, viết sau E3); gói production do nhóm quyết định (KI-19) |
 | `GET /admin/business-registrations`, `GET /admin/business-registrations/{id}`, `POST .../review`, `POST .../business` | Chưa cài | Mốc E |
 | `POST /admin/clans/{id}/owner`, `GET /admin/provisioning-jobs/{id}`, `POST /admin/clans/{id}/activate` | Chưa cài | Mốc E (job cần migration, D03) |
 
@@ -35,8 +35,11 @@ OpenAPI do FastAPI sinh ra (`/docs`, `/openapi.json`) khai báo mọi mã lỗi 
 | ID | UUID dạng chuỗi |
 | Thời gian | ISO 8601 UTC có hậu tố `Z`, ví dụ `2026-10-05T08:00:00Z`. Input phải có múi giờ; datetime không múi giờ bị `422` |
 | Tiền | `price`, `limit_value` là chuỗi thập phân, ví dụ `"199000.00"` |
-| Email | Chỉ trim khoảng trắng hai đầu, **không** lowercase. Kiểm tra bằng regex đơn giản, tối đa 255 ký tự |
-| Bí mật | `id_token`, `recent_id_token`, `oob_code`, `tracking_code`, mật khẩu: không trim, không ghi log. Mật khẩu tối thiểu 6 ký tự theo Firebase |
+| Email | Chỉ trim khoảng trắng hai đầu, **không** lowercase. Kiểm tra bằng regex đơn giản, tối đa 255 ký tự. Từ chối ký tự điều khiển, chuẩn hóa Unicode NFC |
+| Văn bản một dòng | Tên, nơi gốc, tên họ (kiểu `Str255`): trim, gộp dãy khoảng trắng bên trong thành một dấu cách, chuẩn hóa NFC, tối đa 255 ký tự. **Ký tự điều khiển bị `422`**: NUL, tab, xuống dòng, DEL và nhóm C1 (một ký tự NUL làm driver DB ném lỗi nên không bao giờ được lọt xuống DB). Giá trị sai không được in lại trong lỗi |
+| Văn bản nhiều dòng | Các trường **lý do** (`reason` của `PATCH /admin/users/{id}/status` và của `POST .../review`; kiểu `MultilineText`): trim, cho phép xuống dòng và tab, đổi CRLF thành LF, chuẩn hóa NFC, tối đa 2000 ký tự. **Ký tự NUL và mọi ký tự điều khiển khác bị `422`** (trước đây NUL lọt xuống driver DB và thành `500`). Giá trị sai không được in lại trong lỗi |
+| Bí mật | `id_token`, `recent_id_token`, `oob_code`, `tracking_code`, mật khẩu: không trim, không chuẩn hóa, không gộp khoảng trắng, không ghi log. Giá trị đến nguyên vẹn từng byte (có test); không bao giờ đi qua hai kiểu văn bản ở trên. Mật khẩu tối thiểu 6 ký tự theo Firebase |
+| Giới hạn tần suất | Các API Guest ghi dữ liệu hoặc dò mã (`POST /business-registrations`, `POST /business-registrations/track`) bị giới hạn theo IP: quá ngưỡng trả `429 RATE_LIMITED` kèm header `Retry-After` (giây). Đếm trong bộ nhớ của từng process (KI-17). `X-Forwarded-For` bị bỏ qua trừ khi bật `TRUST_PROXY_HEADERS` |
 | Field lạ | Request body có field không khai báo bị `422` |
 | Phân trang | Query `page` (≥ 1, mặc định 1), `page_size` (1–100, mặc định 20). Response `{items, total, page, page_size}` (`Page[T]`) |
 | Không bao giờ trả | Credential metadata nhạy cảm (failed_login_count, locked_until, mốc mật khẩu tạm, firebase_uid), `tracking_code_hash`, `storage_key`, mật khẩu, token đã lưu, ORM thô |
@@ -65,10 +68,10 @@ FE rẽ nhánh theo `code`, không theo `message`. Lỗi `422` chỉ nêu vị t
 | 404 | `NOT_FOUND` | Tài nguyên không tồn tại hoặc không nhìn thấy với người gọi, kể cả tài nguyên của clan khác |
 | 405 | `METHOD_NOT_ALLOWED` | Sai method |
 | 409 | `STATE_CONFLICT` | Trạng thái đã đổi hoặc chuyển trạng thái không hợp lệ |
-| 409 | `DUPLICATE_RESOURCE` | Vi phạm unique (clan_code, clan đã tạo cho hồ sơ...) |
+| 409 | `DUPLICATE_RESOURCE` | Vi phạm unique (clan_code, clan đã tạo cho hồ sơ, hồ sơ đăng ký `PENDING` trùng người nộp...) |
 | 409 | `IDEMPOTENCY_KEY_CONFLICT` | Dùng lại Idempotency-Key với payload khác |
 | 422 | `VALIDATION_ERROR` | Input sai schema, thiếu header bắt buộc |
-| 429 | `RATE_LIMITED` | Quá giới hạn; có thể kèm header `Retry-After` |
+| 429 | `RATE_LIMITED` | Quá giới hạn tần suất; luôn kèm header `Retry-After` (số giây nguyên, tối thiểu 1) và envelope chuẩn có `request_id`. Hiện chỉ ở hai `POST` Guest của hồ sơ đăng ký (`/auth/session` chưa có, KI-06) |
 | 500 | `INTERNAL_ERROR` | Lỗi không lường trước. Server chỉ log tên lớp lỗi và request_id |
 | 503 | `PROVIDER_UNAVAILABLE` | Firebase hoặc email provider lỗi |
 | 503 | `DATABASE_UNAVAILABLE` | Database lỗi |
@@ -129,22 +132,22 @@ Schema nằm trong `app/schemas/auth.py`.
 Schema nằm trong `app/schemas/business.py` và `app/schemas/users.py`.
 
 ### GET /service-plans
-- **Quyền:** Guest
+- **Quyền:** Guest (không cần xác thực; header `Authorization` nếu có thì bị bỏ qua). Không giới hạn tần suất
 - **Query:** `page`, `page_size`
-- **Thành công:** `200` `Page[ServicePlanResponse]`; mỗi gói có `features[]` (`PlanFeaturePublic` `{feature_code, enabled, limit_value}`). Chỉ gói `ACTIVE`
+- **Thành công:** `200` `Page[ServicePlanResponse]`; mỗi gói có `features[]` (`PlanFeaturePublic` `{feature_code, enabled, limit_value}`; tính năng tắt vẫn được liệt kê với `enabled: false`). Chỉ gói `ACTIVE`, sắp theo giá tăng dần rồi theo `code`. `price` và `limit_value` là chuỗi thập phân. Không lộ `status`, `metadata`, thời gian tạo
 - **Lỗi:** `422`
 
 ### POST /business-registrations
-- **Quyền:** Guest; có rate limit
-- **Body:** `BusinessRegistrationCreateRequest` `{representative_name, representative_email, representative_phone?, clan_name, origin_place?, requested_plan_id}`
-- **Thành công:** `201` `BusinessRegistrationCreateResponse` `{registration_id, tracking_code, status, created_at}`. `tracking_code` chỉ trả một lần, server chỉ lưu hash
-- **Lỗi:** `422` (kể cả gói không tồn tại hoặc không được chọn); `429`
+- **Quyền:** Guest; giới hạn tần suất theo IP (mặc định 5 mỗi giờ). Header `Authorization` nếu có thì bị bỏ qua
+- **Body:** `BusinessRegistrationCreateRequest` `{representative_name, representative_email, representative_phone?, clan_name, origin_place?, requested_plan_id}`. Quy tắc: tên, tên họ, nơi gốc 1 đến 255 ký tự sau khi trim và gộp khoảng trắng; email theo regex của mục 1, giữ nguyên chữ hoa/thường; `representative_phone` 6 đến 30 ký tự chỉ gồm chữ số, dấu cách, `+ ( ) -`, dấu `+` chỉ ở đầu; mọi chuỗi bị `422` nếu có ký tự điều khiển
+- **Thành công:** `201` `BusinessRegistrationCreateResponse` `{registration_id, tracking_code, status, created_at}`, kèm `Cache-Control: no-store`. `tracking_code` là chuỗi ngẫu nhiên 256 bit (43 ký tự), chỉ trả **một lần**, server chỉ lưu SHA-256 và không ghi nó vào log hay audit. Hồ sơ vào trạng thái `PENDING`; mỗi hồ sơ mới ghi một dòng lịch sử trạng thái và một dòng audit (không có người thực hiện, vì Guest không có tài khoản)
+- **Lỗi:** `409 DUPLICATE_RESOURCE` nếu đã có hồ sơ `PENDING` cùng email và cùng tên họ (không phân biệt hoa/thường, chuẩn hóa NFC); `422` (kể cả gói không tồn tại hoặc không được chọn: cùng một thông điệp cho cả hai trường hợp, để Guest không dò được gói nào có thật); `429` kèm `Retry-After`
 
 ### POST /business-registrations/track
-- **Quyền:** Guest; có rate limit
-- **Body:** `BusinessRegistrationTrackRequest` `{tracking_code}`
-- **Thành công:** `200` `BusinessRegistrationTrackResponse` `{clan_name, status, public_reason?, submitted_at, updated_at}`
-- **Lỗi:** `404 NOT_FOUND` khi mã sai; `422`; `429`. Không có API liệt kê hồ sơ cho Guest
+- **Quyền:** Guest; giới hạn tần suất theo IP (mặc định 20 mỗi 10 phút)
+- **Body:** `BusinessRegistrationTrackRequest` `{tracking_code}`. Mã không bị trim hay chuẩn hóa
+- **Thành công:** `200` `BusinessRegistrationTrackResponse` `{clan_name, status, public_reason?, submitted_at, updated_at}`, kèm `Cache-Control: no-store`. `public_reason` là lý do từ chối **chỉ khi** `status` là `REJECTED` (người nộp hồ sơ sẽ thấy lý do SA nhập), các trường hợp khác là `null`. Không có hash, email, ID, gói hay người duyệt
+- **Lỗi:** `404 NOT_FOUND` khi mã sai (mọi mã sai cho cùng một thông điệp); `422`; `429` kèm `Retry-After`. Không có API liệt kê hồ sơ cho Guest
 
 ### GET /admin/business-registrations
 - **Quyền:** SA
@@ -159,7 +162,7 @@ Schema nằm trong `app/schemas/business.py` và `app/schemas/users.py`.
 
 ### POST /admin/business-registrations/{registration_id}/review
 - **Quyền:** SA
-- **Body:** `RegistrationReviewRequest` `{decision: "APPROVED" | "REJECTED", reason?}`; `reason` bắt buộc khi `REJECTED`
+- **Body:** `RegistrationReviewRequest` `{decision: "APPROVED" | "REJECTED", reason?}`; `reason` bắt buộc khi `REJECTED`, là văn bản nhiều dòng (mục 1: NUL và ký tự điều khiển khác bị `422`) và **người nộp hồ sơ sẽ thấy lý do này** qua `POST /business-registrations/track` khi hồ sơ `REJECTED`
 - **Thành công:** `200` `RegistrationReviewResponse` `{registration_id, status, reviewed_by, reviewed_at}`
 - **Lỗi:** `403 FORBIDDEN`; `404 NOT_FOUND`; `409 STATE_CONFLICT` nếu hồ sơ không còn `PENDING`; `422`
 
@@ -202,7 +205,7 @@ Schema nằm trong `app/schemas/business.py` và `app/schemas/users.py`.
 
 ### PATCH /admin/users/{user_id}/status
 - **Quyền:** SA
-- **Body:** `UserStatusUpdateRequest` `{status: "ACTIVE" | "LOCKED" | "SUSPENDED" | "DISABLED", reason}`
+- **Body:** `UserStatusUpdateRequest` `{status: "ACTIVE" | "LOCKED" | "SUSPENDED" | "DISABLED", reason}`. `reason` là văn bản nhiều dòng 1 đến 2000 ký tự (mục 1); chứa NUL hoặc ký tự điều khiển khác thì `422`, không ghi gì, không thu hồi phiên
 - **Thành công:** `200` `UserStatusUpdateResponse` `{user_id, status, revoked_session_count, updated_at}`. LOCKED, SUSPENDED và DISABLED thu hồi mọi phiên
 - **Lỗi:** `403 FORBIDDEN`; `404 NOT_FOUND`; `409 STATE_CONFLICT` nếu chuyển trạng thái không hợp lệ hoặc khóa SA cuối cùng; `422`
 
@@ -288,6 +291,18 @@ NEED_SUPPLEMENT và luồng nộp lại hồ sơ, cấp tài khoản Member hàn
 | 32 | Đích đề bạt là chủ họ hiện tại (kể cả BO tự đề bạt mình) hoặc người còn vai trò `BUSINESS_OWNER` trong clan → `409`. User không có membership `ACTIVE` trong clan (kể cả thành viên của clan khác) → `404`. Không kiểm tra trạng thái tài khoản (`users.status`) của đích: chỉ cần membership `ACTIVE` |
 | 33 | `DELETE /clans/{id}/admins/{user_id}` thu hồi **mọi** assignment còn hiệu lực của user trong clan (toàn clan, theo chi/ngành hoặc trùng): đặt `revoked_at`, **xóa các dòng permission** của chúng (lịch sử mã quyền nằm trong `audit_logs.old_data`) và đặt `revoked_at` cho dòng `user_roles` `FAMILY_ADMIN` của clan. Không yêu cầu membership còn `ACTIVE`. Không phải FA → `404`. Sau đó `PUT .../permissions` trả `404` cho user đó |
 | 34 | Audit: `family_admin.assign` (`new_data`: `user_id`, `permission_codes`, `role_granted`, `request_id`) và `family_admin.revoke` (`old_data`: `user_id`, `assignment_ids`, `permission_codes` trước khi thu hồi; `new_data`: số assignment và dòng vai trò đã thu hồi, `request_id`); không chứa `firebase_uid`, email hay token |
+
+### Đã chốt ở Mốc E, bước E3 (Guest: gói, đăng ký, theo dõi)
+
+| # | Quyết định |
+| --- | --- |
+| 35 | Mã theo dõi: `secrets.token_urlsafe(32)` (256 bit), chỉ lưu SHA-256 trong `tracking_code_hash`, trả đúng một lần ở `201` kèm `no-store`; không có trong log, audit, lịch sử hay phản hồi nào khác. Tra cứu không trim, không chuẩn hóa mã; mã sai nào cũng `404` cùng một thông điệp |
+| 36 | Gói không tồn tại và gói không `ACTIVE` đều trả `422 VALIDATION_ERROR` với cùng thông điệp (chỉ nêu vị trí `requested_plan_id`), không phải `404`: hợp đồng đã ghi `422`, và một mã chung không cho Guest dò gói nào có thật |
+| 37 | Hồ sơ trùng: một hồ sơ `PENDING` cùng `lower(email)` và `lower(tên họ)`. Kiểm tra trước trả `409 DUPLICATE_RESOURCE`; chỉ mục `uq_registration_pending_same_applicant` là lớp cuối và `IntegrityError` của nó cho cùng `409`. Hồ sơ không còn `PENDING` thì không chặn hồ sơ mới. Thông điệp `409` chung nhưng vẫn cho biết đã có hồ sơ chờ trùng người nộp (chấp nhận một mức lộ nhỏ). Đăng ký không kiểm tra email đã có tài khoản hay chưa (không lộ email nào đã đăng ký) |
+| 38 | Audit của Guest: `actor_id` NULL và `clan_id` NULL (schema `audit_logs` cho phép), `action = registration.create`, `entity_type = business_registration`, `entity_id` là mã hồ sơ, `new_data` chỉ có `plan_id`, `status`, `request_id`; `ip_address` là IP kết nối. Không email, tên, điện thoại, tên họ hay mã theo dõi. Hồ sơ, `registration_status_history` (`from_status` NULL, `changed_by` NULL) và audit nằm trong một giao dịch |
+| 39 | Giới hạn tần suất: cửa sổ trượt chính xác trong bộ nhớ, khóa theo IP (IPv6 gom theo /64), đăng ký 5 mỗi giờ và track 20 mỗi 10 phút (cấu hình được, bật tắt được bằng `RATE_LIMIT_ENABLED`). Đếm mọi request tới endpoint, kể cả body sai và kết quả `404`/`409`; request bị từ chối không được ghi lại nên chờ là hết. Bộ nhớ có trần (10.000 khóa, dọn khóa hết hạn, đẩy khóa ít dùng nhất khi đầy). Chỉ đếm theo từng process (KI-17). Body không phải JSON hợp lệ bị từ chối trước khi bộ giới hạn chạy nên không bị đếm |
+| 40 | IP người gọi: mặc định chỉ dùng IP kết nối trực tiếp và **bỏ qua `X-Forwarded-For`** (header do người gọi tự điền). Chỉ khi `TRUST_PROXY_HEADERS=true` mới đọc header, lấy phần tử thứ `TRUSTED_PROXY_COUNT` tính từ **bên phải**; header thiếu hoặc không hợp lệ thì quay về IP kết nối. Nếu header đến trong khi cờ tắt, ghi một WARNING mỗi process (không kèm IP). Sau reverse proxy mà không bật cờ thì mọi người dùng chung một IP và bị giới hạn chung (KI-11, KI-17) |
+| 41 | Văn bản: `Email` và `Str255` từ chối ký tự điều khiển (`422`) và chuẩn hóa NFC; `Str255` còn gộp khoảng trắng bên trong. Các trường lý do dùng kiểu `MultilineText` (cho phép xuống dòng và tab, cấm NUL và mọi ký tự điều khiển khác): đã chuyển từ kiểu cũ `ReasonText` (chỉ trim) ngay trong E3 vì một lý do chứa NUL làm driver DB ném lỗi và trả `500` ở `PATCH /admin/users/{id}/status`. Các kiểu bí mật (`Password`, `SecretToken`) không bao giờ bị chuẩn hóa |
 
 ### Chưa chốt (giả định từ Mốc C1)
 

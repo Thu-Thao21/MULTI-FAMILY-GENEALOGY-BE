@@ -42,6 +42,11 @@ Mở `http://localhost:8001/docs` để xem OpenAPI. `GET /api/health` (liveness
 | `FRONTEND_URL` | Không | URL của FE |
 | `SESSION_TTL_HOURS` | Không | Hạn phiên, mặc định 8 |
 | `RECENT_LOGIN_MAX_AGE_SECONDS` | Không | Độ mới của `recent_id_token`, mặc định 300 |
+| `RATE_LIMIT_ENABLED` | Không | Bật giới hạn tần suất cho các API Guest của hồ sơ đăng ký, mặc định `true` |
+| `RATE_LIMIT_REGISTRATION_MAX`, `RATE_LIMIT_REGISTRATION_WINDOW_SECONDS` | Không | Số đăng ký tối đa mỗi IP trong cửa sổ, mặc định 5 mỗi 3600 giây. **Ngày demo trên mạng dùng chung IP: đặt cao hơn** (KI-17) |
+| `RATE_LIMIT_TRACK_MAX`, `RATE_LIMIT_TRACK_WINDOW_SECONDS` | Không | Số lần tra mã theo dõi, mặc định 20 mỗi 600 giây |
+| `RATE_LIMIT_MAX_KEYS` | Không | Trần số IP giữ trong bộ nhớ, mặc định 10000 |
+| `TRUST_PROXY_HEADERS`, `TRUSTED_PROXY_COUNT` | Không | `X-Forwarded-For` bị bỏ qua trừ khi `TRUST_PROXY_HEADERS=true`; khi đó lấy phần tử thứ `TRUSTED_PROXY_COUNT` tính từ bên phải. Chỉ bật sau reverse proxy là đường vào duy nhất (KI-11, KI-17) |
 | `DEBUG` | Không | `true` thêm traceback vào log server khi lỗi 500 (không bao giờ vào response). Chỉ dùng khi phát triển |
 | `SMTP_*` | Không | Chưa dùng (chờ Mốc E) |
 

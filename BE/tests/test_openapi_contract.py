@@ -83,6 +83,21 @@ EXPECTED: dict[tuple[str, str], dict] = {
         errors={401: AUTHED_401, 403: AUTHED_403_FULL, 404: {"NOT_FOUND"}, 422: V422,
                 500: BOOM, 503: DB},
     ),
+    # Mốc E, step E3: public (Guest) endpoints. No authentication, so no 401 and no 403.
+    ("get", "/service-plans"): dict(
+        success=200, request=None, response="Page_ServicePlanResponse_", params={"page", "page_size"},
+        errors={422: V422, 500: BOOM, 503: DB},
+    ),
+    ("post", "/business-registrations"): dict(
+        success=201, request="BusinessRegistrationCreateRequest",
+        response="BusinessRegistrationCreateResponse", params=set(),
+        errors={409: {"DUPLICATE_RESOURCE"}, 422: V422, 429: {"RATE_LIMITED"}, 500: BOOM, 503: DB},
+    ),
+    ("post", "/business-registrations/track"): dict(
+        success=200, request="BusinessRegistrationTrackRequest",
+        response="BusinessRegistrationTrackResponse", params=set(),
+        errors={404: {"NOT_FOUND"}, 422: V422, 429: {"RATE_LIMITED"}, 500: BOOM, 503: DB},
+    ),
     ("put", "/clans/{clan_id}/admins/{user_id}/permissions"): dict(
         success=200, request="FamilyAdminPermissionsUpdateRequest",
         response="FamilyAdminPermissionsResponse", params={"clan_id", "user_id"},
@@ -238,9 +253,35 @@ def test_contract_only_gaps_are_the_documented_ones():
 def test_known_not_implemented_endpoints_are_still_not_in_openapi(spec):
     """Mốc E and reset endpoints are in the contract but must not appear half-built."""
     not_built = {
-        "/service-plans", "/business-registrations", "/business-registrations/track",
         "/admin/business-registrations", "/auth/password-reset/request",
         "/auth/password-reset/confirm", "/admin/provisioning-jobs/{job_id}",
     }
     for path in not_built:
         assert PREFIX + path not in spec["paths"], path
+
+
+GUEST_ENDPOINTS = [
+    ("get", "/service-plans"),
+    ("post", "/business-registrations"),
+    ("post", "/business-registrations/track"),
+]
+
+
+@pytest.mark.parametrize("key", GUEST_ENDPOINTS)
+def test_the_contract_lists_every_error_status_a_guest_endpoint_declares(spec, key):
+    """The other direction of the cross-check: nothing the code can answer is missing from the
+    contract (500 and 503 are common to every API and listed once in section 2)."""
+    contract = parse_contract()[key]
+    listed = {int(status) for status, _name in re.findall(r"`(\d{3})(?: ([A-Z_]+))?`", contract["errors"])}
+    declared = set(declared_errors(spec["paths"][PREFIX + key[1]][key[0]])) - {500, 503}
+    assert declared <= listed, f"{key}: the contract does not list {sorted(declared - listed)}"
+    named = dict(re.findall(r"`(\d{3}) ([A-Z_]+)`", contract["errors"]))
+    for status, codes in declared_errors(spec["paths"][PREFIX + key[1]][key[0]]).items():
+        if status in (404, 409):
+            assert named.get(str(status)) in codes, (key, status)
+
+
+@pytest.mark.parametrize("key", GUEST_ENDPOINTS)
+def test_guest_endpoints_declare_no_authentication_errors(spec, key):
+    declared = declared_errors(spec["paths"][PREFIX + key[1]][key[0]])
+    assert 401 not in declared and 403 not in declared

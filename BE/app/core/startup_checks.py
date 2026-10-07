@@ -54,6 +54,17 @@ def find_config_problems(
             "list the exact origins)"
         )
 
+    for name in (
+        "RATE_LIMIT_REGISTRATION_MAX",
+        "RATE_LIMIT_REGISTRATION_WINDOW_SECONDS",
+        "RATE_LIMIT_TRACK_MAX",
+        "RATE_LIMIT_TRACK_WINDOW_SECONDS",
+        "RATE_LIMIT_MAX_KEYS",
+        "TRUSTED_PROXY_COUNT",
+    ):
+        if getattr(settings, name) < 1:
+            problems.append(f"{name} must be a positive integer")
+
     return problems
 
 
