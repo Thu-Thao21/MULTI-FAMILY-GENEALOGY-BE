@@ -16,6 +16,7 @@ from app.core.firebase import (
     ProviderUnavailable,
     ProviderUser,
     ProviderUserExists,
+    ProviderUserNotFound,
     VerifiedIdentity,
     require_own_uid,
 )
@@ -77,6 +78,7 @@ class FakeIdentityProvider:
     unavailable: bool = False
     set_password_error: Exception | None = None
     password_changes: list[str] = field(default_factory=list)
+    owner_password_sets: list[str] = field(default_factory=list)  # uids given a new password by set_owner_password
 
     # --- Mốc E6: the Admin API. Nothing here ever calls Firebase; passwords are NEVER stored. ---
     admin_api_enabled: bool = True
@@ -115,6 +117,20 @@ class FakeIdentityProvider:
         if identity is None:
             raise InvalidIdToken("invalid")
         return identity
+
+    async def set_owner_password(self, uid: str, new_password: str) -> None:
+        """Like the real adapter: only an own-<uuid>, refused before anything else; a missing user is
+        ProviderUserNotFound. The password is never stored, only its shape."""
+        require_own_uid(uid)
+        fault = await self._enter("set_owner_password", uid)
+        if isinstance(fault, Exception):
+            raise fault
+        if uid not in self.provider_users:
+            raise ProviderUserNotFound()
+        self.owner_password_sets.append(uid)
+        self._record_shape("set_owner_password", new_password)
+        if isinstance(fault, After):
+            raise fault.error
 
     async def set_password(self, uid: str, new_password: str) -> None:
         if self.set_password_error is not None:
@@ -276,6 +292,14 @@ class FakeUserAccessRepo:
 
     async def get_credential_metadata(self, user_id):
         return self.creds.get(user_id)
+
+    async def lock_credential_metadata(self, user_id):
+        self.calls.append("lock_credential")
+        return self.creds.get(user_id)
+
+    async def get_user_fresh(self, user_id):
+        self.calls.append("get_user_fresh")
+        return self.users.get(user_id)
 
     # --- RoleRepository / SystemAdminGuardRepository ---
     async def has_active_role(self, user_id, role_code, *, clan_id):
@@ -916,6 +940,10 @@ class FakeIdempotencyRepo:
             self.rows.remove(row)
             return None
         return row
+
+    async def lock_by_resource(self, *, resource_type, resource_id):
+        self.calls.append("idem.lock_by_resource")
+        return next((r for r in self.rows if r.resource_type == resource_type and r.resource_id == resource_id), None)
 
     async def reset(self, row, *, request_hash, created_at, expires_at):
         self.calls.append("idem.reset")

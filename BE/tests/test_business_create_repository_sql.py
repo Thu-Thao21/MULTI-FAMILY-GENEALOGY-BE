@@ -129,6 +129,7 @@ IDEMPOTENCY_SCOPE = {
     "set_lock_timeout": "no table: SET LOCAL for this transaction",
     "insert_in_progress": "actor_id, endpoint and key are the inserted unique key",
     "lock_existing": "WHERE actor_id AND endpoint AND key",
+    "lock_by_resource": "WHERE resource_type AND resource_id (E6b: the key working on a provisioning job)",
     "reset": "writes the row it was given, which lock_existing returned for the full key",
     "complete": "writes the row it was given, which claim returned for the full key",
     "delete": "releases the row it was given, which lock_existing returned for the full key (E6)",

@@ -29,7 +29,9 @@ from app.core.firebase import (
     ProviderUnavailable,
     ProviderUser,
     ProviderUserExists,
+    ProviderUserNotFound,
     UnsafeUid,
+    is_own_uid,
     own_uid,
     require_own_uid,
 )
@@ -210,6 +212,122 @@ async def test_delete_user_errors_map_to_unavailable(provider, monkeypatch):
         await provider.delete_user(UID)
 
 
+# ------------------------------------------------------------------ set_owner_password (E6b)
+
+
+async def test_set_owner_password_sets_the_password_then_revokes_the_refresh_tokens_in_threads(provider, monkeypatch, threads):
+    sent = []
+    monkeypatch.setattr(firebase_auth, "update_user", lambda uid, **kw: sent.append(("update_user", uid, sorted(kw))))
+    monkeypatch.setattr(firebase_auth, "revoke_refresh_tokens", lambda uid, app=None: sent.append(("revoke", uid)))
+    await provider.set_owner_password(UID, "x" * 16)
+    assert sent == [("update_user", UID, ["app", "password"]), ("revoke", UID)]
+    assert threads == ["<lambda>", "<lambda>"]  # both calls through asyncio.to_thread
+
+
+@pytest.mark.parametrize("uid", [
+    "abc", "", "own-", "owner@example.test", "google-uid-123", str(JOB), f"OWN-{JOB}", f"own-{str(JOB).upper()}",
+    "own-not-a-uuid", "own-" + "a" * 200, None,
+])
+async def test_set_owner_password_refuses_every_uid_that_is_not_an_own_uuid_before_the_sdk(provider, monkeypatch, uid):
+    def never(*a, **k):
+        raise AssertionError("the SDK must not be reached")
+
+    monkeypatch.setattr(firebase_auth, "update_user", never)
+    monkeypatch.setattr(firebase_auth, "revoke_refresh_tokens", never)
+    monkeypatch.setattr(fb.FirebaseIdentityProvider, "_get_app", never)  # not even the app is built
+    with pytest.raises(UnsafeUid):
+        await provider.set_owner_password(uid, "x" * 16)
+
+
+@pytest.mark.parametrize("sdk_error, expected", [
+    (firebase_auth.UserNotFoundError("none"), ProviderUserNotFound),
+    (ValueError("Invalid password string. Password must be a string at least 6 characters long."), PasswordRejected),
+    (firebase_exceptions.InvalidArgumentError("weak"), PasswordRejected),
+    (firebase_exceptions.UnavailableError("down"), ProviderUnavailable),
+])
+async def test_set_owner_password_errors_map_to_short_reasons(provider, monkeypatch, sdk_error, expected):
+    def fail(uid, **kw):
+        raise sdk_error
+
+    monkeypatch.setattr(firebase_auth, "update_user", fail)
+    monkeypatch.setattr(firebase_auth, "revoke_refresh_tokens", lambda uid, app=None: None)
+    with pytest.raises(expected):
+        await provider.set_owner_password(UID, "x" * 16)
+
+
+async def test_a_failed_revocation_is_provider_unavailable_after_the_password_was_set(provider, monkeypatch):
+    done = []
+    monkeypatch.setattr(firebase_auth, "update_user", lambda uid, **kw: done.append("password"))
+
+    def down(uid, app=None):
+        raise firebase_exceptions.UnavailableError("down")
+
+    monkeypatch.setattr(firebase_auth, "revoke_refresh_tokens", down)
+    with pytest.raises(ProviderUnavailable) as exc:
+        await provider.set_owner_password(UID, "x" * 16)
+    assert exc.value.reason == "revoke_refresh_tokens_failed" and done == ["password"]
+
+
+async def test_set_owner_password_is_bounded_by_the_timeout(monkeypatch):
+    p = FirebaseIdentityProvider("test-project", "service-account-that-is-never-read.json", call_timeout_seconds=0.2)
+    monkeypatch.setattr(p, "_get_app", lambda: object())
+    monkeypatch.setattr(firebase_auth, "update_user", lambda uid, **kw: time.sleep(1.0))
+    started = time.monotonic()
+    with pytest.raises(ProviderUnavailable) as exc:
+        await p.set_owner_password(UID, "x" * 16)
+    assert exc.value.reason == "timeout" and time.monotonic() - started < 0.9
+
+
+async def test_set_owner_password_without_a_service_account_does_not_touch_the_sdk(monkeypatch):
+    p = FirebaseIdentityProvider("test-project", "")
+    monkeypatch.setattr(firebase_auth, "update_user", lambda *a, **k: (_ for _ in ()).throw(AssertionError("SDK reached")))
+    with pytest.raises(ProviderUnavailable) as exc:
+        await p.set_owner_password(UID, "x" * 16)
+    assert exc.value.reason == "admin_api_not_configured"
+
+
+def test_is_own_uid_agrees_with_require_own_uid():
+    for uid in (UID, f"own-{JOB.hex}", f"OWN-{JOB}", "abc", None, 5, f"own-{str(JOB).upper()}"):
+        try:
+            require_own_uid(uid)
+            ok = True
+        except UnsafeUid:
+            ok = False
+        assert is_own_uid(uid) is ok, uid
+
+
+def _calls_of(path: Path, attribute: str) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return [
+        f"{path.name}:{node.lineno}" for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr == attribute
+    ]
+
+
+OWNER_FLOWS = [
+    ROOT / "app" / "controllers" / "family_management" / "owner_provisioning_use_cases.py",  # first run AND retry
+    ROOT / "app" / "controllers" / "family_management" / "owner_password_reset_use_cases.py",  # reissue
+    ROOT / "app" / "controllers" / "family_management" / "owner_admin_router.py",
+]
+
+
+def test_the_retry_and_the_reset_never_call_the_general_set_password():
+    """The general set_password (change-password; any linked uid) is not reachable from an Owner flow."""
+    for path in OWNER_FLOWS:
+        assert _calls_of(path, "set_password") == [], path.name
+    assert _calls_of(OWNER_FLOWS[0], "set_owner_password") != []
+    assert _calls_of(OWNER_FLOWS[1], "set_owner_password") != []
+
+
+def test_only_the_change_password_flow_calls_the_general_set_password():
+    callers = sorted(
+        str(path.relative_to(ROOT)).replace("\\", "/") for path in (ROOT / "app").rglob("*.py")
+        if "__pycache__" not in path.parts and _calls_of(path, "set_password")
+        and path.name != "firebase.py"
+    )
+    assert callers == ["app/controllers/auth_access/use_cases.py"]
+
+
 # ------------------------------------------------------------------ no admin API: nothing is sent
 
 
@@ -248,6 +366,15 @@ def test_every_sdk_call_goes_through_the_one_bounded_helper():
         and node.args and isinstance(node.args[0], ast.Attribute)
     }
     assert passed == {"verify_id_token", "update_user", "revoke_refresh_tokens", "get_user", "create_user", "delete_user"}
+    # ... and the Owner password call is one of the callers of update_user / revoke_refresh_tokens
+    adapter = next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "FirebaseIdentityProvider")
+    owner_call = next(n for n in ast.walk(adapter) if isinstance(n, ast.AsyncFunctionDef) and n.name == "set_owner_password")
+    inside = {
+        node.args[0].attr for node in ast.walk(owner_call)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "_call"
+        and node.args and isinstance(node.args[0], ast.Attribute)
+    }
+    assert inside == {"update_user", "revoke_refresh_tokens"}
     source = (ROOT / "app" / "core" / "firebase.py").read_text(encoding="utf-8")
     assert "run_in_threadpool" not in source and "asyncio.to_thread" in source
 
@@ -347,11 +474,15 @@ def test_nothing_in_the_application_looks_up_or_deletes_a_firebase_user_by_e_mai
 
 def test_the_adapter_has_no_method_that_takes_an_e_mail_to_find_or_delete():
     methods = [n for n in dir(FirebaseIdentityProvider) if not n.startswith("_")]
-    assert sorted(methods) == sorted(["admin_api_enabled", "create_user", "delete_user", "get_user", "set_password", "verify_id_token"])
+    assert sorted(methods) == sorted([
+        "admin_api_enabled", "create_user", "delete_user", "get_user", "set_owner_password", "set_password",
+        "verify_id_token",
+    ])
     import inspect
 
     for name in ("get_user", "delete_user"):
         assert list(inspect.signature(getattr(FirebaseIdentityProvider, name)).parameters) == ["self", "uid"]
+    assert list(inspect.signature(FirebaseIdentityProvider.set_owner_password).parameters) == ["self", "uid", "new_password"]
 
 
 # ------------------------------------------------------------------ the guard that keeps every test off the real Firebase

@@ -16,6 +16,9 @@
 - Owner provisioning (Mốc E6) adds create_user / get_user / delete_user, ALL by uid. The adapter has
   no lookup or delete by e-mail, and delete_user refuses any uid that is not `own-<uuid>`: a
   clean-up can only ever remove the user a job itself created.
+- set_owner_password (Mốc E6b) is the ONLY password call of the Owner flows (a retry of a job, the
+  reset of a temporary password): like create/delete it refuses any uid that is not `own-<uuid>` before
+  the SDK is reached. The general set_password (change-password, any linked uid) is never used by them.
 """
 
 from __future__ import annotations
@@ -91,6 +94,10 @@ class UnsafeUid(Exception):
     """A uid that is not `own-<uuid>` was given to a call that only accepts those."""
 
 
+class ProviderUserNotFound(Exception):
+    """set_owner_password: there is no Firebase user with this uid (nothing was changed)."""
+
+
 @dataclass(frozen=True)
 class ProviderUser:
     """What the app reads back about a Firebase user. Never a password or a token."""
@@ -106,14 +113,20 @@ def own_uid(job_id: uuid.UUID) -> str:
     return f"own-{job_id}"
 
 
-def require_own_uid(uid: str) -> str:
-    """`own-<canonical uuid>` or UnsafeUid. Checked BEFORE any SDK call that creates or deletes."""
+def is_own_uid(uid: object) -> bool:
+    """True for `own-<canonical lowercase uuid>`, the only uids the Owner flows may act on."""
     if isinstance(uid, str) and uid.startswith("own-"):
         try:
-            if str(uuid.UUID(uid[4:])) == uid[4:]:
-                return uid
+            return str(uuid.UUID(uid[4:])) == uid[4:]
         except ValueError:
-            pass
+            return False
+    return False
+
+
+def require_own_uid(uid: str) -> str:
+    """`own-<canonical uuid>` or UnsafeUid. Checked BEFORE any SDK call that creates, deletes or sets a password."""
+    if is_own_uid(uid):
+        return uid
     raise UnsafeUid()
 
 
@@ -123,6 +136,8 @@ class IdentityProvider(Protocol):
     async def verify_id_token(self, id_token: str) -> VerifiedIdentity: ...
 
     async def set_password(self, uid: str, new_password: str) -> None: ...
+
+    async def set_owner_password(self, uid: str, new_password: str) -> None: ...
 
     async def get_user(self, uid: str) -> ProviderUser | None: ...
 
@@ -309,6 +324,28 @@ class FirebaseIdentityProvider:
         except firebase_exceptions.FirebaseError:
             raise ProviderUnavailable("create_user_failed") from None
         return _provider_user(record)
+
+    async def set_owner_password(self, uid: str, new_password: str) -> None:
+        """Set a new password on the user `uid` (only an `own-<uuid>`) and revoke its refresh tokens.
+
+        The uid is checked BEFORE the SDK is reached. Both SDK calls run through `_call` (thread, timeout).
+        Raises PasswordRejected (password policy), ProviderUserNotFound (no such user: nothing changed),
+        ProviderUnavailable. If the password was set but the revocation failed, ProviderUnavailable is
+        raised too: the caller treats the whole call as failed and may repeat it."""
+        require_own_uid(uid)
+        app = self._require_admin()
+        try:
+            await self._call(firebase_auth.update_user, uid, password=new_password, app=app)
+        except firebase_auth.UserNotFoundError:
+            raise ProviderUserNotFound() from None
+        except (ValueError, firebase_exceptions.InvalidArgumentError):
+            raise PasswordRejected() from None
+        except firebase_exceptions.FirebaseError:
+            raise ProviderUnavailable("update_user_failed") from None
+        try:
+            await self._call(firebase_auth.revoke_refresh_tokens, uid, app=app)
+        except (ValueError, firebase_exceptions.FirebaseError):
+            raise ProviderUnavailable("revoke_refresh_tokens_failed") from None
 
     async def delete_user(self, uid: str) -> bool:
         """Delete the user `uid`, only if it is an `own-<uuid>`. True if deleted, False if there was none."""

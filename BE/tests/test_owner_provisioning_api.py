@@ -181,6 +181,7 @@ def everything_stored(w: OwnerWorld) -> str:
                                *w.idem.rows, *w.family.clans.values(), *w.family.memberships, *w.family.owners)]
     parts += [repr(a) for a in w.repo.audit] + [repr(r) for r in w.repo.roles]
     parts += [repr(u) for u in w.provider.provider_users.values()] + [repr(w.provider.password_changes)]
+    parts += [repr(w.provider.owner_password_sets)]
     parts += [repr(w.provider.password_shapes), repr(w.tx.events), repr(w.family.calls)]
     return "\n".join(parts)
 
@@ -1003,9 +1004,10 @@ def test_a_firebase_user_left_by_an_earlier_attempt_is_reused_with_a_new_passwor
     _clan, _token, r = run_failure(w)
     assert r.status_code == 201 and r.json()["temporary_password"] == KNOWN
     job = w.job()
-    assert [op for op, _ in w.provider.provider_calls] == ["get_user", "set_password"]  # no create_user: the user is reused
-    assert w.provider.password_changes == [f"own-{job.job_id}"]  # ... and its forgotten password is replaced
-    assert w.provider.password_shapes == [("set_password", 16, True, True, True, False)]
+    assert [op for op, _ in w.provider.provider_calls] == ["get_user", "set_owner_password"]  # no create_user: the user is reused
+    assert w.provider.owner_password_sets == [f"own-{job.job_id}"]  # ... and its forgotten password is replaced
+    assert w.provider.password_changes == []  # the general set_password is never used by the Owner flow
+    assert w.provider.password_shapes == [("set_owner_password", 16, True, True, True, False)]
     assert job.status == "SUCCEEDED" and len(w.owner_users()) == 1
 
 
@@ -1019,8 +1021,9 @@ def test_a_parallel_creation_of_the_same_job_is_recognised_and_the_user_is_reuse
     w.provider.hooks["create_user"] = parallel
     _clan, _token, r = run_failure(w)
     assert r.status_code == 201
-    assert [op for op, _ in w.provider.provider_calls] == ["get_user", "create_user", "set_password"]
-    assert w.job().status == "SUCCEEDED" and w.provider.password_changes == [f"own-{w.job().job_id}"]
+    assert [op for op, _ in w.provider.provider_calls] == ["get_user", "create_user", "set_owner_password"]
+    assert w.job().status == "SUCCEEDED" and w.provider.owner_password_sets == [f"own-{w.job().job_id}"]
+    assert w.provider.password_changes == []
 
 
 def test_a_run_replaced_between_the_last_two_transactions_writes_no_owner(monkeypatch):
@@ -1091,7 +1094,7 @@ def test_the_order_of_work_and_the_lock_order(w):
     assert [c for c in first_phase if c in t1] == t1  # T1: the key first, then the clan, the checks, the job
     # T4 locks the idempotency row, then the clan, then the job
     last_lock_clan = len(calls) - 1 - calls[::-1].index("lock_clan")
-    last_key_lock = len(calls) - 1 - calls[::-1].index("idem.lock_existing")
+    last_key_lock = len(calls) - 1 - calls[::-1].index("idem.lock_by_resource")
     last_job_lock = len(calls) - 1 - calls[::-1].index("job.lock")
     assert last_key_lock < last_lock_clan < last_job_lock < calls.index("create_membership")
     assert "lock_user" not in calls and "lock_user" not in w.repo.calls  # never FOR UPDATE on users

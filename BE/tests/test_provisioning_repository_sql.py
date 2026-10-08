@@ -151,6 +151,8 @@ def test_the_job_repository_never_commits_and_every_write_only_flushes():
 JOB_SCOPE = {
     "insert_pending": "inserts a row; clan_id is the inserted value",
     "get": "WHERE job_id",
+    "list_page": "optional WHERE clan_id AND status; newest first, LIMIT/OFFSET (E6b)",
+    "count": "optional WHERE clan_id AND status (E6b)",
     "lock": "WHERE job_id, FOR NO KEY UPDATE",
     "list_blocking": "WHERE clan_id OR lower(email), only blocking rows",
     "mark_running": "writes the row it was given (locked by lock)",
@@ -228,3 +230,65 @@ async def test_releasing_a_key_deletes_that_row_and_naming_its_resource_only_wri
     session.delete = fake_delete
     await repo.delete(row)
     assert deleted == [row] and session.flushes == 2
+
+
+# ------------------------------------------------------------------ E6b: the list, the key by job, the credential lock
+
+
+async def test_the_job_list_is_newest_first_paged_and_filtered_only_by_what_is_given(jobs, session):
+    await jobs.list_page(clan_id=None, status=None, limit=100, offset=200)
+    sql, params = compiled(session)
+    assert "WHERE" not in sql and "ORDER BY provisioning_jobs.created_at DESC, provisioning_jobs.job_id" in sql
+    assert "LIMIT" in sql and "OFFSET" in sql and 100 in params.values() and 200 in params.values()
+    assert "FOR " not in sql
+    await jobs.list_page(clan_id=CLAN, status="FAILED", limit=5, offset=0)
+    sql, params = compiled(session, 1)
+    where = sql.split("WHERE", 1)[1].split("ORDER BY", 1)[0]
+    assert "provisioning_jobs.clan_id = " in where and "provisioning_jobs.status = " in where and " AND " in where
+    assert CLAN in params.values() and "FAILED" in params.values()
+
+
+async def test_the_job_count_uses_the_same_filters_and_counts_in_the_database(jobs, session):
+    assert await jobs.count(clan_id=CLAN, status="RUNNING") == 0
+    sql, params = compiled(session)
+    assert sql.startswith("SELECT count(*)") and "FROM provisioning_jobs" in sql
+    assert "provisioning_jobs.clan_id = " in sql and "provisioning_jobs.status = " in sql and "LIMIT" not in sql
+
+
+async def test_the_job_list_selects_whole_rows_but_the_response_model_has_no_personal_field():
+    from app.schemas.business import ProvisioningJobResponse
+
+    assert not {"email", "phone", "display_name", "firebase_uid", "temporary_password"} & set(ProvisioningJobResponse.model_fields)
+
+
+async def test_the_key_of_a_job_is_found_by_its_resource_and_locked_for_no_key_update(session):
+    idem = IdempotencyRepository(session)
+    job_id = uuid.uuid4()
+    await idem.lock_by_resource(resource_type="provisioning_job", resource_id=job_id)
+    sql, params = compiled(session)
+    assert sql.endswith("FOR NO KEY UPDATE") and "idempotency_keys.resource_type = " in sql and "idempotency_keys.resource_id = " in sql
+    assert "provisioning_job" in params.values() and job_id in params.values() and "LIMIT" in sql
+    assert session.statements[0].get_execution_options().get("populate_existing") is True
+
+
+async def test_the_credential_lock_is_for_no_key_update_rereads_the_row_and_reads_one_table(session):
+    await UserAccessRepository(session).lock_credential_metadata(USER)
+    sql, params = compiled(session)
+    assert sql.endswith("FOR NO KEY UPDATE") and "FOR UPDATE" not in sql.replace("FOR NO KEY UPDATE", "")
+    assert "credential_metadata.user_id = " in sql.split("WHERE", 1)[1] and USER in params.values()
+    assert "JOIN" not in sql and not re.search(r"\busers\b", sql)
+    assert session.statements[0].get_execution_options().get("populate_existing") is True
+
+
+async def test_the_fresh_user_read_takes_no_lock(session):
+    await UserAccessRepository(session).get_user_fresh(USER)
+    sql, _ = compiled(session)
+    assert "FOR " not in sql and "users.user_id = " in sql
+    assert session.statements[0].get_execution_options().get("populate_existing") is True
+
+
+def test_the_e6b_repository_methods_never_commit():
+    for cls, names in ((ProvisioningRepository, ("list_page", "count")), (IdempotencyRepository, ("lock_by_resource",)),
+                       (UserAccessRepository, ("lock_credential_metadata", "get_user_fresh"))):
+        for name in names:
+            assert not re.search(r"\.(commit|rollback)\(", inspect.getsource(getattr(cls, name))), name

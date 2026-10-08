@@ -75,6 +75,32 @@ def decide_claim(
     raise ClaimDenied("UNKNOWN_STATUS")  # default deny
 
 
+def decide_abandon(job, now: datetime, *, lease_seconds: int) -> None:
+    """May an administrator give `job` up? Returns nothing, or raises ClaimDenied.
+
+    Allowed: FAILED_RETRYABLE (even after the last attempt), PENDING that nobody started (older than
+    the lease), RUNNING whose lease has run out. Never a RUNNING job with a live lease (a run may still
+    be writing), never SUCCEEDED, never a FAILED job (it is final; one that still owes a clean-up is
+    cleaned up by a retry)."""
+    status = job.status
+    if status == SUCCEEDED:
+        raise ClaimDenied("ALREADY_SUCCEEDED")
+    if status == FAILED:
+        raise ClaimDenied("CLEANUP_PENDING" if job.needs_cleanup else "FAILED_FINAL")
+    if status == PENDING:
+        age = (now - job.created_at).total_seconds()
+        if age < lease_seconds:
+            raise ClaimDenied("PENDING_NOT_STUCK", retry_after=max(1, lease_seconds - int(age)))
+        return
+    if status == FAILED_RETRYABLE:
+        return
+    if status == RUNNING:
+        if job.lease_expires_at is not None and job.lease_expires_at > now:
+            raise ClaimDenied("LEASE_HELD", retry_after=max(1, int((job.lease_expires_at - now).total_seconds()) + 1))
+        return
+    raise ClaimDenied("UNKNOWN_STATUS")  # default deny
+
+
 def holds_attempt(job, attempt: int) -> bool:
     """Fencing: still the run that was started as `attempt`. NOT about the lease."""
     return job is not None and job.status == RUNNING and job.attempt_count == attempt

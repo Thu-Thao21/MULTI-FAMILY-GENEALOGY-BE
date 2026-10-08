@@ -121,6 +121,23 @@ class UserAccessRepository:
         stmt = select(CredentialMetadata).where(CredentialMetadata.user_id == user_id)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
+    async def lock_credential_metadata(self, user_id: uuid.UUID) -> CredentialMetadata | None:
+        """The credential row, locked FOR NO KEY UPDATE and re-read from the database (E6b: the
+        temporary-password reset and the Owner's own password change serialize on this row)."""
+        stmt = (
+            select(CredentialMetadata)
+            .where(CredentialMetadata.user_id == user_id)
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def get_user_fresh(self, user_id: uuid.UUID) -> User | None:
+        """The users row re-read from the database WITHOUT a lock (E6b: a status already committed by
+        the same transaction as the credential row is seen, nothing is locked)."""
+        stmt = select(User).where(User.user_id == user_id).execution_options(populate_existing=True)
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
     async def get_session_by_id(self, session_id: uuid.UUID) -> UserSession | None:
         stmt = select(UserSession).where(UserSession.session_id == session_id)
         return (await self._session.execute(stmt)).scalar_one_or_none()

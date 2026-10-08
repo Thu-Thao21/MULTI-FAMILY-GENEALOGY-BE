@@ -241,11 +241,12 @@ class ProvisioningJobAccepted(ResponseModel):
 
 
 class OwnerProvisionResponse(ResponseModel):
-    """201 of POST /admin/clans/{id}/owner (and later the 200 of retry and of the password reset).
+    """201 of POST /admin/clans/{id}/owner and 200 of POST /admin/provisioning-jobs/{id}/retry.
 
     temporary_password is shown ONCE, in this response only, with Cache-Control: no-store. It is
     never stored, so a replay of the same Idempotency-Key answers with the same job but every field
-    below `user_id` set to null.
+    below `user_id` set to null. A retry that only cleans up (the job stays FAILED) answers with
+    status FAILED and every field below `user_id` null: no password is made.
     """
 
     job_id: uuid.UUID
@@ -261,6 +262,32 @@ class OwnerProvisionResponse(ResponseModel):
     email_delivery_status: Optional[Literal["QUEUED", "SENT", "FAILED", "BOUNCED"]] = Field(
         default=None, description="Null while only the Noop sender exists: the SA passes the password on."
     )
+
+
+# ----- POST /admin/clans/{id}/owner/temporary-password (SA) -> 200 -----
+
+
+class OwnerPasswordResetResponse(ResponseModel):
+    """200. The new temporary password is shown ONCE, in this response only (Cache-Control: no-store);
+    it is never stored, logged or audited."""
+
+    clan_id: uuid.UUID
+    user_id: uuid.UUID
+    owner_email: str
+    owner_display_name: str
+    temporary_password: str = Field(repr=False, description="Shown once.")
+    temporary_password_expires_at: UtcDatetime
+    email_delivery_status: Optional[Literal["QUEUED", "SENT", "FAILED", "BOUNCED"]] = Field(
+        default=None, description="Null while only the Noop sender exists: the SA passes the password on."
+    )
+
+
+# ----- GET /admin/provisioning-jobs (SA) -----
+
+
+class ProvisioningJobListQuery(PageParams):
+    clan_id: Optional[uuid.UUID] = None
+    status: Optional[ProvisioningJobStatus] = None
 
 
 # ----- GET /admin/provisioning-jobs/{id} (SA) -----

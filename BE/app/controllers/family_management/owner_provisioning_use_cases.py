@@ -30,6 +30,18 @@ Rules:
   * the audit rows (one per job state change) hold ids, statuses and error codes: no e-mail, name,
     phone, Firebase uid or password.
 Lock order: idempotency row, clan, job; the `users` row is never locked.
+
+Mốc E6b adds, on the same job and the same steps:
+  * retry_job    POST /admin/provisioning-jobs/{id}/retry   a new run of FAILED_RETRYABLE, of a stuck PENDING,
+                 of a RUNNING whose lease ran out; or only the Firebase clean-up of a FAILED job that still
+                 owes it (no password is made then). A retry that succeeds ALWAYS makes a new password and
+                 shows it once. The original Idempotency-Key, if it is still IN_PROGRESS, is completed (or
+                 released on a failure): it is found through the job, not through the key text;
+  * abandon_job  POST /admin/provisioning-jobs/{id}/abandon  give up: FAILED; the clean-up of own-<job_id> is
+                 tried whenever a run ever started; never a RUNNING job whose lease is alive;
+  * list_jobs    GET /admin/provisioning-jobs.
+Both Owner flows (this module and the temporary-password reset) set a password only through
+IdentityProvider.set_owner_password, which accepts nothing but an own-<uuid>.
 """
 
 from __future__ import annotations
@@ -55,6 +67,7 @@ from app.core.firebase import (
     ProviderInvalidUser,
     ProviderUnavailable,
     ProviderUserExists,
+    ProviderUserNotFound,
     UnsafeUid,
     own_uid,
 )
@@ -76,7 +89,13 @@ from app.dependencies.auth import Principal
 from app.models.family.provisioning_repository import ProvisioningRepository
 from app.models.family.repository import FamilyRepository
 from app.models.user_access.repository import UserAccessRepository
-from app.schemas.business import OwnerProvisionRequest, OwnerProvisionResponse, ProvisioningJobResponse
+from app.schemas.business import (
+    OwnerProvisionRequest,
+    OwnerProvisionResponse,
+    ProvisioningJobListQuery,
+    ProvisioningJobResponse,
+)
+from app.schemas.common import Page
 from app.schemas.errors import ErrorCode
 
 logger = logging.getLogger("mfg.owner_provisioning")
@@ -84,6 +103,7 @@ logger = logging.getLogger("mfg.owner_provisioning")
 ENDPOINT = "POST /admin/clans/{clan_id}/owner"
 BUSINESS_OWNER_ROLE = "BUSINESS_OWNER"
 IN_PROGRESS_RETRY_AFTER = "5"
+JOB_RESOURCE = "provisioning_job"
 LIVE_PER_CLAN_INDEX = "uq_provisioning_job_live_per_clan"
 LIVE_EMAIL_INDEX = "uq_provisioning_job_live_email"
 USER_EMAIL_CONSTRAINTS = ("users_email_key", "uq_users_email_lower")
@@ -151,7 +171,6 @@ class JobRun:
     uid: str
     actor_id: uuid.UUID
     ip_address: str | None
-    key: str
 
 
 @dataclass(frozen=True)
@@ -168,6 +187,13 @@ def _error(failure: Failure, job_id: uuid.UUID, *, exhausted: bool = False, atte
             f"Job {job_id} failed {attempts} times and can no longer be retried ({failure.code}).",
         )
     return AppError(failure.error, failure.message.format(job_id=job_id))
+
+
+async def _lock_key(idempotency: IdempotencyStore, job_id: uuid.UUID):
+    """The Idempotency-Key row that is working on this job, found by the job (not by the key text), so a
+    RETRY sent by another administrator, with no key of its own, completes or releases the original one.
+    None when there is none (a failure releases it)."""
+    return await idempotency.lock_by_resource(resource_type=JOB_RESOURCE, resource_id=job_id)
 
 
 def _lost_lease_error() -> AppError:
@@ -259,7 +285,17 @@ async def provision_owner(
     if isinstance(accepted, ProvisionResult):
         return accepted  # a replay of a finished request
     run = await _start(db=db, users=users, jobs=jobs, idempotency=idempotency, run=accepted, clock=clock)
+    return await _execute(
+        db=db, users=users, family=family, jobs=jobs, idempotency=idempotency, provider=provider,
+        sender=sender, run=run, clock=clock, password_factory=password_factory, status=201,
+    )
 
+
+async def _execute(
+    *, db, users, family, jobs, idempotency, provider, sender, run: JobRun, clock, password_factory, status: int
+) -> ProvisionResult:
+    """Everything after the job is RUNNING (T2 done): Firebase, then T3 and T4, or the failure record.
+    Shared by the first run and by a retry; `status` is the HTTP status of the success."""
     password = (password_factory or _default_password)()
     try:
         await _firebase_step(provider, run, password)
@@ -278,7 +314,7 @@ async def provision_owner(
     delivery = await _send(sender, run, password, expires_at)
     logger.info("owner.provision job_id=%s step=done request_id=%s", run.job_id, get_request_id())
     return ProvisionResult(
-        status=201,
+        status=status,
         replayed=False,
         response=OwnerProvisionResponse(
             job_id=run.job_id,
@@ -391,7 +427,7 @@ async def _accept(
                     "A provisioning job for this e-mail address is already in progress.",
                 ) from None
             raise
-        await idempotency.set_resource(claim.row, resource_type="provisioning_job", resource_id=job_id)
+        await idempotency.set_resource(claim.row, resource_type=JOB_RESOURCE, resource_id=job_id)
         await _audit(
             users, event="created", from_status=None, to_status=state.PENDING, attempt=0, at=now,
             ip_address=client.ip_address, actor_id=principal.user_id, job_id=job_id, clan_id=clan_id,
@@ -399,7 +435,7 @@ async def _accept(
         await db.commit()
     return JobRun(
         job_id=job_id, clan_id=clan_id, attempt=0, email=email, display_name=display_name,
-        uid=own_uid(job_id), actor_id=principal.user_id, ip_address=client.ip_address, key=key,
+        uid=own_uid(job_id), actor_id=principal.user_id, ip_address=client.ip_address,
     )
 
 
@@ -444,15 +480,15 @@ async def _firebase_step(provider: IdentityProvider, run: JobRun, password: str)
         if existing is not None:
             if (existing.email or "").lower() != run.email.lower():
                 raise _StepFailed(FAILURES["UID_MISMATCH"])
-            await provider.set_password(run.uid, password)  # ours (an earlier attempt): a new password
+            await provider.set_owner_password(run.uid, password)  # ours (an earlier attempt): a new password
             return
         try:
             await provider.create_user(
                 uid=run.uid, email=run.email, display_name=run.display_name, password=password
             )
         except ProviderUserExists:  # a parallel run of this same job got there first: it is ours
-            await provider.set_password(run.uid, password)
-    except ProviderUnavailable:
+            await provider.set_owner_password(run.uid, password)
+    except (ProviderUnavailable, ProviderUserNotFound):  # gone between get_user and the password: try again
         raise _StepFailed(FAILURES["PROVIDER_UNAVAILABLE"]) from None
     except PasswordRejected:
         raise _StepFailed(FAILURES["PASSWORD_POLICY_REJECTED"]) from None
@@ -516,9 +552,7 @@ async def _finish(*, db, users, family, jobs, idempotency, run: JobRun, clock):
     async def work():
         await idempotency.set_lock_timeout(LOCK_TIMEOUT_SECONDS)
         # lock order: the idempotency row, the clan, the job
-        key_row = await idempotency.lock_existing(
-            actor_id=run.actor_id, endpoint=ENDPOINT, idempotency_key=run.key
-        )
+        key_row = await _lock_key(idempotency, run.job_id)
         clan = await family.lock_clan(run.clan_id)
         job = await jobs.lock(run.job_id)
         if not state.holds_attempt(job, run.attempt):
@@ -553,14 +587,14 @@ async def _finish(*, db, users, family, jobs, idempotency, run: JobRun, clock):
             attempt=run.attempt, at=now, ip_address=run.ip_address, actor_id=run.actor_id,
             job_id=run.job_id, clan_id=run.clan_id, user_id=user_id,
         )
-        if key_row is not None:  # the stored form never holds the password nor personal data
+        if key_row is not None and key_row.status == "IN_PROGRESS":  # never holds the password nor personal data
             await complete_idempotency(
                 idempotency, key_row, response_status=201,
                 response_body={
                     "job_id": str(run.job_id), "status": state.SUCCEEDED,
                     "clan_id": str(run.clan_id), "user_id": str(user_id),
                 },
-                resource_type="provisioning_job", resource_id=run.job_id,
+                resource_type=JOB_RESOURCE, resource_id=run.job_id,
             )
         await db.commit()
         return user_id, now, expires_at
@@ -600,9 +634,7 @@ async def _record_failure(
         now = clock()
         async with rollback_on_error(db):
             await idempotency.set_lock_timeout(LOCK_TIMEOUT_SECONDS)
-            key_row = await idempotency.lock_existing(
-                actor_id=run.actor_id, endpoint=ENDPOINT, idempotency_key=run.key
-            )
+            key_row = await _lock_key(idempotency, run.job_id)
             job = await jobs.lock(run.job_id)
             if not state.holds_attempt(job, run.attempt):
                 await rollback_quietly(db)  # change nothing, let go of the locks
@@ -632,7 +664,8 @@ async def _record_failure(
 
 
 async def _cleanup(*, db, users, jobs, idempotency, provider, run: JobRun, clock) -> None:
-    """Delete Firebase user own-<job_id> (only that uid), then lower the flags once it is confirmed."""
+    """Delete Firebase user own-<job_id> (only that uid), then lower the flags once it is confirmed.
+    The caller that needs the outcome re-reads the job."""
     confirmed = False
     try:
         await provider.delete_user(run.uid)  # True (deleted) or False (there was none): both are confirmed
@@ -659,13 +692,11 @@ async def _cleanup(*, db, users, jobs, idempotency, provider, run: JobRun, clock
         logger.error("owner.provision cleanup_not_recorded job_id=%s request_id=%s", run.job_id, get_request_id())
 
 
-# ----- GET /admin/provisioning-jobs/{job_id} -----
+# ----- GET /admin/provisioning-jobs/{job_id} and the list -----
 
 
-async def get_job(*, jobs: ProvisioningRepository, job_id: uuid.UUID) -> ProvisioningJobResponse:
-    job = await jobs.get(job_id)
-    if job is None:
-        raise AppError(ErrorCode.NOT_FOUND)
+def _job_response(job) -> ProvisioningJobResponse:
+    """The job as the SA sees it: never the e-mail, the phone, the Firebase uid or a password."""
     return ProvisioningJobResponse(
         job_id=job.job_id,
         job_type=job.job_type,
@@ -679,3 +710,208 @@ async def get_job(*, jobs: ProvisioningRepository, job_id: uuid.UUID) -> Provisi
         created_at=job.created_at,
         updated_at=job.updated_at,
     )
+
+
+async def get_job(*, jobs: ProvisioningRepository, job_id: uuid.UUID) -> ProvisioningJobResponse:
+    job = await jobs.get(job_id)
+    if job is None:
+        raise AppError(ErrorCode.NOT_FOUND)
+    return _job_response(job)
+
+
+async def list_jobs(*, jobs: ProvisioningRepository, query: ProvisioningJobListQuery) -> Page[ProvisioningJobResponse]:
+    rows = await jobs.list_page(
+        clan_id=query.clan_id, status=query.status, limit=query.page_size, offset=query.offset
+    )
+    total = await jobs.count(clan_id=query.clan_id, status=query.status)
+    return Page[ProvisioningJobResponse](
+        items=[_job_response(row) for row in rows], total=total, page=query.page, page_size=query.page_size
+    )
+
+
+# ----- why a job cannot be retried or abandoned now -----
+
+_DENIED_BECAUSE = {
+    "ALREADY_SUCCEEDED": "it already succeeded",
+    "FAILED_FINAL": "it failed for good and nothing is owed to the identity provider",
+    "CLEANUP_PENDING": "it still owes a clean-up at the identity provider: retry it to finish the clean-up",
+    "PENDING_NOT_STUCK": "it was created moments ago and its request may still be starting it",
+    "LEASE_HELD": "a run is working on it and its lease has not run out",
+    "ATTEMPTS_EXHAUSTED": "it used all its attempts: abandon it",
+    "UNKNOWN_STATUS": "its status is not known",
+}
+
+
+def _denied_error(job_id: uuid.UUID, status: str, denied: state.ClaimDenied, what: str) -> AppError:
+    """409 that names the CURRENT status (and Retry-After when waiting helps)."""
+    because = _DENIED_BECAUSE.get(denied.reason, denied.reason)
+    headers = {"Retry-After": str(denied.retry_after)} if denied.retry_after else None
+    return AppError(
+        ErrorCode.STATE_CONFLICT, f"Job {job_id} is {status} and cannot be {what} now: {because}.", headers=headers
+    )
+
+
+# ----- POST /admin/provisioning-jobs/{job_id}/retry -----
+
+
+@dataclass(frozen=True)
+class _Claimed:
+    run: JobRun
+    cleanup_only: bool
+
+
+async def retry_job(
+    *,
+    db: UnitOfWork,
+    users: UserAccessRepository,
+    family: FamilyRepository,
+    jobs: ProvisioningRepository,
+    idempotency: IdempotencyStore,
+    provider: IdentityProvider,
+    sender: EmailSender,
+    principal: Principal,
+    job_id: uuid.UUID,
+    client: ClientInfo,
+    clock: Callable[[], datetime] | None = None,
+    password_factory: Callable[[], str] | None = None,
+) -> ProvisionResult:
+    """Run the job again. 200 with a NEW temporary password (shown once) when it succeeds; when the job
+    only owes a Firebase clean-up, the clean-up is done and no password is made. Every other state is 409."""
+    if not provider.admin_api_enabled:
+        raise AppError(ErrorCode.PROVIDER_UNAVAILABLE)  # nothing written
+    clock = clock or (lambda: utcnow())
+    claimed = await _claim_retry(
+        db=db, users=users, family=family, jobs=jobs, idempotency=idempotency, principal=principal,
+        job_id=job_id, client=client, clock=clock,
+    )
+    run = claimed.run
+    if claimed.cleanup_only:
+        await _cleanup(db=db, users=users, jobs=jobs, idempotency=idempotency, provider=provider, run=run, clock=clock)
+        job = await jobs.get(job_id)  # re-read: another request may have finished the clean-up
+        if job is None or job.needs_cleanup:
+            raise AppError(
+                ErrorCode.PROVIDER_UNAVAILABLE,
+                f"The clean-up of job {job_id} could not be confirmed at the identity provider; try again.",
+            )
+        return ProvisionResult(
+            status=200,
+            replayed=False,
+            response=OwnerProvisionResponse(job_id=job_id, status=job.status, clan_id=job.clan_id),
+        )
+    return await _execute(
+        db=db, users=users, family=family, jobs=jobs, idempotency=idempotency, provider=provider,
+        sender=sender, run=run, clock=clock, password_factory=password_factory, status=200,
+    )
+
+
+async def _claim_retry(*, db, users, family, jobs, idempotency, principal, job_id, client, clock) -> _Claimed:
+    """One short transaction: lock the clan, then the job; decide; and (unless it is only a clean-up) make
+    the job RUNNING with a new attempt and a new lease. Same fencing as a first run."""
+    now = clock()
+    async with rollback_on_error(db):
+        await idempotency.set_lock_timeout(LOCK_TIMEOUT_SECONDS)
+        known = await jobs.get(job_id)
+        if known is None:
+            raise AppError(ErrorCode.NOT_FOUND)
+        clan = await family.lock_clan(known.clan_id)  # lock order: clan, job
+        job = await jobs.lock(job_id)
+        if job is None:
+            raise AppError(ErrorCode.NOT_FOUND)
+        try:
+            action = state.decide_claim(
+                job, now, lease_seconds=settings.PROVISIONING_LEASE_SECONDS,
+                max_attempts=settings.PROVISIONING_MAX_ATTEMPTS,
+            )
+        except state.ClaimDenied as denied:
+            raise _denied_error(job_id, job.status, denied, "retried") from None
+        run = JobRun(
+            job_id=job_id, clan_id=job.clan_id, attempt=job.attempt_count, email=job.email,
+            display_name=job.display_name, uid=job.firebase_uid, actor_id=principal.user_id,
+            ip_address=client.ip_address,
+        )
+        if action == state.CLEANUP_ONLY:
+            await db.commit()  # nothing changed: let go of the locks
+            return _Claimed(run, cleanup_only=True)
+        # a run is about to begin: the clan and the e-mail must still allow an Owner
+        if clan is None or clan.status != "PENDING":
+            raise AppError(
+                ErrorCode.STATE_CONFLICT,
+                f"The clan is {clan.status if clan else 'gone'}; job {job_id} cannot create an Owner now: abandon it.",
+            )
+        if await family.get_active_owner(job.clan_id) is not None:
+            raise AppError(ErrorCode.STATE_CONFLICT, "This clan already has an Owner: abandon the job.")
+        if await users.get_user_by_email_ci(job.email) is not None:
+            raise AppError(
+                ErrorCode.DUPLICATE_RESOURCE, "An account with this e-mail address already exists: abandon the job."
+            )
+        from_status = job.status
+        await jobs.mark_running(
+            job, now=now, lease_expires_at=now + timedelta(seconds=settings.PROVISIONING_LEASE_SECONDS)
+        )
+        attempt = job.attempt_count
+        await _audit(
+            users, event="retried", from_status=from_status, to_status=state.RUNNING, attempt=attempt,
+            at=now, ip_address=client.ip_address, actor_id=principal.user_id, job_id=job_id, clan_id=run.clan_id,
+        )
+        await db.commit()
+    return _Claimed(JobRun(**{**run.__dict__, "attempt": attempt}), cleanup_only=False)
+
+
+# ----- POST /admin/provisioning-jobs/{job_id}/abandon -----
+
+ABANDONED = "ABANDONED"
+
+
+async def abandon_job(
+    *,
+    db: UnitOfWork,
+    users: UserAccessRepository,
+    jobs: ProvisioningRepository,
+    idempotency: IdempotencyStore,
+    provider: IdentityProvider,
+    principal: Principal,
+    job_id: uuid.UUID,
+    client: ClientInfo,
+    clock: Callable[[], datetime] | None = None,
+) -> ProvisioningJobResponse:
+    """Give the job up. It becomes FAILED (error_code ABANDONED). When a run ever started (attempt_count > 0)
+    the same compensation as a final failure follows: FAILED + needs_cleanup are COMMITTED first, then
+    delete_user(own-<job_id>) is tried, then the flags come down. A failed delete leaves them up (the clan and
+    the e-mail stay blocked; a retry finishes the clean-up). Not allowed while a run holds a live lease."""
+    clock = clock or (lambda: utcnow())
+    now = clock()
+    async with rollback_on_error(db):
+        await idempotency.set_lock_timeout(LOCK_TIMEOUT_SECONDS)
+        key_row = await _lock_key(idempotency, job_id)  # lock order: key, job (the clan is not needed)
+        job = await jobs.lock(job_id)
+        if job is None:
+            raise AppError(ErrorCode.NOT_FOUND)
+        try:
+            state.decide_abandon(job, now, lease_seconds=settings.PROVISIONING_LEASE_SECONDS)
+        except state.ClaimDenied as denied:
+            raise _denied_error(job_id, job.status, denied, "abandoned") from None
+        run = JobRun(
+            job_id=job_id, clan_id=job.clan_id, attempt=job.attempt_count, email=job.email,
+            display_name=job.display_name, uid=job.firebase_uid, actor_id=principal.user_id,
+            ip_address=client.ip_address,
+        )
+        from_status = job.status
+        owes_cleanup = job.attempt_count > 0  # a run ever began: a Firebase user may exist
+        if owes_cleanup:
+            await jobs.finish_failed_needing_cleanup(job, error_code=ABANDONED, now=now)
+        else:
+            await jobs.finish_failed(job, error_code=ABANDONED, now=now)
+        if key_row is not None and key_row.status == "IN_PROGRESS":
+            await idempotency.delete(key_row)  # nothing will ever complete it
+        await _audit(
+            users, event="abandoned", from_status=from_status, to_status=state.FAILED, attempt=run.attempt,
+            at=now, ip_address=client.ip_address, actor_id=principal.user_id, job_id=job_id,
+            clan_id=run.clan_id, error_code=ABANDONED, needs_cleanup=owes_cleanup,
+        )
+        await db.commit()
+    if owes_cleanup:
+        await _cleanup(db=db, users=users, jobs=jobs, idempotency=idempotency, provider=provider, run=run, clock=clock)
+    job = await jobs.get(job_id)
+    if job is None:  # pragma: no cover - rows are never deleted
+        raise AppError(ErrorCode.NOT_FOUND)
+    return _job_response(job)

@@ -120,3 +120,56 @@ def test_a_temporary_failure_of_the_last_attempt_is_final(attempt, expected):
 
 def test_with_one_allowed_attempt_the_first_failure_is_final():
     assert st.exhausted(1, 1) is True
+
+
+# ------------------------------------------------------------------ abandon (E6b)
+
+
+def abandon(j):
+    return st.decide_abandon(j, NOW, lease_seconds=LEASE)
+
+
+def abandon_denied(j) -> st.ClaimDenied:
+    with pytest.raises(st.ClaimDenied) as exc:
+        abandon(j)
+    return exc.value
+
+
+@pytest.mark.parametrize("j", [
+    job("FAILED_RETRYABLE", attempt=1),
+    job("FAILED_RETRYABLE", attempt=MAX),  # even after the last attempt: that is what abandon is for
+    job("PENDING", attempt=0, created=NOW - timedelta(seconds=LEASE)),
+    job("PENDING", attempt=0, created=NOW - timedelta(hours=3)),
+    job("RUNNING", attempt=1, lease=NOW),  # the lease is over at the very moment it ends
+    job("RUNNING", attempt=1, lease=NOW - timedelta(seconds=1)),
+    job("RUNNING", attempt=MAX, lease=NOW - timedelta(hours=1)),
+    job("RUNNING", attempt=1, lease=None),
+])
+def test_abandon_accepts_a_retryable_job_a_stuck_pending_and_a_running_job_whose_lease_ran_out(j):
+    assert abandon(j) is None
+
+
+def test_abandon_refuses_a_running_job_with_a_live_lease_and_says_how_long_to_wait():
+    d = abandon_denied(job("RUNNING", lease=NOW + timedelta(seconds=30)))
+    assert d.reason == "LEASE_HELD" and d.retry_after == 31
+    assert abandon_denied(job("RUNNING", lease=NOW + timedelta(milliseconds=1))).reason == "LEASE_HELD"
+
+
+def test_abandon_refuses_a_pending_job_that_may_still_be_starting():
+    d = abandon_denied(job("PENDING", attempt=0, created=NOW - timedelta(seconds=LEASE - 1)))
+    assert d.reason == "PENDING_NOT_STUCK" and d.retry_after == 1
+
+
+def test_abandon_refuses_a_succeeded_job_and_every_failed_job_telling_the_two_apart():
+    assert abandon_denied(job("SUCCEEDED")).reason == "ALREADY_SUCCEEDED"
+    assert abandon_denied(job("FAILED")).reason == "FAILED_FINAL"
+    assert abandon_denied(job("FAILED", needs_cleanup=True)).reason == "CLEANUP_PENDING"
+
+
+def test_abandon_denies_an_unknown_status_by_default():
+    assert abandon_denied(job("WEIRD")).reason == "UNKNOWN_STATUS"
+
+
+def test_a_retry_and_an_abandon_disagree_exactly_where_the_attempts_run_out():
+    exhausted = job("FAILED_RETRYABLE", attempt=MAX)
+    assert denied(exhausted).reason == "ATTEMPTS_EXHAUSTED" and abandon(exhausted) is None

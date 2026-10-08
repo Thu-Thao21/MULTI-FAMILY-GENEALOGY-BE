@@ -134,6 +134,28 @@ EXPECTED: dict[tuple[str, str], dict] = {
         success=200, request=None, response="ProvisioningJobResponse", params={"job_id"},
         errors={401: AUTHED_401, 403: AUTHED_403_FULL, 404: {"NOT_FOUND"}, 422: V422, 500: BOOM, 503: DB},
     ),
+    # Mốc E, step E6b: list, retry and abandon a job, and reissue the Owner's temporary password.
+    ("get", "/admin/provisioning-jobs"): dict(
+        success=200, request=None, response="Page_ProvisioningJobResponse_",
+        params={"page", "page_size", "clan_id", "status"},
+        errors={401: AUTHED_401, 403: AUTHED_403_FULL, 422: V422, 500: BOOM, 503: DB},
+    ),
+    ("post", "/admin/provisioning-jobs/{job_id}/retry"): dict(
+        success=200, request=None, response="OwnerProvisionResponse", params={"job_id"},
+        errors={401: AUTHED_401, 403: AUTHED_403_FULL, 404: {"NOT_FOUND"},
+                409: {"STATE_CONFLICT", "DUPLICATE_RESOURCE"}, 422: V422, 500: BOOM,
+                503: DB | {"PROVIDER_UNAVAILABLE"}},
+    ),
+    ("post", "/admin/provisioning-jobs/{job_id}/abandon"): dict(
+        success=200, request=None, response="ProvisioningJobResponse", params={"job_id"},
+        errors={401: AUTHED_401, 403: AUTHED_403_FULL, 404: {"NOT_FOUND"}, 409: {"STATE_CONFLICT"},
+                422: V422, 500: BOOM, 503: DB},
+    ),
+    ("post", "/admin/clans/{clan_id}/owner/temporary-password"): dict(
+        success=200, request=None, response="OwnerPasswordResetResponse", params={"clan_id"},
+        errors={401: AUTHED_401, 403: AUTHED_403_FULL, 404: {"NOT_FOUND"}, 409: {"STATE_CONFLICT"},
+                422: V422, 500: BOOM, 503: DB | {"PROVIDER_UNAVAILABLE"}},
+    ),
     ("put", "/clans/{clan_id}/admins/{user_id}/permissions"): dict(
         success=200, request="FamilyAdminPermissionsUpdateRequest",
         response="FamilyAdminPermissionsResponse", params={"clan_id", "user_id"},
@@ -295,9 +317,6 @@ def test_known_not_implemented_endpoints_are_still_not_in_openapi(spec):
     not_built = {
         "/auth/password-reset/request",
         "/auth/password-reset/confirm",
-        # Mốc E6b (not built yet)
-        "/admin/provisioning-jobs", "/admin/provisioning-jobs/{job_id}/retry",
-        "/admin/clans/{clan_id}/owner/temporary-password",
     }
     for path in not_built:
         assert PREFIX + path not in spec["paths"], path
@@ -331,6 +350,10 @@ SA_REGISTRATION_ENDPOINTS = [
     ("post", "/admin/business-registrations/{registration_id}/business"),
     ("post", "/admin/clans/{clan_id}/owner"),
     ("get", "/admin/provisioning-jobs/{job_id}"),
+    ("get", "/admin/provisioning-jobs"),
+    ("post", "/admin/provisioning-jobs/{job_id}/retry"),
+    ("post", "/admin/provisioning-jobs/{job_id}/abandon"),
+    ("post", "/admin/clans/{clan_id}/owner/temporary-password"),
 ]
 
 

@@ -56,8 +56,39 @@ class ProvisioningRepository:
         return job
 
     async def get(self, job_id: uuid.UUID) -> ProvisioningJob | None:
-        stmt = select(ProvisioningJob).where(ProvisioningJob.job_id == job_id)
+        """The job, re-read from the database (no lock)."""
+        stmt = (
+            select(ProvisioningJob)
+            .where(ProvisioningJob.job_id == job_id)
+            .execution_options(populate_existing=True)
+        )
         return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    @staticmethod
+    def _filters(clan_id: uuid.UUID | None, status: str | None) -> list:
+        conditions = []
+        if clan_id is not None:
+            conditions.append(ProvisioningJob.clan_id == clan_id)
+        if status is not None:
+            conditions.append(ProvisioningJob.status == status)
+        return conditions
+
+    async def list_page(
+        self, *, clan_id: uuid.UUID | None, status: str | None, limit: int, offset: int
+    ) -> list[ProvisioningJob]:
+        """Newest first. The e-mail and the phone are columns of the row but the caller never reads them."""
+        stmt = (
+            select(ProvisioningJob)
+            .where(*self._filters(clan_id, status))
+            .order_by(ProvisioningJob.created_at.desc(), ProvisioningJob.job_id)
+            .limit(limit)
+            .offset(offset)
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def count(self, *, clan_id: uuid.UUID | None, status: str | None) -> int:
+        stmt = select(func.count()).select_from(ProvisioningJob).where(*self._filters(clan_id, status))
+        return int((await self._session.execute(stmt)).scalar_one())
 
     async def lock(self, job_id: uuid.UUID) -> ProvisioningJob | None:
         """The job row, locked FOR NO KEY UPDATE and re-read from the database."""

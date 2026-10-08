@@ -33,9 +33,13 @@ FORBIDDEN_RESPONSE_FIELDS = {
     "auth_provider", "revoke_reason", "ip_address", "user_agent", "temporary_password",
 }
 
-# The ONE place a temporary password (and its expiry) leaves the server: the response that creates an Owner
-# (Mốc E6). test_the_temporary_password_is_returned_by_exactly_one_response pins that it stays the only one.
-ALLOWED_EXCEPTIONS = {"OwnerProvisionResponse": {"temporary_password", "temporary_password_expires_at"}}
+# The ONLY places a temporary password (and its expiry) leaves the server: the response that creates an Owner
+# or retries the job (Mốc E6, one model for both) and the response that reissues the Owner's password (E6b).
+# test_the_temporary_password_is_returned_by_exactly_these_responses pins that no third one appears.
+ALLOWED_EXCEPTIONS = {
+    "OwnerProvisionResponse": {"temporary_password", "temporary_password_expires_at"},
+    "OwnerPasswordResetResponse": {"temporary_password", "temporary_password_expires_at"},
+}
 
 
 def _reachable_response_schemas(spec: dict) -> set[str]:
@@ -71,15 +75,26 @@ def test_no_response_schema_exposes_sensitive_fields():
         assert properties.isdisjoint(FORBIDDEN_RESPONSE_FIELDS), (name, properties & FORBIDDEN_RESPONSE_FIELDS)
 
 
-def test_the_temporary_password_is_returned_by_exactly_one_response():
+def test_the_temporary_password_is_returned_by_exactly_these_responses():
     spec = app.openapi()
-    holders = [
+    holders = sorted(
         name
         for name in _reachable_response_schemas(spec)
         if "temporary_password" in spec["components"]["schemas"][name].get("properties", {})
-    ]
-    assert holders == ["OwnerProvisionResponse"]
-    assert set(ALLOWED_EXCEPTIONS) == {"OwnerProvisionResponse"}
+    )
+    assert holders == ["OwnerPasswordResetResponse", "OwnerProvisionResponse"]
+    assert set(ALLOWED_EXCEPTIONS) == set(holders)
+
+    def routes_returning(model: str) -> list[tuple[str, str]]:
+        return sorted(
+            (method, path.removeprefix("/api/v1"))
+            for path, ops in spec["paths"].items() for method, op in ops.items()
+            if model in str(op["responses"].get("200", {})) + str(op["responses"].get("201", {}))
+        )
+
+    assert routes_returning("OwnerProvisionResponse") == [
+        ("post", "/admin/clans/{clan_id}/owner"), ("post", "/admin/provisioning-jobs/{job_id}/retry")]
+    assert routes_returning("OwnerPasswordResetResponse") == [("post", "/admin/clans/{clan_id}/owner/temporary-password")]
 
 
 def test_the_bearer_token_is_returned_by_exactly_one_response():

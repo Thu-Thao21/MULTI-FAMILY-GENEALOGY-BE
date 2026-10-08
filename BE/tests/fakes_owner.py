@@ -64,6 +64,20 @@ class FakeProvisioningRepo:
         self.calls.append("job.lock")
         return self.jobs.get(job_id)
 
+    @staticmethod
+    def _filtered(rows, clan_id, status):
+        return [j for j in rows if (clan_id is None or j.clan_id == clan_id) and (status is None or j.status == status)]
+
+    async def list_page(self, *, clan_id, status, limit, offset):
+        self.calls.append("job.list_page")
+        rows = self._filtered(self.jobs.values(), clan_id, status)
+        rows.sort(key=lambda j: (j.created_at, str(j.job_id)), reverse=True)  # newest first
+        return rows[offset: offset + limit]
+
+    async def count(self, *, clan_id, status):
+        self.calls.append("job.count")
+        return len(self._filtered(self.jobs.values(), clan_id, status))
+
     async def list_blocking(self, *, clan_id, email):
         self.calls.append("job.list_blocking")
         if self.blind_blocking:
@@ -125,11 +139,27 @@ class OwnerTx(FakeTx):
         self.jobs = jobs
         self._baseline_fp = None
 
+    @staticmethod
+    def _state(objects):
+        """{id: (object, its column values)}: restored into the SAME object on rollback."""
+        return {
+            k: (v, {a: getattr(v, a) for a in v.__mapper__.column_attrs.keys()}) for k, v in objects.items()
+        }
+
+    @staticmethod
+    def _restore(objects, saved) -> None:
+        objects.clear()
+        for k, (obj, values) in saved.items():
+            for name, value in values.items():
+                setattr(obj, name, value)
+            objects[k] = obj
+
     def _extra(self):
         return {
             "jobs": {k: copy.copy(v) for k, v in self.jobs.jobs.items()},
-            "users": dict(self.users.users),
-            "creds": dict(self.users.creds),
+            "users": self._state(self.users.users),
+            "creds": self._state(self.users.creds),
+            "sessions": self._state(self.users.sessions),
             "roles": list(self.users.roles),
             "memberships": list(self.family.memberships),
             "owners": list(self.family.owners),
@@ -144,6 +174,9 @@ class OwnerTx(FakeTx):
             jobs, tuple((r.status, r.resource_id) for r in self.idem.rows), len(self.family.clans),
             len(self.users.users), len(self.users.creds), len(self.users.audit), len(self.users.roles),
             len(self.family.owners), len(self.family.memberships),
+            tuple((str(k), c.must_change_password, c.temporary_password_issued_at, c.temporary_password_expires_at, c.updated_at)
+                  for k, c in sorted(self.users.creds.items(), key=lambda kv: str(kv[0]))),
+            tuple(sorted((s.revoked_at is not None) for s in self.users.sessions.values())),
         )
 
     def uncommitted(self) -> bool:
@@ -166,10 +199,9 @@ class OwnerTx(FakeTx):
             return
         self.jobs.jobs.clear()
         self.jobs.jobs.update({k: copy.copy(v) for k, v in extra["jobs"].items()})
-        self.users.users.clear()
-        self.users.users.update(extra["users"])
-        self.users.creds.clear()
-        self.users.creds.update(extra["creds"])
+        self._restore(self.users.users, extra["users"])
+        self._restore(self.users.creds, extra["creds"])
+        self._restore(self.users.sessions, extra["sessions"])
         self.users.roles[:] = extra["roles"]
         self.family.memberships[:] = extra["memberships"]
         self.family.owners[:] = extra["owners"]

@@ -88,6 +88,25 @@ class IdempotencyRepository:
         )
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
+    async def lock_by_resource(
+        self, *, resource_type: str, resource_id: uuid.UUID
+    ) -> IdempotencyKey | None:
+        """The row that is working on a resource (E6b: the key of a provisioning job, whoever sent it),
+        locked FOR NO KEY UPDATE and re-read from the database. None when there is none (a failure
+        releases the key). At most one row names a job: set_resource is called once, with the job it created."""
+        stmt = (
+            select(IdempotencyKey)
+            .where(
+                IdempotencyKey.resource_type == resource_type,
+                IdempotencyKey.resource_id == resource_id,
+            )
+            .order_by(IdempotencyKey.created_at)
+            .limit(1)
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
     async def reset(
         self, row: IdempotencyKey, *, request_hash: str, created_at: datetime, expires_at: datetime
     ) -> None:
