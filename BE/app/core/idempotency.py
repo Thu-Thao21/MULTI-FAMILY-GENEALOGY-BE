@@ -40,6 +40,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Mapping, Protocol
@@ -140,6 +141,10 @@ class IdempotencyStore(Protocol):
     async def lock_existing(self, *, actor_id: uuid.UUID, endpoint: str, idempotency_key: str) -> Any | None: ...
 
     async def reset(self, row: Any, *, request_hash: str, created_at: datetime, expires_at: datetime) -> None: ...
+
+    async def delete(self, row: Any) -> None: ...
+
+    async def set_resource(self, row: Any, *, resource_type: str, resource_id: uuid.UUID) -> None: ...
 
     async def complete(
         self, row: Any, *, response_status: int, response_body: dict[str, Any] | None,
@@ -259,11 +264,30 @@ class _UnitOfWork(Protocol):
     async def rollback(self) -> None: ...
 
 
-async def _rollback_quietly(db: _UnitOfWork) -> None:
+async def rollback_quietly(db: _UnitOfWork) -> None:
     try:
         await db.rollback()
     except Exception:  # noqa: BLE001 - the original error is the one worth reporting
         pass
+
+
+_rollback_quietly = rollback_quietly  # (the name run_idempotent has always used)
+
+
+@asynccontextmanager
+async def rollback_on_error(db: _UnitOfWork):
+    """One database transaction of a multi-transaction flow (E6): any error rolls it back, and the wait
+    for a lock that outlasts lock_timeout becomes 409 with Retry-After instead of a 503."""
+    try:
+        yield
+    except OperationalError as exc:
+        await _rollback_quietly(db)
+        if lock_wait_timed_out(exc):
+            raise busy_error() from None
+        raise
+    except BaseException:
+        await _rollback_quietly(db)
+        raise
 
 
 async def run_idempotent(

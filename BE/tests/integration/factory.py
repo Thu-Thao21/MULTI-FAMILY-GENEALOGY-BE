@@ -390,6 +390,7 @@ def build_full_app(session, *, rate_limiters=None) -> FastAPI:
     from app.controllers.auth_access.router import router as auth_router
     from app.controllers.auth_access.user_admin_router import router as user_admin_router
     from app.controllers.family_management.public_router import router as public_router
+    from app.controllers.family_management.owner_admin_router import router as owner_admin_router
     from app.controllers.family_management.registration_admin_router import (
         router as registration_admin_router,
     )
@@ -402,6 +403,7 @@ def build_full_app(session, *, rate_limiters=None) -> FastAPI:
     app.include_router(user_admin_router, prefix="/api/v1")
     app.include_router(public_router, prefix="/api/v1")
     app.include_router(registration_admin_router, prefix="/api/v1")
+    app.include_router(owner_admin_router, prefix="/api/v1")
     app.state.rate_limiters = rate_limiters or RateLimiters(
         enabled=False,
         registration=SlidingWindowLimiter(5, 3600),

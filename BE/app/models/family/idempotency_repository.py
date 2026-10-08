@@ -102,6 +102,17 @@ class IdempotencyRepository:
         row.expires_at = expires_at
         await self._session.flush()
 
+    async def delete(self, row: IdempotencyKey) -> None:
+        """Release a key whose request ended without a replayable answer (a failure is not stored)."""
+        await self._session.delete(row)
+        await self._session.flush()
+
+    async def set_resource(self, row: IdempotencyKey, *, resource_type: str, resource_id: uuid.UUID) -> None:
+        """Say what this IN_PROGRESS key is working on (E6: the provisioning job)."""
+        row.resource_type = resource_type
+        row.resource_id = resource_id
+        await self._session.flush()
+
     async def complete(
         self,
         row: IdempotencyKey,

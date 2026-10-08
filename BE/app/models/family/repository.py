@@ -341,6 +341,37 @@ class FamilyRepository:
         stmt = select(Clan).where(Clan.clan_id == clan_id)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
+    async def lock_clan(self, clan_id: uuid.UUID) -> Clan | None:
+        """The clan row, locked FOR NO KEY UPDATE and re-read from the database."""
+        stmt = (
+            select(Clan)
+            .where(Clan.clan_id == clan_id)
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def create_membership(
+        self, *, clan_id: uuid.UUID, user_id: uuid.UUID, status: str, now: datetime
+    ) -> ClanMembership:
+        row = ClanMembership(
+            membership_id=uuid.uuid4(), clan_id=clan_id, user_id=user_id, status=status, joined_at=now
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def create_ownership(
+        self, *, clan_id: uuid.UUID, user_id: uuid.UUID, now: datetime
+    ) -> ClanOwnershipHistory:
+        """The Owner of a clan from `now`. uq_active_clan_owner allows only one open row per clan."""
+        row = ClanOwnershipHistory(
+            ownership_id=uuid.uuid4(), clan_id=clan_id, user_id=user_id, started_at=now
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
     async def get_clan_by_code(self, clan_code: str) -> Clan | None:
         stmt = select(Clan).where(Clan.clan_code == clan_code)
         return (await self._session.execute(stmt)).scalar_one_or_none()

@@ -30,8 +30,12 @@ FORBIDDEN_RESPONSE_FIELDS = {
     "password_hash", "new_password", "id_token", "recent_id_token", "oob_code",
     "failed_login_count", "locked_until", "must_change_password",
     "temporary_password_issued_at", "temporary_password_expires_at", "password_changed_at",
-    "auth_provider", "revoke_reason", "ip_address", "user_agent",
+    "auth_provider", "revoke_reason", "ip_address", "user_agent", "temporary_password",
 }
+
+# The ONE place a temporary password (and its expiry) leaves the server: the response that creates an Owner
+# (Mốc E6). test_the_temporary_password_is_returned_by_exactly_one_response pins that it stays the only one.
+ALLOWED_EXCEPTIONS = {"OwnerProvisionResponse": {"temporary_password", "temporary_password_expires_at"}}
 
 
 def _reachable_response_schemas(spec: dict) -> set[str]:
@@ -63,8 +67,19 @@ def test_no_response_schema_exposes_sensitive_fields():
     names = _reachable_response_schemas(spec)
     assert {"SessionCreateResponse", "MeResponse", "AdminUserDetail", "ClanUserItem"} <= names
     for name in names:
-        properties = set(spec["components"]["schemas"][name].get("properties", {}))
+        properties = set(spec["components"]["schemas"][name].get("properties", {})) - ALLOWED_EXCEPTIONS.get(name, set())
         assert properties.isdisjoint(FORBIDDEN_RESPONSE_FIELDS), (name, properties & FORBIDDEN_RESPONSE_FIELDS)
+
+
+def test_the_temporary_password_is_returned_by_exactly_one_response():
+    spec = app.openapi()
+    holders = [
+        name
+        for name in _reachable_response_schemas(spec)
+        if "temporary_password" in spec["components"]["schemas"][name].get("properties", {})
+    ]
+    assert holders == ["OwnerProvisionResponse"]
+    assert set(ALLOWED_EXCEPTIONS) == {"OwnerProvisionResponse"}
 
 
 def test_the_bearer_token_is_returned_by_exactly_one_response():

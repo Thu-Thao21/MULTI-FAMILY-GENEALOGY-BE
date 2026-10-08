@@ -10,7 +10,15 @@ from types import SimpleNamespace
 
 from sqlalchemy.exc import IntegrityError, OperationalError
 
-from app.core.firebase import InvalidIdToken, ProviderUnavailable, VerifiedIdentity
+from app.core.firebase import (
+    InvalidIdToken,
+    ProviderEmailTaken,
+    ProviderUnavailable,
+    ProviderUser,
+    ProviderUserExists,
+    VerifiedIdentity,
+    require_own_uid,
+)
 from app.core.tokens import hash_session_token
 from app.models.family.entities import (
     BusinessRegistration,
@@ -52,6 +60,13 @@ def make_user(
 
 
 @dataclass
+class After:
+    """A fault that fires AFTER the fake operation took effect (a timeout whose call still worked)."""
+
+    error: Exception
+
+
+@dataclass
 class FakeIdentityProvider:
     """Stands in for Firebase. Tokens are opaque strings mapped to identities.
 
@@ -62,6 +77,19 @@ class FakeIdentityProvider:
     unavailable: bool = False
     set_password_error: Exception | None = None
     password_changes: list[str] = field(default_factory=list)
+
+    # --- Mốc E6: the Admin API. Nothing here ever calls Firebase; passwords are NEVER stored. ---
+    admin_api_enabled: bool = True
+    provider_users: dict[str, ProviderUser] = field(default_factory=dict)
+    provider_calls: list[tuple[str, str]] = field(default_factory=list)  # (operation, uid)
+    # operation -> queue of faults. An Exception is raised BEFORE the operation has any effect;
+    # After(exc) lets the operation take effect and THEN raises (the call worked, the answer was lost).
+    faults: dict[str, list] = field(default_factory=dict)
+    hooks: dict[str, object] = field(default_factory=dict)  # operation -> async callable(uid), awaited first
+    probe: object = None  # callable() -> True while a database transaction holds uncommitted work
+    open_transaction_calls: list[str] = field(default_factory=list)  # operations called with one open
+    # (operation, length, has_upper, has_lower, has_digit, has_symbol): the SHAPE of the password only
+    password_shapes: list[tuple] = field(default_factory=list)
 
     def issue(
         self,
@@ -91,7 +119,63 @@ class FakeIdentityProvider:
     async def set_password(self, uid: str, new_password: str) -> None:
         if self.set_password_error is not None:
             raise self.set_password_error
+        fault = await self._enter("set_password", uid)
+        if isinstance(fault, Exception):
+            raise fault
         self.password_changes.append(uid)
+        self._record_shape("set_password", new_password)
+        if isinstance(fault, After):
+            raise fault.error
+
+    # ----- the Admin API of E6 -----
+
+    async def _enter(self, operation: str, uid: str):
+        self.provider_calls.append((operation, uid))
+        if callable(self.probe) and self.probe():
+            self.open_transaction_calls.append(operation)
+        hook = self.hooks.get(operation)
+        if hook is not None:
+            await hook(uid)
+        queue = self.faults.get(operation)
+        return queue.pop(0) if queue else None
+
+    def _record_shape(self, operation: str, password: str) -> None:
+        self.password_shapes.append((
+            operation, len(password), any(c.isupper() for c in password), any(c.islower() for c in password),
+            any(c.isdigit() for c in password), any(not c.isalnum() for c in password),
+        ))
+
+    async def get_user(self, uid: str):
+        fault = await self._enter("get_user", uid)
+        if isinstance(fault, Exception):
+            raise fault
+        return self.provider_users.get(uid)
+
+    async def create_user(self, *, uid: str, email: str, display_name: str, password: str):
+        require_own_uid(uid)
+        fault = await self._enter("create_user", uid)
+        if isinstance(fault, Exception):
+            raise fault
+        if uid in self.provider_users:
+            raise ProviderUserExists()
+        if any((u.email or "").lower() == email.lower() for u in self.provider_users.values()):
+            raise ProviderEmailTaken()
+        user = ProviderUser(uid=uid, email=email, display_name=display_name, disabled=False)
+        self.provider_users[uid] = user
+        self._record_shape("create_user", password)
+        if isinstance(fault, After):
+            raise fault.error
+        return user
+
+    async def delete_user(self, uid: str) -> bool:
+        require_own_uid(uid)  # like the real adapter: refused before any call
+        fault = await self._enter("delete_user", uid)
+        if isinstance(fault, Exception):
+            raise fault
+        existed = self.provider_users.pop(uid, None) is not None
+        if isinstance(fault, After):
+            raise fault.error
+        return existed
 
 
 class _SqlStateError(Exception):
@@ -223,6 +307,26 @@ class FakeUserAccessRepo:
     async def get_user_by_firebase_uid(self, firebase_uid):
         return next((u for u in self.users.values() if u.firebase_uid == firebase_uid), None)
 
+    async def get_user_by_email_ci(self, email):
+        self.calls.append("get_user_by_email_ci")
+        return next((u for u in self.users.values() if u.email.lower() == email.lower()), None)
+
+    async def create_user_account(
+        self, *, user_id, firebase_uid, email, display_name, phone, status, first_login_required, now
+    ):
+        self.calls.append("create_user_account")
+        if any(u.email.lower() == email.lower() for u in self.users.values()):
+            raise IntegrityError("INSERT users", {}, _DbError("uq_users_email_lower"))
+        if any(u.firebase_uid == firebase_uid for u in self.users.values()):
+            raise IntegrityError("INSERT users", {}, _DbError("users_firebase_uid_key"))
+        user = User(
+            user_id=user_id, firebase_uid=firebase_uid, email=email, phone=phone, display_name=display_name,
+            status=status, email_verified=False, phone_verified=False,
+            first_login_required=first_login_required, created_at=now, updated_at=now,
+        )
+        self.users[user_id] = user
+        return user
+
     async def add_session(self, **values) -> UserSession:
         row = UserSession(session_id=uuid.uuid4(), **values)
         self.sessions[values["token_jti_hash"]] = row
@@ -249,6 +353,7 @@ class FakeUserAccessRepo:
 
     async def add_credential_metadata(self, user_id, *, now) -> CredentialMetadata:
         self.set_cred(self.users[user_id])
+        self.creds[user_id].auth_provider = "FIREBASE"  # what the real repository writes
         return self.creds[user_id]
 
     async def add_audit_log(self, **values) -> None:
@@ -605,6 +710,34 @@ class FakeFamilyRepo:
         self.subscriptions.append(row)
         return row
 
+    async def get_registration_by_id(self, registration_id):
+        self.calls.append("get_registration_by_id")
+        return next((r for r in self.registrations if r.registration_id == registration_id), None)
+
+    async def lock_clan(self, clan_id):
+        self.calls.append("lock_clan")
+        return self.clans.get(clan_id)
+
+    async def create_membership(self, *, clan_id, user_id, status, now):
+        self.calls.append("create_membership")
+        if any(m.clan_id == clan_id and m.user_id == user_id for m in self.memberships):
+            raise IntegrityError("INSERT clan_memberships", {}, _DbError("clan_memberships_clan_id_user_id_key"))
+        row = ClanMembership(
+            membership_id=uuid.uuid4(), clan_id=clan_id, user_id=user_id, status=status, joined_at=now
+        )
+        self.memberships.append(row)
+        return row
+
+    async def create_ownership(self, *, clan_id, user_id, now):
+        self.calls.append("create_ownership")
+        if any(o.clan_id == clan_id and o.ended_at is None for o in self.owners):
+            raise IntegrityError("INSERT clan_ownership_history", {}, _DbError("uq_active_clan_owner"))
+        row = ClanOwnershipHistory(
+            ownership_id=uuid.uuid4(), clan_id=clan_id, user_id=user_id, started_at=now
+        )
+        self.owners.append(row)
+        return row
+
     def add_clan(self, status: str = "ACTIVE") -> Clan:
         clan = Clan(clan_id=uuid.uuid4(), clan_code=uuid.uuid4().hex[:8], name="Clan", status=status)
         self.clans[clan.clan_id] = clan
@@ -792,6 +925,14 @@ class FakeIdempotencyRepo:
     async def complete(self, row, *, response_status, response_body, resource_type, resource_id):
         self.calls.append("idem.complete")
         row.status, row.response_status, row.response_body = "COMPLETED", response_status, response_body
+        row.resource_type, row.resource_id = resource_type, resource_id
+
+    async def delete(self, row):
+        self.calls.append("idem.delete")
+        self.rows.remove(row)
+
+    async def set_resource(self, row, *, resource_type, resource_id):
+        self.calls.append("idem.set_resource")
         row.resource_type, row.resource_id = resource_type, resource_id
 
     def rollback_uncommitted(self, committed: list) -> None:

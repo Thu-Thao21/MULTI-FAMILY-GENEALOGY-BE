@@ -35,6 +35,7 @@ from app.db.postgres import get_db
 from app.dependencies.auth import Principal, get_principal, get_user_access_repo
 from app.models.family.entities import Clan, ClanMembership, ClanOwnershipHistory
 from app.models.family.idempotency_repository import IdempotencyRepository
+from app.models.family.provisioning_repository import ProvisioningRepository
 from app.models.family.repository import FamilyRepository
 from app.models.user_access.entities import User as UserEntity
 from app.models.user_access.repository import SYSTEM_ADMIN_ROLE, UserAccessRepository
@@ -50,6 +51,7 @@ class Action(StrEnum):
     REGISTRATION_REVIEW = "registration.review"
     BUSINESS_CREATE = "business.create"
     CLAN_OWNER_PROVISION = "clan.owner.provision"
+    CLAN_OWNER_TEMP_PASSWORD_RESET = "clan.owner.temp_password.reset"
     PROVISIONING_JOB_READ = "provisioning_job.read"
     CLAN_ACTIVATE = "clan.activate"
     USER_LIST = "user.list"
@@ -92,6 +94,7 @@ ACTION_RULES: dict[Action, Rule] = {
     Action.REGISTRATION_REVIEW: _SA,
     Action.BUSINESS_CREATE: _SA,
     Action.CLAN_OWNER_PROVISION: _SA,
+    Action.CLAN_OWNER_TEMP_PASSWORD_RESET: _SA,
     Action.PROVISIONING_JOB_READ: _SA,
     Action.CLAN_ACTIVATE: _SA,
     Action.USER_LIST: _SA,
@@ -326,6 +329,10 @@ async def get_family_repo(db: AsyncSession = Depends(get_db)) -> FamilyRepositor
 
 async def get_idempotency_repo(db: AsyncSession = Depends(get_db)) -> IdempotencyRepository:
     return IdempotencyRepository(db)
+
+
+async def get_provisioning_repo(db: AsyncSession = Depends(get_db)) -> ProvisioningRepository:
+    return ProvisioningRepository(db)
 
 
 def require_action(action: Action, scope: ScopeResolver = system_scope):

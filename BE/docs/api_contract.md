@@ -1,6 +1,6 @@
 # Hợp đồng API Sprint 1 — MFGMS AI
 
-Trạng thái: **đề xuất**. Schema Pydantic đã có trong `app/schemas/`. Đã cài trong `main`: Mốc D `POST /auth/session`, `GET /auth/me`, `POST /auth/logout`, `POST /auth/change-password`; Mốc F `GET /admin/users`, `GET /admin/users/{id}`, `PATCH /admin/users/{id}/status`, `GET /clans/{id}/users`, `PUT /clans/{id}/admins/{user_id}/permissions`; Mốc F2 `POST /clans/{id}/admins`, `DELETE /clans/{id}/admins/{user_id}`; Mốc E bước E3 (Guest) `GET /service-plans`, `POST /business-registrations`, `POST /business-registrations/track`; Mốc E bước E4 (System Admin) `GET /admin/business-registrations`, `GET /admin/business-registrations/{id}`, `POST /admin/business-registrations/{id}/review`; Mốc E bước E5 `POST /admin/business-registrations/{id}/business`. Các API khác chưa có endpoint. Tài liệu này là căn cứ để FE nối màn hình và để BE viết controller ở Mốc D, E, F. Nguồn: mục 6, 7, 8, 9 của `BE_Sprint1_Coding_Plan.md.md`.
+Trạng thái: **đề xuất**. Schema Pydantic đã có trong `app/schemas/`. Đã cài trong `main`: Mốc D `POST /auth/session`, `GET /auth/me`, `POST /auth/logout`, `POST /auth/change-password`; Mốc F `GET /admin/users`, `GET /admin/users/{id}`, `PATCH /admin/users/{id}/status`, `GET /clans/{id}/users`, `PUT /clans/{id}/admins/{user_id}/permissions`; Mốc F2 `POST /clans/{id}/admins`, `DELETE /clans/{id}/admins/{user_id}`; Mốc E bước E3 (Guest) `GET /service-plans`, `POST /business-registrations`, `POST /business-registrations/track`; Mốc E bước E4 (System Admin) `GET /admin/business-registrations`, `GET /admin/business-registrations/{id}`, `POST /admin/business-registrations/{id}/review`; Mốc E bước E5 `POST /admin/business-registrations/{id}/business`; Mốc E bước E6a `POST /admin/clans/{id}/owner`, `GET /admin/provisioning-jobs/{id}`. Các API khác chưa có endpoint. Tài liệu này là căn cứ để FE nối màn hình và để BE viết controller ở Mốc D, E, F. Nguồn: mục 6, 7, 8, 9 của `BE_Sprint1_Coding_Plan.md.md`.
 
 ## Trạng thái cài đặt
 
@@ -21,7 +21,9 @@ Cập nhật 06/10/2026 (Mốc G). Chỉ ghi chú trạng thái; nội dung hợ
 | `GET /service-plans`, `POST /business-registrations`, `POST /business-registrations/track` | Đã cài (Mốc E, bước E3) | Guest, không cần xác thực. Có giới hạn tần suất trong bộ nhớ theo từng process (KI-17). Dữ liệu gói dev do `seed_dev.py` tạo (gói `DEV-`, viết sau E3); gói production do nhóm quyết định (KI-19) |
 | `GET /admin/business-registrations`, `GET /admin/business-registrations/{id}`, `POST /admin/business-registrations/{id}/review` | Đã cài (Mốc E, bước E4) | Chỉ SA. Không giới hạn tần suất. Mọi response `Cache-Control: no-store`. **Có thay đổi hợp đồng ảnh hưởng FE**, xem mục "Thay đổi hợp đồng ở E4" cuối mục 4 |
 | `POST /admin/business-registrations/{id}/business` | Đã cài (Mốc E, bước E5) | Chỉ SA. Header `Idempotency-Key` bắt buộc. Tạo clan `PENDING`, hồ sơ clan và gói đăng ký `PENDING` trong một giao dịch; chưa tạo Owner (E6). Ngày của gói đăng ký là tạm thời, E7 đặt lại khi kích hoạt. **Có thay đổi hợp đồng ảnh hưởng FE**, xem mục "Thay đổi hợp đồng ở E5" |
-| `POST /admin/clans/{id}/owner`, `GET /admin/provisioning-jobs/{id}`, `POST /admin/clans/{id}/activate` | Chưa cài | Mốc E (job cần migration, D03) |
+| `POST /admin/clans/{id}/owner`, `GET /admin/provisioning-jobs/{id}` | Đã cài (Mốc E, bước E6a) | Chỉ SA. Header `Idempotency-Key` bắt buộc cho `POST`. Cấp Owner qua Firebase bằng một **job** (nhiều giao dịch ngắn, Firebase nằm giữa). `201` trả **mật khẩu tạm một lần** kèm `Cache-Control: no-store`. Chưa có `EmailSender` thật: SA chuyển mật khẩu thủ công (KI-26). **Có thay đổi hợp đồng ảnh hưởng FE**, xem mục "Thay đổi hợp đồng ở E6a" |
+| `GET /admin/provisioning-jobs`, `POST /admin/provisioning-jobs/{id}/retry`, `POST /admin/provisioning-jobs/{id}/abandon`, `POST /admin/clans/{id}/owner/temporary-password` | Chưa cài | Mốc E, bước E6b |
+| `POST /admin/clans/{id}/activate` | Chưa cài | Mốc E, bước E7 (D03) |
 
 OpenAPI do FastAPI sinh ra (`/docs`, `/openapi.json`) khai báo mọi mã lỗi của từng endpoint đã cài bằng schema `ErrorResponse` (thay cho `HTTPValidationError` mặc định của FastAPI, vốn không phải body lỗi thật). Mã khai báo là các mã mà code có thể trả; có thể rộng hơn danh sách "Lỗi" của từng mục (ví dụ `503 DATABASE_UNAVAILABLE`, `403 TEMPORARY_PASSWORD_EXPIRED` áp dụng cho mọi API cần đăng nhập, theo mục 2).
 
@@ -179,17 +181,18 @@ Schema nằm trong `app/schemas/business.py` và `app/schemas/users.py`.
 - **Lỗi:** `401` (mục 2); `403 FORBIDDEN`; `404 NOT_FOUND`; `409 STATE_CONFLICT` khi hồ sơ chưa `APPROVED` (thông điệp nêu trạng thái), khi gói không còn `ACTIVE`, hoặc khi một request khác giữ khóa quá 10 giây (kèm `Retry-After: 1`); `409 DUPLICATE_RESOURCE` khi hồ sơ đã có clan hoặc `clan_code` do SA nhập đã tồn tại; `409 IDEMPOTENCY_KEY_CONFLICT` khi cùng key nhưng yêu cầu khác; `422` (header thiếu hoặc sai, body sai, mã không phải UUID)
 
 ### POST /admin/clans/{clan_id}/owner
-- **Quyền:** SA
-- **Header:** `Idempotency-Key` bắt buộc
-- **Body:** `OwnerProvisionRequest` `{email?, display_name?, phone?}`; mặc định lấy người đại diện trên hồ sơ
-- **Thành công:** `202` `ProvisioningJobAccepted` `{job_id, status}`
-- **Lỗi:** `403 FORBIDDEN`; `404 NOT_FOUND`; `409 STATE_CONFLICT` nếu clan đã có Owner hiệu lực hoặc sai trạng thái; `409 IDEMPOTENCY_KEY_CONFLICT`; `422`; `503 PROVIDER_UNAVAILABLE`
+- **Quyền:** chỉ SA (phạm vi hệ thống; người khác `403` trước mọi validation). Không giới hạn tần suất. `Cache-Control: no-store`
+- **Header:** `Idempotency-Key` bắt buộc (quy tắc ở mục 1)
+- **Body:** `OwnerProvisionRequest` `{email?, display_name?, phone?}`, tùy chọn (không gửi body, `{}` hay `null` đều hợp lệ). **Nguồn thông tin Owner:** mặc định lấy từ **người đại diện của hồ sơ đăng ký Business đã tạo clan** (`representative_email`, `representative_name`, `representative_phone`); body ghi đè từng trường riêng. Clan không có hồ sơ đăng ký thì **bắt buộc** `email` và `display_name` (thiếu thì `422`). Email giữ nguyên chữ hoa/thường như đã nhập
+- **Điều kiện:** clan `PENDING`; chưa có Owner; chưa có job còn sống (`PENDING`, `RUNNING`, `FAILED_RETRYABLE`) của clan; email chưa thuộc tài khoản nào (không phân biệt hoa/thường) và chưa có job còn sống của clan khác; **không còn job `FAILED` đang chờ dọn Firebase (`needs_cleanup`) của clan hoặc của email đó**
+- **Thành công:** `201` `OwnerProvisionResponse` `{job_id, status, clan_id, user_id, owner_email, owner_display_name, temporary_password, temporary_password_expires_at, email_delivery_status}`. `temporary_password` gồm 16 ký tự (chữ hoa, chữ thường, số; bỏ các ký tự dễ nhầm I, O, l, 0, 1), **chỉ hiện đúng một lần trong response này**, hết hạn sau 72 giờ; không bao giờ có trong DB, log, audit, key idempotency, job, thông báo lỗi hay tài liệu. Tài khoản Owner ở trạng thái `PENDING`, phải đổi mật khẩu ở lần đăng nhập đầu; clan vẫn `PENDING` (chỉ thành `ACTIVE` qua `clan.activate` ở E7). `email_delivery_status` là `null` khi chỉ có bản Noop: SA tự chuyển mật khẩu cho Owner
+- **Phát lại:** cùng key + cùng yêu cầu trả `201` kèm `Idempotency-Replayed: true`, cùng `job_id`, `status`, `clan_id`, `user_id`; mọi trường còn lại (**kể cả `temporary_password`**) là `null`, vì mật khẩu không được lưu. Mất response thì dùng endpoint đặt lại mật khẩu tạm (E6b). Key đang chạy (`IN_PROGRESS`): `409 STATE_CONFLICT` kèm `job_id` trong thông điệp và `Retry-After`, không tạo job mới
+- **Lỗi:** `401` (mục 2); `403 FORBIDDEN`; `404 NOT_FOUND`; `409 STATE_CONFLICT` (clan không `PENDING`; đã có Owner; đã có job; còn job chờ dọn; key đang chạy; lượt chạy bị lượt mới thay thế; job lỗi sau 5 lần); `409 DUPLICATE_RESOURCE` (email đã là tài khoản hoặc đã thuộc tài khoản Firebase khác); `409 IDEMPOTENCY_KEY_CONFLICT`; `422` (header, body, hoặc thiếu email/tên khi clan không có hồ sơ); `503 PROVIDER_UNAVAILABLE` (Firebase không dùng được hoặc từ chối mật khẩu theo chính sách) và `503 DATABASE_UNAVAILABLE`. Khi lỗi sau khi job đã tạo, thông điệp nêu `job_id` và job ở `FAILED_RETRYABLE` (thử lại được, E6b) hoặc `FAILED`
 
 ### GET /admin/provisioning-jobs/{job_id}
-- **Quyền:** SA
-- **Thành công:** `200` `ProvisioningJobResponse` `{job_id, job_type, clan_id, status, user_id?, email_delivery_status?, attempt_count, error_code?, created_at, updated_at}`. Không bao giờ chứa mật khẩu tạm
-- **Lỗi:** `403 FORBIDDEN`; `404 NOT_FOUND`
-- **Lưu ý:** DB chưa có bảng job; cần migration (mục 7 của kế hoạch)
+- **Quyền:** chỉ SA. `Cache-Control: no-store`
+- **Thành công:** `200` `ProvisioningJobResponse` `{job_id, job_type, clan_id, status, user_id?, email_delivery_status?, attempt_count, needs_cleanup, error_code?, created_at, updated_at}`. **Không bao giờ** có email, điện thoại, tên, Firebase uid hay mật khẩu. `status`: `PENDING`, `RUNNING`, `SUCCEEDED`, `FAILED_RETRYABLE`, `FAILED`. `error_code` là mã ngắn: `PROVIDER_UNAVAILABLE`, `PASSWORD_POLICY_REJECTED` (Firebase từ chối mật khẩu theo chính sách), `DATABASE_UNAVAILABLE`, `INTERNAL_ERROR`, `PROVIDER_EMAIL_TAKEN`, `PROVIDER_REJECTED_USER`, `UID_MISMATCH`, `OWNER_EMAIL_EXISTS`, `CLAN_STATE_CHANGED`. `needs_cleanup` là `true` khi job `FAILED` còn nợ việc xóa user Firebase của chính nó; job `FAILED` với `UID_MISMATCH` có `needs_cleanup = false` vì user lạ dưới uid của job không bao giờ bị xóa
+- **Lỗi:** `401` (mục 2); `403 FORBIDDEN`; `404 NOT_FOUND`; `422` (mã không phải UUID)
 
 ### POST /admin/clans/{clan_id}/activate
 - **Quyền:** SA; chờ chốt D03
@@ -359,6 +362,35 @@ NEED_SUPPLEMENT và luồng nộp lại hồ sơ, cấp tài khoản Member hàn
 | 56 | Ghi: clan `PENDING` (`created_by` là SA, `name` là tên họ trong hồ sơ), `clan_profiles` (kèm `origin_place`), `clan_subscriptions` `PENDING` (`auto_renew = false`), một dòng audit. **Không ghi `registration_status_history`**: trạng thái hồ sơ không đổi; `clans.registration_id` là liên kết. Audit: `action = business.create`, `entity_type = clan`, `entity_id` và `clan_id` là clan, `new_data = {registration_id, plan_id, plan_code, subscription_id, clan_status, subscription_status, request_id}`, không email, tên, điện thoại, tên họ, mã clan; `audit_logs.reason` NULL |
 | 57 | Ngày gói đăng ký tạm thời: `starts_at` lúc tạo, `ends_at` cộng `billing_period_months` tháng lịch (ngày bị cắt về cuối tháng đích, không tràn sang tháng sau). E7 đặt lại khi kích hoạt. `clan_subscriptions` không chụp giá (KI-22) |
 | 58 | `Idempotency-Replayed` được thêm vào `expose_headers` của CORS cùng `X-Request-ID` và `Retry-After` |
+
+### Thay đổi hợp đồng ở E6a (FE phải biết; E7 đưa vào `handoff_frontend.md`)
+
+| # | Thay đổi | Ảnh hưởng FE |
+| --- | --- | --- |
+| 1 | `POST /admin/clans/{id}/owner` trả **`201` kèm owner và mật khẩu tạm** (trước đây hợp đồng ghi `202 ProvisioningJobAccepted`). `ProvisioningJobAccepted` không còn dùng | Màn cấp Owner hiển thị mật khẩu ngay trong response, một lần, kèm hạn dùng; không có bước chờ job |
+| 2 | **Mật khẩu tạm chỉ hiện một lần.** Phát lại cùng `Idempotency-Key` trả `201` với `temporary_password: null` (và các trường owner khác `null`) | FE không được thử lại để "lấy lại" mật khẩu; mất mật khẩu thì dùng endpoint đặt lại (E6b). Không lưu mật khẩu ở localStorage hay log phía FE |
+| 3 | `Idempotency-Key` **bắt buộc** (8 đến 128 ký tự, nên là UUID); giữ nguyên key khi gửi lại sau lỗi mạng | Như E5 |
+| 4 | Thông tin Owner mặc định lấy từ người đại diện của hồ sơ đăng ký; body ghi đè từng trường | Màn cấp Owner điền sẵn từ hồ sơ, cho phép sửa |
+| 5 | `409 STATE_CONFLICT` có nhiều nghĩa, `409 DUPLICATE_RESOURCE` cho email trùng (tài khoản hoặc Firebase); thông điệp nêu `job_id` khi có job liên quan | Hiển thị thông điệp; với job lỗi, dùng `job_id` để theo dõi và thử lại (E6b) |
+| 6 | `503 PROVIDER_UNAVAILABLE` khi Firebase lỗi hoặc không cấu hình; job được ghi lại ở `FAILED_RETRYABLE` | Cho phép nút "Thử lại" ở E6b |
+| 7 | `GET /admin/provisioning-jobs/{id}` thêm `needs_cleanup`; không có email hay điện thoại | Hiển thị trạng thái job, không hiển thị dữ liệu cá nhân |
+| 8 | `email_delivery_status` luôn `null` cho tới khi có `EmailSender` thật | Hướng dẫn SA chuyển mật khẩu thủ công cho Owner |
+
+### Đã chốt ở Mốc E, bước E6a (cấp Owner qua Firebase)
+
+| # | Quyết định |
+| --- | --- |
+| 59 | Cấp Owner là một **job** gồm các giao dịch DB ngắn, Firebase nằm **giữa** chúng (T1 nhận yêu cầu và chèn job `PENDING`; T2 `RUNNING`; Firebase; T3 ghi `firebase_user_created`; T4 ghi các dòng và `SUCCEEDED`). Mọi giao dịch được commit **trước** khi gọi Firebase: không giữ giao dịch hay kết nối khi gọi. Mọi lời gọi `firebase_admin` chạy qua `asyncio.to_thread`, mỗi lời gọi tối đa **15 giây**; lease **90 giây**; `3 x timeout < lease` được kiểm tra khi khởi động (và bởi test) |
+| 60 | Firebase uid là **`own-<job_id>`** (CHECK ở DB). Adapter chỉ thao tác theo uid: `create_user` và `delete_user` chỉ nhận `own-<uuid>` chuẩn tắc và từ chối trước khi gọi SDK; **không có** tra cứu hay xóa theo email. `email_verified=false`, không gửi điện thoại sang Firebase. User có sẵn dưới uid của job (lần chạy trước đã tạo) thì dùng lại và **đặt mật khẩu mới** (mật khẩu cũ đã mất cùng response) |
+| 61 | **Fencing** chỉ theo `attempt_count` và `status = RUNNING`, **không** theo lease đã hết hạn: lượt chạy chậm nhưng chưa bị thay thế vẫn hoàn tất được; lượt bị thay thế không ghi gì và không xóa gì. Lỗi tạm thời của lượt thứ `PROVISIONING_MAX_ATTEMPTS` (5) trở thành `FAILED` |
+| 62 | **Bù trừ** khi lỗi cuối cùng: commit `FAILED` + `needs_cleanup` + `firebase_user_created` **trước**, rồi `delete_user(own-<job_id>)` (cả khi không chắc user có tồn tại; "không tìm thấy" tính là xong), rồi hạ cờ. Xóa lỗi thì cờ giữ nguyên và **chặn clan và email** cho tới khi dọn xong (chỉ mục duy nhất ở DB và kiểm tra trước ở API). Lỗi tạm thời giữ user Firebase để lần thử lại dùng lại. **Ngoại lệ `UID_MISMATCH`**: `get_user(own-<job_id>)` trả một user có email KHÁC email của job: user đó không thuộc quyền phán xét của app nên **không bao giờ bị xóa** (không gọi `delete_user`); job thành `FAILED`, `error_code = UID_MISMATCH`, `needs_cleanup = false` (không chặn clan hay email), có audit (không email, tên), phản hồi `409 STATE_CONFLICT` nêu `job_id`; cần người kiểm tra tài khoản Firebase đó (KI-24) |
+| 63 | **Mật khẩu tạm:** 16 ký tự từ `secrets` (có chữ hoa, chữ thường, số; trộn; bỏ I, O, l, 0, 1), `OWNER_TEMP_PASSWORD_REQUIRE_SYMBOL` (mặc định `false`) thêm ký hiệu; hạn 72 giờ (`OWNER_TEMP_PASSWORD_TTL_HOURS`). Chỉ tồn tại trong bộ nhớ và trong đúng một response. Bản response lưu trong `idempotency_keys` **không có** field mật khẩu (guard của E5 không bị nới); lớp phát lại tự thêm `temporary_password: null` |
+| 64 | Firebase từ chối mật khẩu theo chính sách có mã job riêng `PASSWORD_POLICY_REJECTED` (lỗi tạm thời, lần thử lại sinh mật khẩu khác) |
+| 65 | **Audit** cho mọi chuyển trạng thái của job (`provisioning_job.transition`; sự kiện `created`, `started`, `succeeded`, `failed_retryable`, `failed`, `cleanup_done`, `cleanup_failed`): chỉ id, trạng thái, `attempt_count`, mã lỗi, cờ dọn và `request_id`. Không email, tên, điện thoại, Firebase uid hay mật khẩu |
+| 66 | Idempotency của endpoint 1 dùng hai pha của E5: T1 `claim` và commit (key `IN_PROGRESS`, `resource_id` là job), `complete` ở T4. Lỗi thì **giải phóng** key (không lưu lỗi). Key đang `IN_PROGRESS` mà yêu cầu giống nhau: `409` kèm `job_id` và `Retry-After: 5`, không tạo job mới. Thứ tự khóa: hàng idempotency, clan, job; không khóa `users` |
+| 67 | Dòng được ghi khi thành công: `users` (`PENDING`, `first_login_required`, uid `own-<job_id>`), `credential_metadata` (`must_change_password`, `temporary_password_issued_at`, `temporary_password_expires_at`), `clan_memberships` `ACTIVE`, `user_roles` `BUSINESS_OWNER` theo clan, `clan_ownership_history`, job `SUCCEEDED`. Không có phiên nào cho Owner |
+| 68 | Chặn mật khẩu tạm hết hạn tại `POST /auth/session` **đã có từ Mốc D** (`evaluate_account`, dùng chung cho đăng nhập và mọi request); E6a kiểm chứng trên Owner do job tạo |
+| 69 | Action `clan.owner.temp_password.reset` được khai báo giống `business.create`: một thành viên của `Action` và một dòng trong `ACTION_RULES` (chỉ SA, phạm vi hệ thống). **Không cần seed `role_permissions`**: bảng đó vẫn rỗng, quyền của SA kiểm bằng vai trò hệ thống `SYSTEM_ADMIN`, không bằng mã quyền |
 
 ### Chưa chốt (giả định từ Mốc C1)
 

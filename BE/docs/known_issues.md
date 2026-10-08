@@ -189,3 +189,28 @@ Mô tả gốc:
 - **Giới hạn:** `pool_pre_ping` chỉ thay kết nối chết lúc lấy ra khỏi pool. Kết nối đứt giữa giao dịch vẫn là lỗi (ở ứng dụng là `503 DATABASE_UNAVAILABLE`) và pre-ping tốn thêm một vòng gọi mỗi lần lấy kết nối.
 - **Bài học liên quan (E5):** pooler chế độ transaction **không reset trạng thái cấp session**. Một đột biến đặt `lock_timeout = 10s` ở cấp session đã làm nhiễm một kết nối server và gây hai lỗi ở lần chạy cả bộ liền sau (một test thấy `SHOW lock_timeout` là `10s` sau commit, một test đồng thời bị `55P03`). Mã thật chỉ dùng `set_config(..., true)` (trong giao dịch) nên không dính; quy tắc: **không bao giờ đặt `SET` hay `set_config(..., false)` trên DB đi qua pooler**, và đột biến loại này chỉ chạy ở mức đơn vị.
 - **Liên quan:** `docs/testing.md` mục 5 (E4b và E5).
+
+## KI-24 Chưa có tác vụ đối soát user Firebase mồ côi (`own-<job_id>`)
+
+- **Hiện trạng:** Firebase và PostgreSQL không chung giao dịch. Một user Firebase `own-<job_id>` có thể tồn tại mà DB không có dòng `users` tương ứng: tiến trình chết hoặc timeout **sau** `create_user` mà **trước** khi ghi `firebase_user_created`, hoặc lỗi DB sau khi Firebase đã tạo mà không ai thử lại. Job khi đó nằm ở `RUNNING` quá lease, `PENDING` kẹt hoặc `FAILED_RETRYABLE`, và **chặn clan** (chỉ mục `uq_provisioning_job_live_per_clan`).
+- **Đã làm (E6a):** mỗi lần chạy bắt đầu bằng `get_user(own-<job_id>)` nên lần thử lại (E6b) tìm thấy user và dùng lại với mật khẩu mới; lỗi cuối cùng được bù trừ bằng `delete_user` đúng uid đó; xóa lỗi thì `needs_cleanup` giữ cờ và chặn clan, email.
+- **Cố ý để lại (`UID_MISMATCH`):** nếu dưới `own-<job_id>` có một user Firebase mang email KHÁC email của job, app không xóa nó (không chắc đó là của mình). Job thành `FAILED` với `needs_cleanup = false` (không chặn clan, một job mới dùng uid mới). User đó nằm lại ở Firebase và **cần người kiểm tra bằng tay** (Firebase Console, tìm theo uid `own-<job_id>` lấy từ thông điệp `409` hoặc từ audit).
+- **Chưa có:** không có tác vụ nền quét job quá hạn rồi thử lại hoặc dọn, không có công cụ liệt kê user Firebase `own-*` không có dòng DB. Nếu không ai thử lại, user mồ côi nằm lại ở Firebase (không đăng nhập được vào app vì không có `users`) và job vẫn hiện trong danh sách job ở trạng thái chưa xong.
+- **Việc cần làm sau:** E6b thêm `GET /admin/provisioning-jobs` (lọc theo trạng thái) và retry/abandon cho SA; một tác vụ đối soát định kỳ cần chỗ chạy nền (cùng lý do với KI-17, KI-21).
+
+## KI-25 Hai SA đặt lại mật khẩu tạm của một Owner cùng lúc: ghi cuối thắng
+
+- **Hiện trạng (áp dụng khi E6b thêm `POST /admin/clans/{id}/owner/temporary-password`):** không thể khóa DB xuyên qua lời gọi Firebase (giữ giao dịch mở lúc chờ ngoài là điều bị cấm). Nếu hai SA đặt lại cùng lúc, mỗi bên nhận một mật khẩu khác nhau nhưng Firebase chỉ giữ mật khẩu ghi sau; bên kia thấy mật khẩu vô hiệu.
+- **Giảm nhẹ:** thao tác hiếm; SA chỉ cần đặt lại một lần nữa. Không thể sửa triệt để nếu không thêm cột khóa (cần migration riêng).
+
+## KI-26 Chưa có `EmailSender` thật: SA chuyển mật khẩu tạm thủ công
+
+- **Hiện trạng:** chỉ có bản `NoopEmailSender` (không gửi, không lưu, không log). `email_delivery_status` luôn `null`. Mật khẩu tạm chỉ hiện **một lần** trong response `201` của `POST /admin/clans/{id}/owner`; SA phải chuyển cho Owner qua kênh riêng. Mất response (đóng tab, lỗi mạng) thì mật khẩu mất theo và phải đặt lại (E6b). Chưa chọn nhà cung cấp email (D04), chưa có nơi lưu bản gửi (bảng `email_delivery_logs` không đủ cho việc gửi lại an toàn: nó không có cơ chế lưu payload mã hóa).
+- **Việc cần làm sau:** chọn nhà cung cấp, cài `EmailSender` thật sau giao diện đã có; không bao giờ lưu mật khẩu rõ để gửi lại.
+
+## KI-27 `provisioning_jobs` giữ email, tên và số điện thoại của Owner; chưa có chính sách xóa
+
+- **Hiện trạng:** để thử lại một job, bảng `provisioning_jobs` lưu `email`, `display_name` và `phone` của người sẽ làm Owner (dữ liệu cá nhân), và các dòng này tồn tại mãi (kể cả job `SUCCEEDED`, `FAILED`). Không có tác vụ xóa hay ẩn danh hóa, không có thời hạn giữ. Các dữ liệu này đã nằm ở `users` sau khi thành công, nên bản trong job là thừa.
+- **Giảm nhẹ:** `GET /admin/provisioning-jobs/{id}` không bao giờ trả email, điện thoại hay tên; audit không chứa chúng.
+- **Việc cần làm sau:** nhóm quyết định chính sách (ví dụ xóa `email`, `phone`, `display_name` khi job `SUCCEEDED` hoặc `FAILED` đã dọn xong và sau N ngày). Cần đổi ràng buộc `NOT NULL` của `email` và `display_name` (migration riêng) nếu muốn xóa thay vì ẩn danh hóa.
+- **Liên quan:** KI-21 (`idempotency_keys` cũng không có tác vụ dọn).

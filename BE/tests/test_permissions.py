@@ -57,6 +57,32 @@ async def test_every_action_has_a_rule():
     assert set(ACTION_RULES) == set(Action)
 
 
+async def test_the_owner_password_reset_action_is_declared_exactly_like_business_create():
+    """Mốc E6: clan.owner.temp_password.reset is a member of Action plus one ACTION_RULES row (SA, system
+    scope), the way business.create is. Nothing in the permissions tables is involved: role_permissions
+    stays empty, the SA is recognised by the SYSTEM_ADMIN role."""
+    new, old = Action.CLAN_OWNER_TEMP_PASSWORD_RESET, Action.BUSINESS_CREATE
+    assert new.value == "clan.owner.temp_password.reset" and new in ACTION_RULES
+    assert ACTION_RULES[new] == ACTION_RULES[old]
+    assert ACTION_RULES[new].scope.value == "system" and not ACTION_RULES[new].allow_owner and ACTION_RULES[new].fa_permission is None
+
+
+@pytest.mark.parametrize("action", [Action.CLAN_OWNER_TEMP_PASSWORD_RESET, Action.CLAN_OWNER_PROVISION, Action.PROVISIONING_JOB_READ])
+async def test_the_owner_actions_are_for_the_system_admin_only(world, action):
+    roles, family = world
+    sa = roles.add_user(make_user())
+    roles.grant(sa, "SYSTEM_ADMIN")
+    assert await check(world, sa, action, ResourceScope.system()) is None
+    clan = family.add_clan()
+    for who, role in (("owner", "BUSINESS_OWNER"), ("admin", "FAMILY_ADMIN"), ("member", "FAMILY_MEMBER")):
+        user = roles.add_user(make_user())
+        roles.grant(user, role, clan.clan_id)
+        assert await check(world, user, action, ResourceScope.system()) is ErrorCode.FORBIDDEN, who
+    scoped = roles.add_user(make_user())
+    roles.grant(scoped, "SYSTEM_ADMIN", clan.clan_id)  # an SA grant tied to a clan is not system scope
+    assert await check(world, scoped, action, ResourceScope.system()) is ErrorCode.FORBIDDEN
+
+
 async def test_sa_allowed_on_system_action(world):
     roles, _ = world
     sa = roles.add_user(make_user())

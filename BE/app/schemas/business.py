@@ -234,8 +234,33 @@ class OwnerProvisionRequest(RequestModel):
 
 
 class ProvisioningJobAccepted(ResponseModel):
+    """RETIRED in E6a: POST /admin/clans/{id}/owner answers 201 OwnerProvisionResponse now."""
+
     job_id: uuid.UUID
     status: ProvisioningJobStatus
+
+
+class OwnerProvisionResponse(ResponseModel):
+    """201 of POST /admin/clans/{id}/owner (and later the 200 of retry and of the password reset).
+
+    temporary_password is shown ONCE, in this response only, with Cache-Control: no-store. It is
+    never stored, so a replay of the same Idempotency-Key answers with the same job but every field
+    below `user_id` set to null.
+    """
+
+    job_id: uuid.UUID
+    status: ProvisioningJobStatus
+    clan_id: uuid.UUID
+    user_id: Optional[uuid.UUID] = None
+    owner_email: Optional[str] = None
+    owner_display_name: Optional[str] = None
+    temporary_password: Optional[str] = Field(
+        default=None, repr=False, description="Shown once. Null on a replay."
+    )
+    temporary_password_expires_at: Optional[UtcDatetime] = None
+    email_delivery_status: Optional[Literal["QUEUED", "SENT", "FAILED", "BOUNCED"]] = Field(
+        default=None, description="Null while only the Noop sender exists: the SA passes the password on."
+    )
 
 
 # ----- GET /admin/provisioning-jobs/{id} (SA) -----
@@ -251,6 +276,7 @@ class ProvisioningJobResponse(ResponseModel):
     user_id: Optional[uuid.UUID] = None
     email_delivery_status: Optional[Literal["QUEUED", "SENT", "FAILED", "BOUNCED"]] = None
     attempt_count: int = Field(ge=0)
+    needs_cleanup: bool = False
     error_code: Optional[str] = None
     created_at: UtcDatetime
     updated_at: UtcDatetime

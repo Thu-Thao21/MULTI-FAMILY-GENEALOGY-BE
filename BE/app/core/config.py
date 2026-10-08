@@ -1,4 +1,4 @@
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -57,6 +57,19 @@ class Settings(BaseSettings):
     TRUST_PROXY_HEADERS: bool = False
     TRUSTED_PROXY_COUNT: int = 1
 
+    # Owner provisioning (Mốc E6). Every Firebase Admin call is bounded by FIREBASE_CALL_TIMEOUT_SECONDS;
+    # a RUNNING job holds its lease for PROVISIONING_LEASE_SECONDS. A run makes at most THREE
+    # Firebase calls (get_user, create_user or set_password, delete_user), so the lease must outlast
+    # three timeouts: 3 x timeout < lease (checked at start-up and by a test).
+    FIREBASE_CALL_TIMEOUT_SECONDS: int = 15
+    PROVISIONING_LEASE_SECONDS: int = 90
+    # A job that has failed this many times can no longer be retried: it becomes FAILED.
+    PROVISIONING_MAX_ATTEMPTS: int = 5
+    # Temporary password of a new Owner: life, and whether it must hold a symbol (some Firebase
+    # password policies require one; the default character set is letters and digits).
+    OWNER_TEMP_PASSWORD_TTL_HOURS: int = 72
+    OWNER_TEMP_PASSWORD_REQUIRE_SYMBOL: bool = False
+
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
@@ -75,6 +88,22 @@ class Settings(BaseSettings):
                 "(postgresql+psycopg://user:password@host/dbname?sslmode=require)."
             )
         return _normalize_database_url(str(value))
+
+    @model_validator(mode="after")
+    def validate_provisioning_timing(self) -> "Settings":
+        # No value is echoed in these messages.
+        for name in (
+            "FIREBASE_CALL_TIMEOUT_SECONDS", "PROVISIONING_LEASE_SECONDS",
+            "PROVISIONING_MAX_ATTEMPTS", "OWNER_TEMP_PASSWORD_TTL_HOURS",
+        ):
+            if getattr(self, name) < 1:
+                raise ValueError(f"{name} must be a positive integer.")
+        if 3 * self.FIREBASE_CALL_TIMEOUT_SECONDS >= self.PROVISIONING_LEASE_SECONDS:
+            raise ValueError(
+                "PROVISIONING_LEASE_SECONDS must be longer than three Firebase calls: "
+                "3 x FIREBASE_CALL_TIMEOUT_SECONDS < PROVISIONING_LEASE_SECONDS."
+            )
+        return self
 
     @property
     def cors_origins(self) -> list[str]:

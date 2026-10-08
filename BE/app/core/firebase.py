@@ -10,13 +10,21 @@
 - FIREBASE_AUTH_EMULATOR_HOST makes the SDK accept unsigned tokens, so its presence
   is treated as a misconfiguration (fail closed), not as a dev convenience.
 - Exceptions carry a short reason code only, never the token or SDK messages.
+- EVERY firebase_admin call runs through `_call`: asyncio.to_thread, bounded by
+  FIREBASE_CALL_TIMEOUT_SECONDS (a timeout is ProviderUnavailable("timeout")). The caller must not
+  hold a database transaction or connection open across a call.
+- Owner provisioning (Mốc E6) adds create_user / get_user / delete_user, ALL by uid. The adapter has
+  no lookup or delete by e-mail, and delete_user refuses any uid that is not `own-<uuid>`: a
+  clean-up can only ever remove the user a job itself created.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -26,7 +34,6 @@ from firebase_admin import auth as firebase_auth
 from firebase_admin import credentials
 from firebase_admin import exceptions as firebase_exceptions
 from google.auth.credentials import AnonymousCredentials
-from starlette.concurrency import run_in_threadpool
 
 from app.core.config import settings
 
@@ -68,10 +75,60 @@ class PasswordRejected(Exception):
     """Firebase refused the new password (password policy)."""
 
 
+class ProviderUserExists(Exception):
+    """create_user: the uid is already taken (an earlier attempt of the same job created it)."""
+
+
+class ProviderEmailTaken(Exception):
+    """create_user: the e-mail belongs to ANOTHER Firebase account. That account is never touched."""
+
+
+class ProviderInvalidUser(Exception):
+    """Firebase refused the user data itself (not the password). Retrying cannot help."""
+
+
+class UnsafeUid(Exception):
+    """A uid that is not `own-<uuid>` was given to a call that only accepts those."""
+
+
+@dataclass(frozen=True)
+class ProviderUser:
+    """What the app reads back about a Firebase user. Never a password or a token."""
+
+    uid: str
+    email: str | None
+    display_name: str | None
+    disabled: bool
+
+
+def own_uid(job_id: uuid.UUID) -> str:
+    """The Firebase uid of the user a provisioning job creates (also its provisioning_jobs row CHECK)."""
+    return f"own-{job_id}"
+
+
+def require_own_uid(uid: str) -> str:
+    """`own-<canonical uuid>` or UnsafeUid. Checked BEFORE any SDK call that creates or deletes."""
+    if isinstance(uid, str) and uid.startswith("own-"):
+        try:
+            if str(uuid.UUID(uid[4:])) == uid[4:]:
+                return uid
+        except ValueError:
+            pass
+    raise UnsafeUid()
+
+
 class IdentityProvider(Protocol):
+    admin_api_enabled: bool
+
     async def verify_id_token(self, id_token: str) -> VerifiedIdentity: ...
 
     async def set_password(self, uid: str, new_password: str) -> None: ...
+
+    async def get_user(self, uid: str) -> ProviderUser | None: ...
+
+    async def create_user(self, *, uid: str, email: str, display_name: str, password: str) -> ProviderUser: ...
+
+    async def delete_user(self, uid: str) -> bool: ...
 
 
 def identity_from_claims(claims: dict[str, Any]) -> VerifiedIdentity:
@@ -102,15 +159,34 @@ class _VerifyOnlyCredential(credentials.Base):
 
 
 class FirebaseIdentityProvider:
-    def __init__(self, project_id: str, service_account_path: str = "") -> None:
+    def __init__(
+        self, project_id: str, service_account_path: str = "", call_timeout_seconds: float | None = None
+    ) -> None:
         self._project_id = (project_id or "").strip()
         self._service_account_path = (service_account_path or "").strip()
+        self._call_timeout = float(
+            call_timeout_seconds if call_timeout_seconds is not None else settings.FIREBASE_CALL_TIMEOUT_SECONDS
+        )
         self._app: firebase_admin.App | None = None
         self._lock = threading.Lock()
 
     @property
     def admin_api_enabled(self) -> bool:
         return bool(self._service_account_path)
+
+    async def _call(self, function, *args, **kwargs):
+        """Run one blocking SDK call in a worker thread, bounded by the per-call timeout.
+
+        A thread cannot be cancelled: after a timeout the call may still finish on Firebase's side
+        (a user may exist that we never heard about). The provisioning job handles that by asking
+        get_user(uid) before it creates anything.
+        """
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(function, *args, **kwargs), timeout=self._call_timeout
+            )
+        except asyncio.TimeoutError:
+            raise ProviderUnavailable("timeout") from None
 
     def _get_app(self) -> firebase_admin.App:
         if not self._project_id:
@@ -138,14 +214,18 @@ class FirebaseIdentityProvider:
                     self._app = firebase_admin.get_app(name)
                 except ValueError:
                     self._app = firebase_admin.initialize_app(
-                        credential, options={"projectId": self._project_id}, name=name
+                        credential,
+                        # httpTimeout: the SDK's own HTTP timeout, so a worker thread ends close to
+                        # the moment _call gives up on it.
+                        options={"projectId": self._project_id, "httpTimeout": self._call_timeout},
+                        name=name,
                     )
         return self._app
 
     async def verify_id_token(self, id_token: str) -> VerifiedIdentity:
         app = self._get_app()
         try:
-            claims = await run_in_threadpool(
+            claims = await self._call(
                 firebase_auth.verify_id_token,
                 id_token,
                 app=app,
@@ -173,15 +253,91 @@ class FirebaseIdentityProvider:
             raise ProviderUnavailable("admin_api_not_configured")
         app = self._get_app()
         try:
-            await run_in_threadpool(firebase_auth.update_user, uid, password=new_password, app=app)
+            await self._call(firebase_auth.update_user, uid, password=new_password, app=app)
         except (ValueError, firebase_exceptions.InvalidArgumentError):
             raise PasswordRejected() from None
         except firebase_exceptions.FirebaseError:
             raise ProviderUnavailable("update_user_failed") from None
         try:
-            await run_in_threadpool(firebase_auth.revoke_refresh_tokens, uid, app=app)
+            await self._call(firebase_auth.revoke_refresh_tokens, uid, app=app)
         except (ValueError, firebase_exceptions.FirebaseError):
             raise ProviderUnavailable("revoke_refresh_tokens_failed") from None
+
+    # ----- Owner provisioning (Mốc E6): by uid only -----
+
+    def _require_admin(self) -> firebase_admin.App:
+        if not self.admin_api_enabled:
+            raise ProviderUnavailable("admin_api_not_configured")
+        return self._get_app()
+
+    async def get_user(self, uid: str) -> ProviderUser | None:
+        """The user with this uid, or None when there is none."""
+        app = self._require_admin()
+        try:
+            record = await self._call(firebase_auth.get_user, uid, app=app)
+        except firebase_auth.UserNotFoundError:
+            return None
+        except ValueError:
+            raise ProviderInvalidUser() from None
+        except firebase_exceptions.FirebaseError:
+            raise ProviderUnavailable("get_user_failed") from None
+        return _provider_user(record)
+
+    async def create_user(
+        self, *, uid: str, email: str, display_name: str, password: str
+    ) -> ProviderUser:
+        """Create the user `uid` (an `own-<uuid>`). The e-mail is NOT verified. No phone is sent."""
+        require_own_uid(uid)
+        app = self._require_admin()
+        try:
+            record = await self._call(
+                firebase_auth.create_user,
+                uid=uid,
+                email=email,
+                display_name=display_name,
+                password=password,
+                email_verified=False,
+                disabled=False,
+                app=app,
+            )
+        except firebase_auth.UidAlreadyExistsError:
+            raise ProviderUserExists() from None
+        except firebase_auth.EmailAlreadyExistsError:
+            raise ProviderEmailTaken() from None
+        except (ValueError, firebase_exceptions.InvalidArgumentError) as exc:
+            raise _classify_invalid(exc) from None
+        except firebase_exceptions.FirebaseError:
+            raise ProviderUnavailable("create_user_failed") from None
+        return _provider_user(record)
+
+    async def delete_user(self, uid: str) -> bool:
+        """Delete the user `uid`, only if it is an `own-<uuid>`. True if deleted, False if there was none."""
+        require_own_uid(uid)
+        app = self._require_admin()
+        try:
+            await self._call(firebase_auth.delete_user, uid, app=app)
+        except firebase_auth.UserNotFoundError:
+            return False
+        except ValueError:
+            raise ProviderInvalidUser() from None
+        except firebase_exceptions.FirebaseError:
+            raise ProviderUnavailable("delete_user_failed") from None
+        return True
+
+
+def _provider_user(record) -> ProviderUser:
+    return ProviderUser(
+        uid=record.uid,
+        email=getattr(record, "email", None),
+        display_name=getattr(record, "display_name", None),
+        disabled=bool(getattr(record, "disabled", False)),
+    )
+
+
+def _classify_invalid(exc: BaseException) -> Exception:
+    """Password policy or the user data? The SDK's own messages name the password; the text is
+    only inspected, never kept or logged (it could echo what we sent)."""
+    return PasswordRejected() if "password" in str(exc).lower() else ProviderInvalidUser()
 
 
 _provider: FirebaseIdentityProvider | None = None

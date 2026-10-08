@@ -82,6 +82,41 @@ class UserAccessRepository:
         stmt = select(User).where(User.email == email)
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
+    async def get_user_by_email_ci(self, email: str) -> User | None:
+        """The user with this e-mail in ANY letter case (uq_users_email_lower is the matching index)."""
+        stmt = select(User).where(func.lower(User.email) == email.lower())
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
+    async def create_user_account(
+        self,
+        *,
+        user_id: uuid.UUID,
+        firebase_uid: str,
+        email: str,
+        display_name: str,
+        phone: str | None,
+        status: str,
+        first_login_required: bool,
+        now: datetime,
+    ) -> User:
+        """A new account. The e-mail is stored as given (never lower-cased). Flush only."""
+        user = User(
+            user_id=user_id,
+            firebase_uid=firebase_uid,
+            email=email,
+            phone=phone,
+            display_name=display_name,
+            status=status,
+            email_verified=False,
+            phone_verified=False,
+            first_login_required=first_login_required,
+            created_at=now,
+            updated_at=now,
+        )
+        self._session.add(user)
+        await self._session.flush()
+        return user
+
     async def get_credential_metadata(self, user_id: uuid.UUID) -> CredentialMetadata | None:
         stmt = select(CredentialMetadata).where(CredentialMetadata.user_id == user_id)
         return (await self._session.execute(stmt)).scalar_one_or_none()

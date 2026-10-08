@@ -131,6 +131,8 @@ IDEMPOTENCY_SCOPE = {
     "lock_existing": "WHERE actor_id AND endpoint AND key",
     "reset": "writes the row it was given, which lock_existing returned for the full key",
     "complete": "writes the row it was given, which claim returned for the full key",
+    "delete": "releases the row it was given, which lock_existing returned for the full key (E6)",
+    "set_resource": "writes the row it was given, which claim returned for the full key (E6)",
 }
 
 
