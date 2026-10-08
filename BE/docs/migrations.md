@@ -191,6 +191,8 @@ Quy trình áp dụng vẫn như mục 5: xem trước SQL, lấy fingerprint, �
 
 ORM đã khai báo hai entity mới (`ProvisioningJob`, `IdempotencyKey`) và index mới trên `BusinessRegistration`. Sau khi áp dụng, `scripts/check_orm_vs_db.py` ra 0 errors, 0 INFO (trước đó báo thiếu hai bảng và một index, đúng như dự kiến).
 
+**Các bước sau của Mốc E không có migration mới.** Cấp Owner (E6a), thử lại, bỏ, cấp lại mật khẩu tạm (E6b) và kích hoạt, đọc clan (E7) chỉ dùng các bảng và cột đã có từ revision `0002` và `0003` (`provisioning_jobs`, `idempotency_keys`, `clans.activated_at`, `clan_subscriptions`, `credential_metadata`). Revision hiện hành của mọi nhánh dev vẫn là `0003_provisioning_idempotency`. Không có chỉ mục duy nhất "một subscription `ACTIVE` mỗi clan" ở DB; E7 bảo đảm bằng khóa và kiểm tra trong mã (KI-32 nói thêm về việc đổi gói).
+
 ## 13. Nhật ký áp dụng revision 0003
 
 ### 06/10/2026: dev_minhquan (bước E2 của Mốc E)

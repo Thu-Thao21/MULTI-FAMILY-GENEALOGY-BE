@@ -1,6 +1,6 @@
 # Hợp đồng API Sprint 1 — MFGMS AI
 
-Trạng thái: **đề xuất**. Schema Pydantic đã có trong `app/schemas/`. Đã cài trong `main`: Mốc D `POST /auth/session`, `GET /auth/me`, `POST /auth/logout`, `POST /auth/change-password`; Mốc F `GET /admin/users`, `GET /admin/users/{id}`, `PATCH /admin/users/{id}/status`, `GET /clans/{id}/users`, `PUT /clans/{id}/admins/{user_id}/permissions`; Mốc F2 `POST /clans/{id}/admins`, `DELETE /clans/{id}/admins/{user_id}`; Mốc E bước E3 (Guest) `GET /service-plans`, `POST /business-registrations`, `POST /business-registrations/track`; Mốc E bước E4 (System Admin) `GET /admin/business-registrations`, `GET /admin/business-registrations/{id}`, `POST /admin/business-registrations/{id}/review`; Mốc E bước E5 `POST /admin/business-registrations/{id}/business`; Mốc E bước E6a `POST /admin/clans/{id}/owner`, `GET /admin/provisioning-jobs/{id}`; Mốc E bước E6b `GET /admin/provisioning-jobs`, `POST /admin/provisioning-jobs/{id}/retry`, `POST /admin/provisioning-jobs/{id}/abandon`, `POST /admin/clans/{id}/owner/temporary-password`. Các API khác chưa có endpoint. Tài liệu này là căn cứ để FE nối màn hình và để BE viết controller ở Mốc D, E, F. Nguồn: mục 6, 7, 8, 9 của `BE_Sprint1_Coding_Plan.md.md`.
+Trạng thái: **đề xuất**. Schema Pydantic đã có trong `app/schemas/`. Đã cài trong `main`: Mốc D `POST /auth/session`, `GET /auth/me`, `POST /auth/logout`, `POST /auth/change-password`; Mốc F `GET /admin/users`, `GET /admin/users/{id}`, `PATCH /admin/users/{id}/status`, `GET /clans/{id}/users`, `PUT /clans/{id}/admins/{user_id}/permissions`; Mốc F2 `POST /clans/{id}/admins`, `DELETE /clans/{id}/admins/{user_id}`; Mốc E bước E3 (Guest) `GET /service-plans`, `POST /business-registrations`, `POST /business-registrations/track`; Mốc E bước E4 (System Admin) `GET /admin/business-registrations`, `GET /admin/business-registrations/{id}`, `POST /admin/business-registrations/{id}/review`; Mốc E bước E5 `POST /admin/business-registrations/{id}/business`; Mốc E bước E6a `POST /admin/clans/{id}/owner`, `GET /admin/provisioning-jobs/{id}`; Mốc E bước E6b `GET /admin/provisioning-jobs`, `POST /admin/provisioning-jobs/{id}/retry`, `POST /admin/provisioning-jobs/{id}/abandon`, `POST /admin/clans/{id}/owner/temporary-password`; Mốc E bước E7 `POST /admin/clans/{id}/activate`, `GET /admin/clans/{id}`. Các API khác chưa có endpoint. Tài liệu này là căn cứ để FE nối màn hình và để BE viết controller ở Mốc D, E, F. Nguồn: mục 6, 7, 8, 9 của `BE_Sprint1_Coding_Plan.md.md`.
 
 ## Trạng thái cài đặt
 
@@ -20,10 +20,10 @@ Cập nhật 06/10/2026 (Mốc G). Chỉ ghi chú trạng thái; nội dung hợ
 | `POST /clans/{clan_id}/admins`, `DELETE /clans/{clan_id}/admins/{user_id}` | Đã cài (Mốc F2) | Đề bạt và thu hồi Family Admin (KI-07 đã xử lý) |
 | `GET /service-plans`, `POST /business-registrations`, `POST /business-registrations/track` | Đã cài (Mốc E, bước E3) | Guest, không cần xác thực. Có giới hạn tần suất trong bộ nhớ theo từng process (KI-17). Dữ liệu gói dev do `seed_dev.py` tạo (gói `DEV-`, viết sau E3); gói production do nhóm quyết định (KI-19) |
 | `GET /admin/business-registrations`, `GET /admin/business-registrations/{id}`, `POST /admin/business-registrations/{id}/review` | Đã cài (Mốc E, bước E4) | Chỉ SA. Không giới hạn tần suất. Mọi response `Cache-Control: no-store`. **Có thay đổi hợp đồng ảnh hưởng FE**, xem mục "Thay đổi hợp đồng ở E4" cuối mục 4 |
-| `POST /admin/business-registrations/{id}/business` | Đã cài (Mốc E, bước E5) | Chỉ SA. Header `Idempotency-Key` bắt buộc. Tạo clan `PENDING`, hồ sơ clan và gói đăng ký `PENDING` trong một giao dịch; chưa tạo Owner (E6). Ngày của gói đăng ký là tạm thời, E7 đặt lại khi kích hoạt. **Có thay đổi hợp đồng ảnh hưởng FE**, xem mục "Thay đổi hợp đồng ở E5" |
+| `POST /admin/business-registrations/{id}/business` | Đã cài (Mốc E, bước E5) | Chỉ SA. Header `Idempotency-Key` bắt buộc. Tạo clan `PENDING`, hồ sơ clan và gói đăng ký `PENDING` trong một giao dịch; không tạo Owner (làm ở `POST /admin/clans/{id}/owner`). Ngày của gói đăng ký là tạm thời, `POST /admin/clans/{id}/activate` đặt lại khi kích hoạt. **Có thay đổi hợp đồng ảnh hưởng FE**, xem mục "Thay đổi hợp đồng ở E5" |
 | `POST /admin/clans/{id}/owner`, `GET /admin/provisioning-jobs/{id}` | Đã cài (Mốc E, bước E6a) | Chỉ SA. Header `Idempotency-Key` bắt buộc cho `POST`. Cấp Owner qua Firebase bằng một **job** (nhiều giao dịch ngắn, Firebase nằm giữa). `201` trả **mật khẩu tạm một lần** kèm `Cache-Control: no-store`. Chưa có `EmailSender` thật: SA chuyển mật khẩu thủ công (KI-26). **Có thay đổi hợp đồng ảnh hưởng FE**, xem mục "Thay đổi hợp đồng ở E6a" |
 | `GET /admin/provisioning-jobs`, `POST /admin/provisioning-jobs/{id}/retry`, `POST /admin/provisioning-jobs/{id}/abandon`, `POST /admin/clans/{id}/owner/temporary-password` | Đã cài (Mốc E, bước E6b) | Chỉ SA, `Cache-Control: no-store`. `retry` và `temporary-password` trả **mật khẩu tạm một lần**; danh sách và `abandon` không bao giờ có email, điện thoại hay mật khẩu. Không có `Idempotency-Key` (xem mục "Thay đổi hợp đồng ở E6b") |
-| `POST /admin/clans/{id}/activate` | Chưa cài | Mốc E, bước E7 (D03) |
+| `POST /admin/clans/{id}/activate`, `GET /admin/clans/{id}` | Đã cài (Mốc E, bước E7) | Chỉ SA, `Cache-Control: no-store`. Kích hoạt là **xác nhận thủ công của SA** (D03; thanh toán là Sprint 6, KI-19), không có `Idempotency-Key`: `409` "đã `ACTIVE`" sau khi mất response nghĩa là lần gọi đầu **đã thành công**. `GET` là đọc, không có email, tên, điện thoại. Xem mục "Thay đổi hợp đồng ở E7" |
 
 OpenAPI do FastAPI sinh ra (`/docs`, `/openapi.json`) khai báo mọi mã lỗi của từng endpoint đã cài bằng schema `ErrorResponse` (thay cho `HTTPValidationError` mặc định của FastAPI, vốn không phải body lỗi thật). Mã khai báo là các mã mà code có thể trả; có thể rộng hơn danh sách "Lỗi" của từng mục (ví dụ `503 DATABASE_UNAVAILABLE`, `403 TEMPORARY_PASSWORD_EXPIRED` áp dụng cho mọi API cần đăng nhập, theo mục 2).
 
@@ -176,8 +176,8 @@ Schema nằm trong `app/schemas/business.py` và `app/schemas/users.py`.
 - **Quyền:** chỉ SA (phạm vi hệ thống; người khác `403` trước cả validation, kể cả khi mã hồ sơ không tồn tại). Không giới hạn tần suất. `Cache-Control: no-store`
 - **Header:** `Idempotency-Key` bắt buộc (quy tắc ở mục 1)
 - **Body:** `BusinessCreateRequest` `{clan_code?}`, tùy chọn (không gửi body, `{}` và `{"clan_code": null}` đều nghĩa là server tự sinh mã). `clan_code`: 3 đến 50 ký tự `A-Z 0-9 _ -`. Mã tự sinh có dạng `CLAN-` + 8 ký tự từ bảng chữ không nhập nhằng (`ABCDEFGHJKMNPQRSTUVWXYZ23456789`). **Gói không bao giờ lấy từ request**: server dùng gói đã đăng ký trong hồ sơ; field lạ (kể cả `plan_id`) bị `422`
-- **Điều kiện:** hồ sơ `APPROVED`; hồ sơ chưa có clan; gói đã đăng ký **còn `ACTIVE`** (kiểm lại dù lúc duyệt đã kiểm). Chưa tạo Owner (E6); clan chỉ thành `ACTIVE` khi SA gọi `clan.activate` sau khi có Owner (E7)
-- **Thành công:** `201` `BusinessCreateResponse` `{clan_id, clan_code, clan_status, subscription_id, plan_id, subscription_status, starts_at, ends_at}`. Một giao dịch tạo: clan `PENDING`, hồ sơ clan (kèm nơi gốc của hồ sơ), gói đăng ký `PENDING`, một dòng audit, dòng idempotency. **Ngày của gói đăng ký là tạm thời**: `starts_at` là lúc tạo, `ends_at` sau số tháng lịch của gói (31/01 cộng 1 tháng là 28/02, hoặc 29/02 năm nhuận); E7 đặt lại khi kích hoạt clan. Hồ sơ vẫn `APPROVED` và không có dòng lịch sử trạng thái mới. Phát lại: cùng `201`, cùng body, thêm header `Idempotency-Replayed: true`
+- **Điều kiện:** hồ sơ `APPROVED`; hồ sơ chưa có clan; gói đã đăng ký **còn `ACTIVE`** (kiểm lại dù lúc duyệt đã kiểm). Endpoint này không tạo Owner (làm ở `POST /admin/clans/{id}/owner`); clan chỉ thành `ACTIVE` khi SA gọi `POST /admin/clans/{id}/activate` sau khi đã có Owner
+- **Thành công:** `201` `BusinessCreateResponse` `{clan_id, clan_code, clan_status, subscription_id, plan_id, subscription_status, starts_at, ends_at}`. Một giao dịch tạo: clan `PENDING`, hồ sơ clan (kèm nơi gốc của hồ sơ), gói đăng ký `PENDING`, một dòng audit, dòng idempotency. **Ngày của gói đăng ký là tạm thời**: `starts_at` là lúc tạo, `ends_at` sau số tháng lịch của gói (31/01 cộng 1 tháng là 28/02, hoặc 29/02 năm nhuận); `POST /admin/clans/{id}/activate` đặt lại khi kích hoạt clan. Hồ sơ vẫn `APPROVED` và không có dòng lịch sử trạng thái mới. Phát lại: cùng `201`, cùng body, thêm header `Idempotency-Replayed: true`
 - **Lỗi:** `401` (mục 2); `403 FORBIDDEN`; `404 NOT_FOUND`; `409 STATE_CONFLICT` khi hồ sơ chưa `APPROVED` (thông điệp nêu trạng thái), khi gói không còn `ACTIVE`, hoặc khi một request khác giữ khóa quá 10 giây (kèm `Retry-After: 1`); `409 DUPLICATE_RESOURCE` khi hồ sơ đã có clan hoặc `clan_code` do SA nhập đã tồn tại; `409 IDEMPOTENCY_KEY_CONFLICT` khi cùng key nhưng yêu cầu khác; `422` (header thiếu hoặc sai, body sai, mã không phải UUID)
 
 ### POST /admin/clans/{clan_id}/owner
@@ -225,10 +225,18 @@ Schema nằm trong `app/schemas/business.py` và `app/schemas/users.py`.
 - **Lỗi:** `401` (mục 2); `403 FORBIDDEN`; `404 NOT_FOUND` (clan không có); `409 STATE_CONFLICT`; `422` (mã không phải UUID); `503 PROVIDER_UNAVAILABLE` (Firebase lỗi hoặc từ chối mật khẩu: DB không đổi) và `503 DATABASE_UNAVAILABLE` (Firebase đã đổi mật khẩu nhưng DB không ghi: gọi lại)
 
 ### POST /admin/clans/{clan_id}/activate
-- **Quyền:** SA; chờ chốt D03
-- **Body:** không có
-- **Thành công:** `200` `ClanActivateResponse` `{clan_id, status, activated_at?}`
-- **Lỗi:** `403 FORBIDDEN`; `404 NOT_FOUND`; `409 STATE_CONFLICT` nếu chưa đủ điều kiện kích hoạt
+- **Quyền:** chỉ SA (action `clan.activate`, phạm vi hệ thống; người khác `403` trước mọi validation). Không giới hạn tần suất. `Cache-Control: no-store`
+- **Body và header:** không có body; **không dùng `Idempotency-Key`** (gửi cũng bị bỏ qua)
+- **Ý nghĩa:** kích hoạt là **xác nhận thủ công của SA** (D03). Không kiểm thanh toán (Sprint 6, KI-19); gói thử và gói trả phí đi cùng một đường
+- **Điều kiện** (kiểm trong một giao dịch, dưới khóa; mỗi lỗi là `409 STATE_CONFLICT` nêu điều đang sai, không bao giờ nêu email hay tên): clan đang `PENDING` (thông điệp nêu trạng thái hiện tại; clan `ACTIVE` thì nêu cả lúc đã kích hoạt); clan có Owner hiện hành, là thành viên `ACTIVE` chưa bị thu hồi và còn vai trò `BUSINESS_OWNER` trong clan; tài khoản Owner là `PENDING` hoặc `ACTIVE` (**không** phải đã đổi mật khẩu; `LOCKED`, `DISABLED`, `SUSPENDED` hay trạng thái lạ thì từ chối); đúng một subscription `PENDING` và không có subscription `ACTIVE`; gói của subscription còn `ACTIVE`
+- **Thành công:** `200` `ClanActivateResponse` `{clan_id, status, activated_at, subscription_id, subscription_status, starts_at, ends_at}`. Một giao dịch, một commit: clan `ACTIVE` (`activated_at` = bây giờ), subscription `ACTIVE` với `starts_at` = bây giờ và `ends_at` = `starts_at` cộng số tháng lịch của gói (31/01 cộng 1 tháng là 28/02, hoặc 29/02 năm nhuận), một dòng audit `clan.activate`
+- **Sau khi mất response:** gọi lại sẽ nhận `409 STATE_CONFLICT` "The clan is ACTIVE (activated at …)". **Đó là thành công của lần gọi đầu**, không phải lỗi; không có gì bị ghi hai lần
+- **Lỗi:** `401` (mục 2); `403 FORBIDDEN`; `404 NOT_FOUND`; `409 STATE_CONFLICT`; `422` (mã không phải UUID); `503 DATABASE_UNAVAILABLE`
+
+### GET /admin/clans/{clan_id}
+- **Quyền:** chỉ SA (action `clan.read`, phạm vi hệ thống). Chỉ đọc, không khóa. `Cache-Control: no-store`
+- **Thành công:** `200` `ClanDetailResponse` `{clan_id, clan_code, status, registration_id?, created_at, activated_at?, subscription?, owner_user_id?, last_owner_job?}`. `subscription` là `{subscription_id, plan_id, plan_code?, status, starts_at, ends_at}` của subscription `ACTIVE`, không có thì `PENDING`, không có thì mới nhất. `owner_user_id` chỉ là id của Owner hiện hành. `last_owner_job` là `{job_id, status, needs_cleanup}` của job cấp Owner mới nhất (chi tiết ở `GET /admin/provisioning-jobs/{id}`). **Không bao giờ** có email, tên, điện thoại, Firebase uid hay tên họ
+- **Lỗi:** `401` (mục 2); `403 FORBIDDEN`; `404 NOT_FOUND`; `422` (mã không phải UUID). Chưa có endpoint liệt kê clan (KI-31)
 
 ### GET /admin/users
 - **Quyền:** SA
@@ -270,7 +278,7 @@ Schema nằm trong `app/schemas/business.py` và `app/schemas/users.py`.
 - **Thành công:** `204`. Thu hồi hẳn tư cách Family Admin; hiệu lực từ request tiếp theo của người đó
 - **Lỗi:** `403 FORBIDDEN`; `404 NOT_FOUND` nếu clan không nhìn thấy, hoặc user không phải FA còn hiệu lực trong clan; `422` (`user_id` sai định dạng)
 
-### Thay đổi hợp đồng ở E4 (FE phải biết; E7 đưa vào `handoff_frontend.md`)
+### Thay đổi hợp đồng ở E4 (FE phải biết; đã đưa vào `handoff_frontend_business.md`)
 
 Các thay đổi này khác với bản hợp đồng "đề xuất" trước E4. FE đã dựng màn hình theo bản cũ cần sửa:
 
@@ -283,7 +291,7 @@ Các thay đổi này khác với bản hợp đồng "đề xuất" trước E4
 | 5 | `409 STATE_CONFLICT` của `review` nêu trạng thái hiện tại của hồ sơ; duyệt `APPROVED` gặp `409` khi gói không còn `ACTIVE` | Hiển thị thông điệp từ server; tải lại hồ sơ khi gặp `409` |
 | 6 | `GET /admin/users?q=` trả `422` khi `q` có ký tự điều khiển (trước đây có thể `500`) | Không đổi cách dùng bình thường |
 
-### Thay đổi hợp đồng ở E5 (FE phải biết; E7 đưa vào `handoff_frontend.md`)
+### Thay đổi hợp đồng ở E5 (FE phải biết; đã đưa vào `handoff_frontend_business.md`)
 
 | # | Thay đổi | Ảnh hưởng FE |
 | --- | --- | --- |
@@ -292,7 +300,7 @@ Các thay đổi này khác với bản hợp đồng "đề xuất" trước E4
 | 3 | **`409 DUPLICATE_RESOURCE` có hai nghĩa** ở endpoint này: hồ sơ đã có clan, hoặc `clan_code` đã tồn tại. Phân biệt bằng `message`. `409 STATE_CONFLICT` cũng có nhiều nghĩa (chưa `APPROVED`, gói không còn `ACTIVE`, đang có request khác giữ khóa kèm `Retry-After`) | Hiển thị thông điệp của server; với `409` kèm `Retry-After`, thử lại sau số giây đó với **cùng key** |
 | 4 | **Lỗi không được lưu**: sau một `409` hoặc `5xx`, gửi lại cùng key sẽ được kiểm tra lại từ đầu (không nhận lại lỗi cũ) | Có thể gửi lại cùng key sau khi sửa nguyên nhân (ví dụ hồ sơ vừa được duyệt) |
 | 5 | Body tùy chọn: không gửi body hoặc `{}` nghĩa là server tự sinh `clan_code` dạng `CLAN-XXXXXXXX` | Ô nhập mã clan là tùy chọn |
-| 6 | `starts_at` và `ends_at` của gói đăng ký là **tạm thời** (đến khi kích hoạt clan ở E7) | Không dùng làm ngày hết hạn chính thức trước khi clan `ACTIVE` |
+| 6 | `starts_at` và `ends_at` của gói đăng ký là **tạm thời** cho tới khi SA kích hoạt clan (`POST /admin/clans/{id}/activate` đặt lại: bắt đầu lúc kích hoạt, kết thúc sau số tháng của gói) | Không dùng làm ngày hết hạn chính thức trước khi clan `ACTIVE` |
 
 ## 5. Chưa nằm trong hợp đồng
 
@@ -385,15 +393,15 @@ NEED_SUPPLEMENT và luồng nộp lại hồ sơ, cấp tài khoản Member hàn
 | # | Quyết định |
 | --- | --- |
 | 51 | Idempotency theo (người gọi, endpoint dạng mẫu `POST /admin/business-registrations/{registration_id}/business`, key), sống 7 ngày, không có tác vụ dọn (KI-21): dòng hết hạn chỉ được xét khi key được dùng lại và khi đó bị ghi đè tại chỗ. `request_hash` là SHA-256 của JSON chuẩn tắc gồm phương thức, endpoint mẫu, tham số đường dẫn (UUID chữ thường) và body đã chuẩn hóa (`exclude_none`), nên dùng lại một key cho hồ sơ khác là `409 IDEMPOTENCY_KEY_CONFLICT` |
-| 52 | Hạ tầng dùng được ở hai pha cho E6: `claim_idempotency` và `complete_idempotency` là hàm công khai riêng; `run_idempotent` (một giao dịch) chỉ là lớp bọc mỏng. Dạng hai pha **chưa cài**: E6 sẽ claim và tạo job rồi **commit trước khi gọi Firebase**, sau đó mở giao dịch mới để `complete`; request cùng key đến giữa chừng nhận kết quả `IN_PROGRESS` (E6 trả `409` kèm `Retry-After` hoặc trỏ tới job). Hàng `IN_PROGRESS` bị bỏ lại khi tiến trình chết hết hạn sau 7 ngày; khôi phục là việc retry job của E6 |
+| 52 | Hạ tầng dùng được ở hai pha cho E6: `claim_idempotency` và `complete_idempotency` là hàm công khai riêng; `run_idempotent` (một giao dịch) chỉ là lớp bọc mỏng. Dạng hai pha **đã cài ở E6a**: claim và tạo job rồi **commit trước khi gọi Firebase**, sau đó mở giao dịch mới để `complete`; request cùng key đến giữa chừng nhận kết quả `IN_PROGRESS` (`409` kèm `job_id` và `Retry-After`). Hàng `IN_PROGRESS` bị bỏ lại khi tiến trình chết hết hạn sau 7 ngày; khôi phục là việc retry job của E6 |
 | 53 | Một giao dịch (E5): hàng idempotency nằm cùng giao dịch với việc tạo, nên lỗi hay chết giữa chừng rollback cả key; không bao giờ có key kẹt. Chỉ phản hồi thành công được lưu và phát lại; phát lại không chạy lại và không kiểm tra lại trạng thái. Hai request cùng key cùng lúc: `INSERT ... ON CONFLICT DO NOTHING` **chờ** khóa duy nhất của `uq_idempotency_actor_endpoint_key` cho tới khi request trước commit (rồi phát lại) hoặc rollback (rồi tự chạy mới). Chọn chờ thay vì `409` kèm `Retry-After` vì giao dịch đầu chỉ kéo dài mili giây, client không cần tự thử lại và không có trạng thái lơ lửng. `SET LOCAL lock_timeout = '10s'`: quá hạn thì `409 STATE_CONFLICT` kèm `Retry-After: 1` (không phải `503`) |
 | 54 | Thứ tự khóa cố định: hàng idempotency, hồ sơ (`FOR NO KEY UPDATE` kèm `populate_existing`), rồi clan và các bảng khác. Không bao giờ khóa dòng `users`. `review` (E4) chỉ khóa hồ sơ nên không có chu trình khóa |
 | 55 | Điều kiện: chưa `APPROVED` hoặc gói không `ACTIVE` hoặc không tồn tại là `409 STATE_CONFLICT`; hồ sơ đã có clan và `clan_code` trùng là `409 DUPLICATE_RESOURCE`; hồ sơ không tồn tại là `404`. Mã tự sinh trùng thì sinh lại (tối đa 3 lần, hết thì `500`); mã do SA nhập trùng là `409`. `IntegrityError` của `clans_clan_code_key` và `clans_registration_id_key` là lớp bảo vệ cuối và cho cùng `409`; mọi `IntegrityError` khác là lỗi và thành `500` |
 | 56 | Ghi: clan `PENDING` (`created_by` là SA, `name` là tên họ trong hồ sơ), `clan_profiles` (kèm `origin_place`), `clan_subscriptions` `PENDING` (`auto_renew = false`), một dòng audit. **Không ghi `registration_status_history`**: trạng thái hồ sơ không đổi; `clans.registration_id` là liên kết. Audit: `action = business.create`, `entity_type = clan`, `entity_id` và `clan_id` là clan, `new_data = {registration_id, plan_id, plan_code, subscription_id, clan_status, subscription_status, request_id}`, không email, tên, điện thoại, tên họ, mã clan; `audit_logs.reason` NULL |
-| 57 | Ngày gói đăng ký tạm thời: `starts_at` lúc tạo, `ends_at` cộng `billing_period_months` tháng lịch (ngày bị cắt về cuối tháng đích, không tràn sang tháng sau). E7 đặt lại khi kích hoạt. `clan_subscriptions` không chụp giá (KI-22) |
+| 57 | Ngày gói đăng ký tạm thời: `starts_at` lúc tạo, `ends_at` cộng `billing_period_months` tháng lịch (ngày bị cắt về cuối tháng đích, không tràn sang tháng sau). E7 đặt lại khi kích hoạt (đã làm: quyết định 80). `clan_subscriptions` không chụp giá (KI-22) |
 | 58 | `Idempotency-Replayed` được thêm vào `expose_headers` của CORS cùng `X-Request-ID` và `Retry-After` |
 
-### Thay đổi hợp đồng ở E6a (FE phải biết; E7 đưa vào `handoff_frontend.md`)
+### Thay đổi hợp đồng ở E6a (FE phải biết; đã đưa vào `handoff_frontend_business.md`)
 
 | # | Thay đổi | Ảnh hưởng FE |
 | --- | --- | --- |
@@ -422,7 +430,7 @@ NEED_SUPPLEMENT và luồng nộp lại hồ sơ, cấp tài khoản Member hàn
 | 68 | Chặn mật khẩu tạm hết hạn tại `POST /auth/session` **đã có từ Mốc D** (`evaluate_account`, dùng chung cho đăng nhập và mọi request); E6a kiểm chứng trên Owner do job tạo |
 | 69 | Action `clan.owner.temp_password.reset` được khai báo giống `business.create`: một thành viên của `Action` và một dòng trong `ACTION_RULES` (chỉ SA, phạm vi hệ thống). **Không cần seed `role_permissions`**: bảng đó vẫn rỗng, quyền của SA kiểm bằng vai trò hệ thống `SYSTEM_ADMIN`, không bằng mã quyền |
 
-### Thay đổi hợp đồng ở E6b (FE phải biết; E7 đưa vào `handoff_frontend.md`)
+### Thay đổi hợp đồng ở E6b (FE phải biết; đã đưa vào `handoff_frontend_business.md`)
 
 | # | Thay đổi | Ảnh hưởng FE |
 | --- | --- | --- |
@@ -447,9 +455,31 @@ NEED_SUPPLEMENT và luồng nộp lại hồ sơ, cấp tài khoản Member hàn
 | 76 | Danh sách job: lọc `clan_id`, `status`, `page_size <= 100`, mới nhất trước; dùng `Page[ProvisioningJobResponse]` nên không thể có email, điện thoại, tên hay uid |
 | 77 | Action: retry và abandon dùng `clan.owner.provision`, danh sách dùng `provisioning_job.read`, reset dùng `clan.owner.temp_password.reset`. Không action mới, không seed `role_permissions` |
 
+### Thay đổi hợp đồng ở E7 (FE phải biết; ghi trong `handoff_frontend_business.md`)
+
+| # | Thay đổi | Ảnh hưởng FE |
+| --- | --- | --- |
+| 1 | `POST /admin/clans/{id}/activate` trả `200 ClanActivateResponse` **đã mở rộng** (thêm `subscription_id`, `subscription_status`, `starts_at`, `ends_at`; `activated_at` luôn có) | Hiển thị ngày bắt đầu và hết hạn của gói ngay sau khi kích hoạt |
+| 2 | Kích hoạt **không dùng `Idempotency-Key`**; lần gọi thứ hai nhận `409` nêu clan đã `ACTIVE` | Coi `409` "đã ACTIVE" sau khi mất response là thành công; tải lại bằng `GET /admin/clans/{id}` |
+| 3 | `GET /admin/clans/{id}` mới (SA) | Màn chi tiết clan: trạng thái, ngày, tóm tắt gói, id Owner, job Owner gần nhất; chưa có danh sách clan, lấy `clan_id` từ hồ sơ (`clan_id` trong chi tiết hồ sơ) |
+| 4 | Owner của clan `PENDING` **đăng nhập và đổi mật khẩu được**, nhưng chưa làm được gì trong clan (`403`; `GET /auth/me` cho `clan_status: "PENDING"` và `permissions: []`) cho tới khi SA kích hoạt | Hiển thị "chờ kích hoạt" cho Owner; sau khi SA kích hoạt, cùng phiên đó dùng được ngay |
+| 5 | `409 STATE_CONFLICT` của kích hoạt có nhiều nghĩa (clan không `PENDING`, thiếu Owner, Owner bị khóa, subscription, gói không còn `ACTIVE`); thông điệp nêu điều sai | Hiển thị thông điệp; gói không còn `ACTIVE` thì cần người vận hành (KI-32) |
+
+### Đã chốt ở Mốc E, bước E7 (kích hoạt clan, đọc clan)
+
+| # | Quyết định |
+| --- | --- |
+| 78 | **D03:** kích hoạt là **xác nhận thủ công của SA**. Không kiểm thanh toán (Sprint 6, liên kết KI-19); gói thử (giá 0) và gói trả phí cùng một đường. Dùng lại action `clan.activate` đã khai báo (chỉ SA, phạm vi hệ thống) |
+| 79 | Điều kiện kích hoạt: clan `PENDING`; Owner hiện hành là thành viên `ACTIVE` chưa thu hồi và còn vai trò `BUSINESS_OWNER` trong clan (đúng ba điều kiện `authorize()` đòi, để Owner dùng được ngay); tài khoản Owner `PENDING` hoặc `ACTIVE` (**không bắt phải đã đổi mật khẩu**; mặc định từ chối trạng thái lạ); đúng một subscription `PENDING`, không có `ACTIVE`; gói còn `ACTIVE` (Q2: gói `INACTIVE` là `409`, cách gỡ kẹt ở KI-32) |
+| 80 | Hiệu lực trong một giao dịch, một commit, một `now`: `clans.status = ACTIVE`, `activated_at = updated_at = now`; subscription `ACTIVE`, `starts_at = now`, `ends_at = add_months(now, billing_period_months)` (tháng lịch, cắt ngày về cuối tháng); một dòng audit `clan.activate` gồm id, trạng thái, `plan_code`, `owner_user_id`, ngày, `request_id`; không email, tên, điện thoại |
+| 81 | Khóa: clan (`FOR NO KEY UPDATE`, `populate_existing`) rồi các subscription của clan (`FOR NO KEY UPDATE`, `ORDER BY subscription_id`); mọi thứ khác đọc không khóa; không bao giờ khóa `users`. Cấp Owner khóa key, clan, job nên cả hai cùng khóa clan trước: không có chu trình. Hai kích hoạt đồng thời: bên sau thấy `ACTIVE` và nhận `409`. Một retry cấp Owner đua với kích hoạt thấy clan không còn `PENDING` |
+| 82 | **Không `Idempotency-Key`** (như `review` ở E4): bước chuyển một chiều, không có bí mật. `409` "The clan is ACTIVE (activated at …)" sau khi mất response nghĩa là lần đầu đã thành công |
+| 83 | Owner của clan `PENDING` đăng nhập được (phiên hạn chế) và đổi mật khẩu được: `evaluate_account` và `/auth/change-password` không xét trạng thái clan. Mọi action phạm vi clan trả `403` khi clan không `ACTIVE` (`authorize()`), nên thứ tự cấp Owner, [Owner đăng nhập lần đầu], kích hoạt có thể đổi chỗ hai bước giữa; test đầu-cuối phủ cả hai |
+| 84 | `GET /admin/clans/{id}`: action mới `clan.read` (chỉ SA; không action hiện có nào đúng nghĩa: `registration.read`, `provisioning_job.read`, `user.read` là của thứ khác), không khóa, 404 khi không có. Trả id và trạng thái, không trả tên họ (có ở chi tiết hồ sơ) |
+| 85 | Không có suspend, deactivate hay kích hoạt lại (KI-29); hết hạn gói không được thực thi (KI-30); chưa có danh sách clan (KI-31); chưa có endpoint đổi gói của subscription (KI-32) |
+
 ### Chưa chốt (giả định từ Mốc C1)
 
 - `GET /auth/me`: `permissions` ở ngoài cùng là quyền cấp hệ thống; quyền theo clan nằm trong `memberships[]`.
 - Mã theo dõi hồ sơ sai trả `404`; gói không hợp lệ khi đăng ký trả `422`.
 - Mọi field khi cấp Owner là tùy chọn, mặc định lấy người đại diện trên hồ sơ.
-- API xem provisioning job cần migration bảng job trước khi cài.

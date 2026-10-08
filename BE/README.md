@@ -2,13 +2,14 @@
 
 FastAPI + SQLAlchemy (async) + PostgreSQL (Neon). Đăng nhập bằng Firebase Authentication; backend đổi Firebase ID token lấy phiên ứng dụng và quản trị người dùng, phân quyền theo dòng họ (clan).
 
-Đã cài: xác thực (`/auth/*`), quản trị người dùng và ủy quyền Family Admin. Chưa cài: đăng ký/duyệt Business, cấp Owner (Mốc E), reset mật khẩu qua BE. Xem [`docs/api_contract.md`](docs/api_contract.md) (bảng "Trạng thái cài đặt").
+Đã cài: xác thực (`/auth/*`), quản trị người dùng và ủy quyền Family Admin, và toàn bộ luồng Business của Mốc E: đăng ký và duyệt hồ sơ, tạo Business, cấp tài khoản Owner qua Firebase (thử lại, bỏ, cấp lại mật khẩu tạm), kích hoạt dòng họ. Chưa cài: reset mật khẩu qua BE, gửi email thật, tạm ngưng hay hết hạn dòng họ (xem `docs/known_issues.md`). Xem [`docs/api_contract.md`](docs/api_contract.md) (bảng "Trạng thái cài đặt").
 
 ## Tài liệu
 
 | Tài liệu | Nội dung |
 | --- | --- |
 | [`docs/handoff_frontend.md`](docs/handoff_frontend.md) | Dành cho Frontend: luồng đăng nhập, phiên hạn chế, mã lỗi, phân trang, ví dụ |
+| [`docs/handoff_frontend_business.md`](docs/handoff_frontend_business.md) | Dành cho Frontend: đăng ký, duyệt, tạo Business, cấp Owner, job, kích hoạt dòng họ; `Idempotency-Key`, các `409`, ví dụ (dữ liệu giả) |
 | [`docs/api_contract.md`](docs/api_contract.md) | Hợp đồng API và các quyết định đã chốt |
 | [`docs/testing.md`](docs/testing.md) | Cách chạy seed, test thường, test tích hợp; số liệu mới nhất |
 | [`docs/security_review.md`](docs/security_review.md) | Kết quả rà soát bảo mật (chỉ ghi điều đã kiểm chứng) |
@@ -48,7 +49,7 @@ Mở `http://localhost:8001/docs` để xem OpenAPI. `GET /api/health` (liveness
 | `RATE_LIMIT_MAX_KEYS` | Không | Trần số IP giữ trong bộ nhớ, mặc định 10000 |
 | `TRUST_PROXY_HEADERS`, `TRUSTED_PROXY_COUNT` | Không | `X-Forwarded-For` bị bỏ qua trừ khi `TRUST_PROXY_HEADERS=true`; khi đó lấy phần tử thứ `TRUSTED_PROXY_COUNT` tính từ bên phải. Chỉ bật sau reverse proxy là đường vào duy nhất (KI-11, KI-17) |
 | `DEBUG` | Không | `true` thêm traceback vào log server khi lỗi 500 (không bao giờ vào response). Chỉ dùng khi phát triển |
-| `SMTP_*` | Không | Chưa dùng (chờ Mốc E) |
+| `SMTP_*` | Không | Chưa dùng: chưa có email thật, SA chuyển mật khẩu tạm thủ công (KI-26) |
 
 Không đặt `FIREBASE_AUTH_EMULATOR_HOST`: ở chế độ emulator, Admin SDK chấp nhận token không có chữ ký, nên backend từ chối khởi động.
 

@@ -67,7 +67,15 @@ async def test_the_owner_password_reset_action_is_declared_exactly_like_business
     assert ACTION_RULES[new].scope.value == "system" and not ACTION_RULES[new].allow_owner and ACTION_RULES[new].fa_permission is None
 
 
-@pytest.mark.parametrize("action", [Action.CLAN_OWNER_TEMP_PASSWORD_RESET, Action.CLAN_OWNER_PROVISION, Action.PROVISIONING_JOB_READ])
+async def test_the_clan_actions_of_e7_are_declared_like_business_create():
+    """Mốc E7: clan.activate (declared earlier) and the new clan.read are members of Action plus one
+    ACTION_RULES row each (SA, system scope), the way business.create is."""
+    for action in (Action.CLAN_ACTIVATE, Action.CLAN_READ):
+        assert ACTION_RULES[action] == ACTION_RULES[Action.BUSINESS_CREATE]
+    assert Action.CLAN_READ.value == "clan.read"
+
+
+@pytest.mark.parametrize("action", [Action.CLAN_OWNER_TEMP_PASSWORD_RESET, Action.CLAN_OWNER_PROVISION, Action.PROVISIONING_JOB_READ, Action.CLAN_ACTIVATE, Action.CLAN_READ])
 async def test_the_owner_actions_are_for_the_system_admin_only(world, action):
     roles, family = world
     sa = roles.add_user(make_user())

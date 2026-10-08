@@ -64,6 +64,17 @@ class ProvisioningRepository:
         )
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
+    async def latest_for_clan(self, clan_id: uuid.UUID) -> ProvisioningJob | None:
+        """The newest job of the clan (E7: GET /admin/clans/{id}). No lock."""
+        stmt = (
+            select(ProvisioningJob)
+            .where(ProvisioningJob.clan_id == clan_id)
+            .order_by(ProvisioningJob.created_at.desc(), ProvisioningJob.job_id)
+            .limit(1)
+            .execution_options(populate_existing=True)
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
     @staticmethod
     def _filters(clan_id: uuid.UUID | None, status: str | None) -> list:
         conditions = []

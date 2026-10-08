@@ -156,6 +156,16 @@ EXPECTED: dict[tuple[str, str], dict] = {
         errors={401: AUTHED_401, 403: AUTHED_403_FULL, 404: {"NOT_FOUND"}, 409: {"STATE_CONFLICT"},
                 422: V422, 500: BOOM, 503: DB | {"PROVIDER_UNAVAILABLE"}},
     ),
+    # Mốc E, step E7: activate a clan and read it.
+    ("post", "/admin/clans/{clan_id}/activate"): dict(
+        success=200, request=None, response="ClanActivateResponse", params={"clan_id"},
+        errors={401: AUTHED_401, 403: AUTHED_403_FULL, 404: {"NOT_FOUND"}, 409: {"STATE_CONFLICT"},
+                422: V422, 500: BOOM, 503: DB},
+    ),
+    ("get", "/admin/clans/{clan_id}"): dict(
+        success=200, request=None, response="ClanDetailResponse", params={"clan_id"},
+        errors={401: AUTHED_401, 403: AUTHED_403_FULL, 404: {"NOT_FOUND"}, 422: V422, 500: BOOM, 503: DB},
+    ),
     ("put", "/clans/{clan_id}/admins/{user_id}/permissions"): dict(
         success=200, request="FamilyAdminPermissionsUpdateRequest",
         response="FamilyAdminPermissionsResponse", params={"clan_id", "user_id"},
@@ -354,6 +364,8 @@ SA_REGISTRATION_ENDPOINTS = [
     ("post", "/admin/provisioning-jobs/{job_id}/retry"),
     ("post", "/admin/provisioning-jobs/{job_id}/abandon"),
     ("post", "/admin/clans/{clan_id}/owner/temporary-password"),
+    ("post", "/admin/clans/{clan_id}/activate"),
+    ("get", "/admin/clans/{clan_id}"),
 ]
 
 

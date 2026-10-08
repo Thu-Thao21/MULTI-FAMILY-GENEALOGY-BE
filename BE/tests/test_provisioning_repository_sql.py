@@ -151,6 +151,7 @@ def test_the_job_repository_never_commits_and_every_write_only_flushes():
 JOB_SCOPE = {
     "insert_pending": "inserts a row; clan_id is the inserted value",
     "get": "WHERE job_id",
+    "latest_for_clan": "WHERE clan_id, newest first, LIMIT 1 (E7: GET /admin/clans/{id})",
     "list_page": "optional WHERE clan_id AND status; newest first, LIMIT/OFFSET (E6b)",
     "count": "optional WHERE clan_id AND status (E6b)",
     "lock": "WHERE job_id, FOR NO KEY UPDATE",

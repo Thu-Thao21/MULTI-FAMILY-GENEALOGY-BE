@@ -78,6 +78,11 @@ class FakeProvisioningRepo:
         self.calls.append("job.count")
         return len(self._filtered(self.jobs.values(), clan_id, status))
 
+    async def latest_for_clan(self, clan_id):
+        self.calls.append("job.latest_for_clan")
+        mine = [j for j in self.jobs.values() if j.clan_id == clan_id]
+        return max(mine, key=lambda j: (j.created_at, str(j.job_id)), default=None)
+
     async def list_blocking(self, *, clan_id, email):
         self.calls.append("job.list_blocking")
         if self.blind_blocking:
@@ -160,6 +165,8 @@ class OwnerTx(FakeTx):
             "users": self._state(self.users.users),
             "creds": self._state(self.users.creds),
             "sessions": self._state(self.users.sessions),
+            "clan_state": self._state(self.family.clans),
+            "sub_state": self._state({s.subscription_id: s for s in self.family.subscriptions}),
             "roles": list(self.users.roles),
             "memberships": list(self.family.memberships),
             "owners": list(self.family.owners),
@@ -177,6 +184,8 @@ class OwnerTx(FakeTx):
             tuple((str(k), c.must_change_password, c.temporary_password_issued_at, c.temporary_password_expires_at, c.updated_at)
                   for k, c in sorted(self.users.creds.items(), key=lambda kv: str(kv[0]))),
             tuple(sorted((s.revoked_at is not None) for s in self.users.sessions.values())),
+            tuple(sorted((str(c.clan_id), c.status, c.activated_at) for c in self.family.clans.values())),
+            tuple(sorted((str(s.subscription_id), s.status, s.starts_at, s.ends_at) for s in self.family.subscriptions)),
         )
 
     def uncommitted(self) -> bool:
@@ -202,6 +211,8 @@ class OwnerTx(FakeTx):
         self._restore(self.users.users, extra["users"])
         self._restore(self.users.creds, extra["creds"])
         self._restore(self.users.sessions, extra["sessions"])
+        self._restore(dict(self.family.clans), extra["clan_state"])  # same objects, their columns put back
+        self._restore({s.subscription_id: s for s in self.family.subscriptions}, extra["sub_state"])
         self.users.roles[:] = extra["roles"]
         self.family.memberships[:] = extra["memberships"]
         self.family.owners[:] = extra["owners"]

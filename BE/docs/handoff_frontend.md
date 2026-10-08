@@ -1,6 +1,6 @@
 # Bàn giao cho Frontend — API xác thực và quản trị người dùng
 
-Cập nhật 06/10/2026 (Mốc F2). Tài liệu này nói **cách dùng** API đã cài. Hợp đồng đầy đủ nằm ở [`api_contract.md`](api_contract.md); sơ đồ OpenAPI sống ở `/docs` và `/openapi.json` của server (khai báo cả mã lỗi từng endpoint).
+Cập nhật 06/10/2026 (Mốc F2); phần trỏ sang tài liệu Business cập nhật 08/10/2026 (Mốc E7). Tài liệu này nói **cách dùng** API xác thực và quản trị người dùng đã cài. **Đăng ký, duyệt và tạo Business, cấp Owner, kích hoạt dòng họ** nằm ở tài liệu riêng: [`handoff_frontend_business.md`](handoff_frontend_business.md). Hợp đồng đầy đủ nằm ở [`api_contract.md`](api_contract.md); sơ đồ OpenAPI sống ở `/docs` và `/openapi.json` của server (khai báo cả mã lỗi từng endpoint).
 
 ## 1. Tóm tắt
 
@@ -23,7 +23,7 @@ Endpoint đã cài:
 | `GET /clans/{clan_id}/users` | Business Owner, hoặc Family Admin được ủy quyền `MEMBER_ACCOUNT_MANAGE` |
 | `POST /clans/{clan_id}/admins` (đề bạt Family Admin), `DELETE /clans/{clan_id}/admins/{user_id}` (thu hồi), `PUT /clans/{clan_id}/admins/{user_id}/permissions` (sửa quyền) | Business Owner |
 
-**Chưa có** (đừng nối màn hình): đăng ký và duyệt Business, cấp Owner, kích hoạt dòng họ (Mốc E); reset mật khẩu qua BE (xem mục 9).
+Đăng ký và duyệt Business, cấp Owner, kích hoạt dòng họ **đã cài** (Mốc E): xem [`handoff_frontend_business.md`](handoff_frontend_business.md). **Chưa có** (đừng nối màn hình): reset mật khẩu qua BE (xem mục 9).
 
 ## 2. Luồng đăng nhập
 
@@ -148,7 +148,8 @@ Mọi API danh sách nhận `page` (≥ 1, mặc định 1) và `page_size` (1�
 ## 9. Giới hạn đã biết
 
 - **Chưa có API reset mật khẩu** (KI-05): FE dùng `sendPasswordResetEmail` của Firebase. Sau reset, phiên ứng dụng cũ của người đó vẫn dùng được đến khi hết hạn (tối đa 8 giờ) vì BE không biết mật khẩu đã đổi.
-- **Chưa có giới hạn tần suất** (`429`) cho `/auth/session` (KI-06).
+- **Chưa có giới hạn tần suất** (`429`) cho `/auth/session` (KI-06). Chỉ các endpoint Guest của Business có giới hạn (xem [`handoff_frontend_business.md`](handoff_frontend_business.md) mục 10).
+- **Owner của clan còn `PENDING`** đăng nhập và đổi mật khẩu được (mục 3) nhưng chưa dùng được chức năng clan cho tới khi SA kích hoạt; xem [`handoff_frontend_business.md`](handoff_frontend_business.md) mục 8.
 - Khóa tài khoản chỉ chặn ở BE; Firebase vẫn cho người đó đăng nhập, nhưng ID token của họ không đổi được phiên (KI-10).
 - **Triển khai sau reverse proxy:** `login_history` sẽ ghi IP của proxy, cần cấu hình `--proxy-headers` kèm danh sách proxy tin cậy khi triển khai (KI-11). Không ảnh hưởng cách FE gọi API.
 - Các quyết định còn chờ trưởng nhóm được đánh dấu "tạm thời" trong `api_contract.md` mục 6.

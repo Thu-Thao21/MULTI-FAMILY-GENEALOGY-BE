@@ -370,6 +370,9 @@ FAMILY_METHODS_WITHOUT_CLAN_ID = {
     "apply_registration_review": "pre-clan: write on the registration row locked just before",
     # Mốc E step E5: the System Admin creates the Business of a registration (no clan exists yet).
     "create_clan": "creates a clan (the clan_id is generated here); keyed by registration_id, SA only",
+    # Mốc E step E7: the System Admin activates a clan; both writes are on rows locked just before.
+    "activate_clan": "write on the clan row returned by lock_clan (SA only, clan.activate)",
+    "activate_subscription": "write on a subscription row returned by lock_subscriptions(clan_id)",
     "get_clan_by_code": "clan lookup by unique code, returns the clan itself",
     "get_clan_by_registration_id": "clan lookup by unique registration, returns the clan itself",
     "get_invitation_by_token_hash": "entry point by secret hash; caller must check clan_id",

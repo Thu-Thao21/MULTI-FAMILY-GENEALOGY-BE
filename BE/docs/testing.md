@@ -103,7 +103,11 @@ Kết quả mong đợi:
 | Gỡ `FIREBASE_PROJECT_ID` rồi khởi động lại | `503 PROVIDER_UNAVAILABLE` |
 | Sau `logout`, gọi lại `/auth/me` | `401 SESSION_INVALID` |
 
-## 5. Số liệu chạy mới nhất (Mốc F2, 06/10/2026)
+## 5. Số liệu chạy theo từng mốc
+
+Bắt đầu bằng các bước của Mốc E (mới nhất ở trên cùng: E7), rồi tới Mốc F2.
+
+### Mốc F2: vòng đời Family Admin (06/10/2026)
 
 Chạy từ `BE`, Python 3.13.7, `.venv` của dự án, sau `seed_dev.py --cleanup` (DB không còn dữ liệu seed, nên mọi test "SA cuối" chạy chứ không skip).
 
@@ -115,6 +119,18 @@ Chạy từ `BE`, Python 3.13.7, `.venv` của dự án, sau `seed_dev.py --clea
 | `scripts/check_orm_vs_db.py` | 0 errors, 0 INFO |
 
 Tổng cộng 457 test. Sau lần chạy, DB không còn dòng rác: 0 user, 0 clan, 0 audit_logs, 0 phiên; `roles`/`permissions`/`role_permissions` giữ nguyên (4/18/0). Mốc F2 thêm: nhóm test vòng đời Family Admin (đơn vị, DB thật, đồng thời) và test dev seed vẫn nhất quán. Test cũ của Mốc F `test_every_code_in_the_permissions_table_is_accepted` (ủy quyền mọi mã, kể cả `ADMIN_MANAGE`) đã đổi thành `test_every_delegable_code_in_the_permissions_table_is_accepted` theo quyết định Q1: mọi mã trừ `ADMIN_MANAGE` được nhận, thêm `ADMIN_MANAGE` thì `403`.
+
+### Mốc E, bước E7: kích hoạt clan, đọc clan, tài liệu bàn giao cho FE (08/10/2026)
+
+Chạy trên nhánh dev (`0003_provisioning_idempotency`, fingerprint 3ff0cec7), không migrate, không seed; ba gói `DEV-` giữ nguyên. **Không lệnh nào gọi Firebase thật** (provider giả). Chỉ chạy `pytest -q` và hai file integration mới; **không** chạy cả bộ integration.
+
+| Lệnh | Kết quả |
+| --- | --- |
+| `pytest -q` | **1462 passed**, 456 deselected (nhóm `integration`), 0 failed, 80 giây. Thêm 81 test so với E6b (1381): 43 của `test_clan_activation_api.py`, 6 SQL, 19 quét tài liệu bàn giao (`test_handoff_examples.py`), phần còn lại là hợp đồng OpenAPI, quyền, bảo mật |
+| `ALLOW_DB_TESTS=1 pytest -m integration` hai file mới (`test_clan_activation_db.py` 26 test, `test_clan_activation_concurrency.py` 6 test) | Lần đầu **20 passed, 2 failed** trên 22 test. Cả hai là lỗi của **test**: mỗi test gom nhiều tình huống trong một hàm, nên sau `409` đầu tiên use case rollback và các đối tượng ORM của factory (vai trò đã nạp) bị hết hạn, tình huống thứ hai bị `MissingGreenlet`. Tách thành 12 test, mỗi test một tình huống (DB thật: 14 + 12 = 26): chạy riêng 12 test đó **12 passed**. Tổng **32 passed** (13 phút 33 giây + 2 phút 13 giây) |
+| `python -c "import app.main"` | MAIN OK |
+
+Trạng thái DB dev sau các lần chạy và sau mọi lượt đột biến: các bảng dữ liệu (`users`, `clans`, `clan_subscriptions`, `provisioning_jobs`, `idempotency_keys`, `audit_logs`, ...) đều **0 dòng**; `subscription_plans` 3 (`DEV-*`, không còn gói `ITESTOP-PLAN-*`), `plan_feature_limits` 6; `roles`/`permissions`/`role_permissions` = 4/18/0; alembic `0003_provisioning_idempotency`. Test đồng thời dùng chung tiền tố `itest-conc-op-` với E6 và tự xóa các gói `ITESTOP-PLAN-*` của riêng nó (gói không có `ON DELETE CASCADE` từ clan).
 
 ### Mốc E, bước E6b: thử lại, bỏ, liệt kê job và cấp lại mật khẩu tạm của Owner (08/10/2026)
 
@@ -453,3 +469,24 @@ Cách làm như mục 8 đến 12 và **runner đã sửa ở mục 12** (chỉ 
 **Lưu ý trung thực:** vài đột biến mức đơn vị bị bắt bởi bước dựng ban đầu của test chứ không bởi khẳng định chuyên biệt (ví dụ "không tìm key gốc theo job" làm hỏng chính khẳng định `idem.rows == []` ở hàm dựng `retryable()`, vì ghi lỗi dựa vào cùng cách tìm key). Chúng vẫn bị bắt (mã thoát 1, có test chạy), và khẳng định chuyên biệt của chúng cũng có (xem bảng mục 13 của `security_review.md`); đột biến tương ứng trên DB thật bị bắt bởi chính test chuyên biệt (`-k completes_the_original_key`). Đột biến "đặt lại dùng action khác" về hành vi là tương đương (cả hai action đều chỉ cho SA), nên chỉ một test đọc action của từng route mới bắt được nó; test đó đã có và đột biến bị bắt.
 
 **Điều kiện:** sau mỗi đột biến `git diff` trống (83 + 13 lượt E6b, 124 + 14 lượt E6a), sha256 các file sau mọi lượt khớp bản gốc, DB dev sau mọi lượt về đúng trạng thái ở mục 5.
+
+## 14. Kiểm chứng test bằng đột biến (Mốc E, bước E7)
+
+Cách làm như mục 8 đến 13 và **runner đã sửa ở mục 12** (chỉ mã thoát `1` của pytest là "bị bắt"; `0` sống sót; mã khác không xác định, tính là chưa bắt; mỗi dòng in mã thoát và số test đã chạy). Các file E7 được **stage** (`git add`, chưa commit) trước khi đột biến, sau **mỗi** đột biến `git diff` của file bị chạm phải **trống** (script dừng nếu không), sha256 sau khôi phục khớp bản trước. **Không có đột biến nào đặt trạng thái session qua pooler** (kể cả đột biến bỏ lock timeout chỉ là bỏ một lời gọi `set_config(..., true)`, không đặt gì ở cấp session).
+
+**Kết quả: 74 đột biến (60 mức đơn vị + 14 trên DB thật), cả 74 `CAUGHT` bằng mã thoát 1; 0 sống sót, 0 không xác định, 0 lượt bị bắt mà không có test nào chạy.** E7 không đổi mã dùng chung với E6, nên không chạy lại bộ E6 (các file E6 không bị chạm; `tests/fakes.py`, `fakes_owner.py` chỉ được thêm phương thức và pytest -q vẫn xanh).
+
+| Nhóm | Đột biến | Test bắt được |
+| --- | --- | --- |
+| Điều kiện kích hoạt | clan không cần `PENDING`; clan không có mà không `404`; `409` của clan `ACTIVE` không nêu lúc kích hoạt; không cần Owner; không kiểm thành viên, thu hồi; không kiểm vai trò, hoặc kiểm vai trò ở phạm vi hệ thống; Owner `LOCKED`/`DISABLED`/`SUSPENDED` hay trạng thái lạ được nhận; bắt Owner phải `ACTIVE` (đảo quyết định Q1); gói `ACTIVE` sẵn không chặn; không có `PENDING` không bị từ chối; hai `PENDING` không bị từ chối; gói không còn `ACTIVE` được nhận | `test_clan_activation_api.py` |
+| Hiệu lực | `starts_at` giữ ngày tạm; `ends_at` tính từ ngày tạm; sai một tháng; clan hoặc gói không được kích hoạt; thiếu commit; commit clan trước gói (không nguyên tử) | `test_clan_activation_api.py`; DB thật `test_clan_activation_db.py::test_a_failure_half_way_rolls_both_tables_back` |
+| Repository | không ghi `activated_at`, `status`, `updated_at` của clan; không ghi trạng thái hay ngày của gói; khóa gói bằng `FOR UPDATE`, không có thứ tự cố định, không đọc lại hàng, không lọc theo clan; job gần nhất ở cuối, không lọc theo clan | `test_clan_activation_repository_sql.py` |
+| Khóa | khóa gói trước clan; không khóa gói; không khóa clan; khóa `users`; bỏ lock timeout | `test_clan_activation_api.py` (thứ tự lời gọi); DB thật `test_clan_activation_concurrency.py` |
+| Audit | đổi tên action; email, tên vào audit; thiếu id Owner; thiếu trạng thái cũ; người thực hiện sai | `test_clan_activation_api.py::test_the_audit_row_holds_ids_statuses_and_dates_and_nothing_personal` |
+| Đọc clan | bỏ gói ACTIVE khi chọn; thiếu id Owner, job gần nhất, mã gói; clan không có mà không `404`; **thêm email vào schema**; response kích hoạt mất ngày | `test_clan_activation_api.py`, `test_openapi_contract.py`, `test_security_checks.py` |
+| Router, quyền | cho phép cache cả hai response; kích hoạt chỉ cần phiên; đọc không phân quyền; đổi action của hai route; **kích hoạt đòi `Idempotency-Key`**; `clan.read` và `clan.activate` mở cho Owner | `test_clan_activation_api.py`, `test_permissions.py` |
+| **Trên DB thật (14)** | không kích hoạt gói; `ends_at` từ ngày tạm; clan không cần `PENDING`; không kiểm vai trò; Owner `LOCKED` được nhận; gói không còn `ACTIVE` được nhận; hai `PENDING` không bị từ chối; không nguyên tử; không kích hoạt clan (đường đi của Owner thật); đọc có email; job gần nhất là cũ nhất; kích hoạt lần hai không bị chặn bởi gì; **không khóa clan và gói khi hai kích hoạt cùng lúc**; bỏ lock timeout (khóa bị giữ làm request treo) | `integration/test_clan_activation_db.py`, `integration/test_clan_activation_concurrency.py` |
+
+**Lưu ý trung thực:** nhiều đột biến mức đơn vị bị bắt bởi test thành công đầu tiên chứ không bởi test chuyên biệt của chúng (ví dụ "gói không được kích hoạt" làm hỏng khẳng định ngày của `test_an_activation_makes_the_clan_and_its_subscription_active_from_now`); đó vẫn là mã thoát 1 với test chạy, và test chuyên biệt tương ứng có trong bảng ở `security_review.md` mục 14. Đột biến "đổi action" của hai route về hành vi là tương đương (mọi action ở đây đều chỉ cho SA) nên chỉ test đọc action của từng route mới bắt được; test đó đã có.
+
+**Điều kiện:** sau mỗi đột biến `git diff` trống (60 + 14 lượt), sha256 các file sau mọi lượt khớp bản gốc, DB dev sau mọi lượt về đúng trạng thái ở mục 5.

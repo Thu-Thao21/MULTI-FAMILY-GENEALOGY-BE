@@ -351,6 +351,34 @@ class FamilyRepository:
         )
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
+    async def lock_subscriptions(self, clan_id: uuid.UUID) -> list[ClanSubscription]:
+        """Every subscription of the clan, locked FOR NO KEY UPDATE in a fixed order (subscription_id) and
+        re-read from the database. Call it AFTER lock_clan (E7: the clan row, then its subscriptions)."""
+        stmt = (
+            select(ClanSubscription)
+            .where(ClanSubscription.clan_id == clan_id)
+            .order_by(ClanSubscription.subscription_id)
+            .with_for_update(key_share=True)
+            .execution_options(populate_existing=True)
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def activate_clan(self, clan: Clan, *, now: datetime) -> None:
+        """PENDING -> ACTIVE on a row locked by lock_clan. Only flushes."""
+        clan.status = "ACTIVE"
+        clan.activated_at = now
+        clan.updated_at = now
+        await self._session.flush()
+
+    async def activate_subscription(
+        self, subscription: ClanSubscription, *, starts_at: datetime, ends_at: datetime
+    ) -> None:
+        """PENDING -> ACTIVE with the real dates, on a row locked by lock_subscriptions. Only flushes."""
+        subscription.status = "ACTIVE"
+        subscription.starts_at = starts_at
+        subscription.ends_at = ends_at
+        await self._session.flush()
+
     async def create_membership(
         self, *, clan_id: uuid.UUID, user_id: uuid.UUID, status: str, now: datetime
     ) -> ClanMembership:

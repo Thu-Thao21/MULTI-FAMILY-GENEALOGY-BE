@@ -309,10 +309,51 @@ class ProvisioningJobResponse(ResponseModel):
     updated_at: UtcDatetime
 
 
-# ----- POST /admin/clans/{id}/activate (SA, waits for D03) -----
+# ----- POST /admin/clans/{id}/activate (SA) -> 200 -----
 
 
 class ClanActivateResponse(ResponseModel):
+    """200. The clan is ACTIVE and its subscription starts now (the SA's manual confirmation, D03)."""
+
     clan_id: uuid.UUID
     status: ClanStatus
+    activated_at: UtcDatetime
+    subscription_id: uuid.UUID
+    subscription_status: SubscriptionStatus
+    starts_at: UtcDatetime
+    ends_at: UtcDatetime
+
+
+# ----- GET /admin/clans/{id} (SA) -----
+
+
+class ClanSubscriptionSummary(ResponseModel):
+    subscription_id: uuid.UUID
+    plan_id: uuid.UUID
+    plan_code: Optional[str] = None
+    status: SubscriptionStatus
+    starts_at: UtcDatetime
+    ends_at: UtcDatetime
+
+
+class ClanOwnerJobSummary(ResponseModel):
+    """The latest Owner provisioning job: its id and state only (the job itself is read at
+    GET /admin/provisioning-jobs/{id})."""
+
+    job_id: uuid.UUID
+    status: ProvisioningJobStatus
+    needs_cleanup: bool = False
+
+
+class ClanDetailResponse(ResponseModel):
+    """Never an e-mail, a name, a phone, a Firebase uid or a clan name: ids, codes, statuses, dates."""
+
+    clan_id: uuid.UUID
+    clan_code: str
+    status: ClanStatus
+    registration_id: Optional[uuid.UUID] = None
+    created_at: UtcDatetime
     activated_at: Optional[UtcDatetime] = None
+    subscription: Optional[ClanSubscriptionSummary] = None
+    owner_user_id: Optional[uuid.UUID] = None
+    last_owner_job: Optional[ClanOwnerJobSummary] = None

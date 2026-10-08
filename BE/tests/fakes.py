@@ -725,6 +725,23 @@ class FakeFamilyRepo:
         self.clan_profiles.append(row)
         return row
 
+    async def lock_subscriptions(self, clan_id):
+        self.calls.append("lock_subscriptions")
+        return sorted((s for s in self.subscriptions if s.clan_id == clan_id), key=lambda s: str(s.subscription_id))
+
+    async def list_subscriptions(self, clan_id):
+        self.calls.append("list_subscriptions")
+        return sorted((s for s in self.subscriptions if s.clan_id == clan_id), key=lambda s: s.starts_at, reverse=True)
+
+    async def activate_clan(self, clan, *, now):
+        self.calls.append("activate_clan")
+        clan.status, clan.activated_at, clan.updated_at = "ACTIVE", now, now
+
+    async def activate_subscription(self, subscription, *, starts_at, ends_at):
+        self.calls.append("activate_subscription")
+        assert ends_at > starts_at, "clan_subscriptions_check"  # the CHECK of the table
+        subscription.status, subscription.starts_at, subscription.ends_at = "ACTIVE", starts_at, ends_at
+
     async def create_subscription(self, *, clan_id, plan_id, starts_at, ends_at, status, now):
         self.calls.append("create_subscription")
         row = ClanSubscription(
@@ -763,7 +780,8 @@ class FakeFamilyRepo:
         return row
 
     def add_clan(self, status: str = "ACTIVE") -> Clan:
-        clan = Clan(clan_id=uuid.uuid4(), clan_code=uuid.uuid4().hex[:8], name="Clan", status=status)
+        clan = Clan(clan_id=uuid.uuid4(), clan_code=uuid.uuid4().hex[:8], name="Clan", status=status,
+                    created_at=NOW - timedelta(days=5), updated_at=NOW - timedelta(days=5))
         self.clans[clan.clan_id] = clan
         return clan
 

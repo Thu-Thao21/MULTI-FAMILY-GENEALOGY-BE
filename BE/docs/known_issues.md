@@ -157,7 +157,7 @@ Mô tả gốc:
 - **Hiện trạng:** `GET /service-plans` và `POST /business-registrations` (Mốc E, bước E3) chạy trên bảng `subscription_plans`. Trên nhánh dev chỉ có ba gói do `scripts/seed_dev.py` tạo (`DEV-TRIAL`, `DEV-STANDARD`, `DEV-LEGACY` không còn bán, kèm `plan_feature_limits`). Đó là **dữ liệu dev**, tên và giá do dev đặt, không phải gói thật.
 - **Quyết định:** gói production (mã, tên, giá, thời hạn, giới hạn thành viên, Family Admin, dung lượng, tính năng) **do nhóm quyết định**, rồi **nhập qua một kênh riêng có kiểm soát**. **Không đưa dữ liệu gói vào migration** và không dùng `seed_dev.py` cho production: seed có cờ `ALLOW_DEV_SEED`, chỉ tạo mã tiền tố `DEV-`, và `--cleanup` chỉ xóa gói `DEV-` không được hồ sơ hay gói đăng ký của clan tham chiếu.
 - **Hệ quả:** trên production, cho đến khi nhập gói, `GET /service-plans` trả danh sách rỗng và không ai đăng ký được (mọi `requested_plan_id` đều `422`). Cần có gói trước khi mở đăng ký công khai.
-- **Ngoài phạm vi Sprint 1:** thanh toán và hoàn thiện gói dịch vụ (đổi gói, hết hạn, gia hạn, thanh toán thật) thuộc **Sprint 6, task 3.6.8.6** trong project plan. Sprint 1 chỉ chọn gói lúc đăng ký và để SA kích hoạt thủ công (D03).
+- **Ngoài phạm vi Sprint 1:** thanh toán và hoàn thiện gói dịch vụ (đổi gói, hết hạn, gia hạn, thanh toán thật) thuộc **Sprint 6, task 3.6.8.6** trong project plan. Sprint 1 chỉ chọn gói lúc đăng ký và để SA kích hoạt thủ công (D03, đã cài ở E7: kích hoạt là xác nhận thủ công, không kiểm thanh toán).
 - **Liên quan:** KI-17 (giới hạn tần suất của endpoint đăng ký), `docs/api_contract.md` quyết định 36.
 
 ## KI-20 Audit của `PATCH /admin/users/{id}/status` còn chứa nội dung lý do, khác với audit duyệt hồ sơ
@@ -178,7 +178,7 @@ Mô tả gốc:
 
 - **Hiện trạng:** `clan_subscriptions` chỉ lưu `plan_id`, ngày bắt đầu, ngày kết thúc, trạng thái và `auto_renew`. Không có giá, chu kỳ hay giới hạn tại thời điểm đăng ký, và không có liên kết tới hồ sơ đăng ký.
 - **Hệ quả:** nếu sau này gói đổi giá, đổi giới hạn hoặc ngừng bán thì không còn dấu vết điều khoản mà clan đã được cấp. Thanh toán thật và đổi gói thuộc Sprint 6 (task 3.6.8.6), nên đây là việc của Sprint đó: cần cột chụp (giá, chu kỳ, giới hạn) hoặc bảng phiên bản gói, qua migration riêng.
-- **Hiện tại:** ngày của gói đăng ký lúc tạo Business chỉ là tạm thời (bắt đầu lúc tạo, kết thúc sau `billing_period_months` tháng); E7 đặt lại lúc kích hoạt clan.
+- **Hiện tại:** ngày của gói đăng ký lúc tạo Business chỉ là tạm thời (bắt đầu lúc tạo, kết thúc sau `billing_period_months` tháng); `POST /admin/clans/{id}/activate` (E7) đặt lại: bắt đầu lúc kích hoạt, kết thúc sau `billing_period_months` tháng lịch.
 
 ## KI-23 Neon cắt kết nối trong lần chạy integration dài: nguyên nhân chưa xác định
 
@@ -225,3 +225,29 @@ Mô tả gốc:
 - **Hiện trạng:** fencing (`attempt_count` và `status = RUNNING`) chặn mọi **ghi DB** của một lượt chạy đã bị thay thế, nhưng không chặn được một lời gọi Firebase **đang bay**. Mỗi lời gọi Firebase tối đa 15 giây và lease là 90 giây (kiểm tra `3 x timeout < lease` lúc khởi động), nên một lượt chạy chỉ vượt lease nếu một bước DB treo bất thường. Khi đó: (a) sau `abandon` đã xóa `own-<job_id>`, lượt cũ có thể tạo lại user đó, để lại một user mồ côi không có cờ nào (cùng loại với KI-24, cần kiểm tra bằng tay); (b) sau khi một retry tiếp quản, lượt cũ có thể `set_owner_password` đè lên mật khẩu mà retry vừa trả cho SA, và SA cầm mật khẩu vô hiệu (đặt lại bằng `POST /admin/clans/{id}/owner/temporary-password` là sửa được).
 - **Không chặn được** nếu không kiểm tra fencing ngay trước từng lời gọi Firebase, mà việc đó cần giao dịch DB mở (cấm). Chấp nhận vì cần cả sự cố DB lẫn thời điểm trùng khít.
 - **Giảm nhẹ:** `abandon` và `retry` từ chối `RUNNING` còn lease (`409` kèm `Retry-After`); lượt cũ không bao giờ ghi DB sau khi bị thay thế (test `integration/test_owner_recovery_concurrency.py::test_a_lease_that_ran_out_is_taken_over_the_old_run_writes_nothing_and_the_original_key_is_completed`).
+
+## KI-29 Không có đường đưa clan ra khỏi `ACTIVE`, và không kích hoạt lại
+
+- **Hiện trạng:** `POST /admin/clans/{id}/activate` chỉ đi một chiều `PENDING` -> `ACTIVE`. Các trạng thái `SUSPENDED`, `EXPIRED`, `LOCKED`, `INACTIVE` có trong CHECK của bảng `clans` nhưng **không có endpoint nào đưa clan tới đó**, và không có cách kích hoạt lại một clan đã rời `PENDING`. Subscription cũng không có endpoint đổi trạng thái (`SUSPENDED`, `EXPIRED`, `CANCELLED`).
+- **Hệ quả:** nếu cần tạm ngưng hay đóng một dòng họ trong Sprint 1, người vận hành phải sửa DB trực tiếp (ghi audit bằng tay). Đã quyết định không làm suspend/deactivate trong Sprint 1.
+- **Việc cần làm sau:** nhóm quyết định vòng đời clan sau kích hoạt (tạm ngưng, hết hạn, đóng, kích hoạt lại) cùng với vòng đời gói của Sprint 6 (task 3.6.8.6). Liên quan KI-30.
+
+## KI-30 Hết hạn gói không được thực thi
+
+- **Hiện trạng:** `clan_subscriptions.ends_at` chỉ được **ghi** khi kích hoạt. Không có tác vụ nền nào đổi subscription thành `EXPIRED` hay clan thành `EXPIRED`, và `authorize()` chỉ xét `clans.status = ACTIVE` (không xét subscription). Một clan `ACTIVE` vẫn dùng được **mãi mãi** dù gói đã hết hạn.
+- **Giảm nhẹ:** `GET /admin/clans/{id}` cho SA thấy `subscription.ends_at` để tự theo dõi; Sprint 1 không có thanh toán nên không có doanh thu bị mất thật.
+- **Việc cần làm sau:** một tác vụ nền (cùng lý do với KI-17, KI-21, KI-24 là chưa có chỗ chạy nền) hoặc kiểm tra `ends_at` ngay trong `authorize()`; thuộc Sprint 6. Liên quan KI-29.
+
+## KI-31 Chưa có endpoint liệt kê clan
+
+- **Hiện trạng:** SA đọc được **một** clan (`GET /admin/clans/{id}`) nhưng không liệt kê hay tìm clan. `clan_id` lấy từ chi tiết hồ sơ (`GET /admin/business-registrations/{id}`, trường `clan_id`) hoặc từ response tạo Business.
+- **Việc cần làm sau:** `GET /admin/clans` có lọc theo trạng thái và phân trang khi cần màn quản lý clan; dùng `Page[...]` như các danh sách khác.
+
+## KI-32 Chưa có endpoint đổi gói của một subscription: gói ngừng bán làm kẹt việc kích hoạt
+
+- **Hiện trạng:** nếu gói của subscription `PENDING` bị chuyển `INACTIVE` (ngừng bán) giữa lúc tạo Business và lúc kích hoạt, `POST /admin/clans/{id}/activate` trả `409` ("The plan of the subscription is no longer available"). Sprint 1 không có API quản lý gói (đổi trạng thái gói, đổi gói của subscription), nên **SA không tự gỡ được qua giao diện**.
+- **Cách gỡ kẹt (do người vận hành có quyền DB, trên nhánh Neon đúng, theo quy trình migration của KI-15; luôn trong một giao dịch, có người thứ hai xem lại, và ghi tay một dòng audit):**
+  1. **Nếu việc ngừng bán là nhầm:** đặt lại gói về bán: `UPDATE subscription_plans SET status = 'ACTIVE', updated_at = now() WHERE plan_id = '<plan_id>';`
+  2. **Nếu gói thật sự đã ngừng bán:** chọn gói đang bán `ACTIVE` cho khách (đã thỏa thuận với họ) rồi đổi gói của subscription còn `PENDING`: `UPDATE clan_subscriptions SET plan_id = '<plan_id_moi>' WHERE subscription_id = '<subscription_id>' AND status = 'PENDING';`
+  Sau đó SA gọi lại `POST /admin/clans/{id}/activate` (nó đọc lại gói và tính `ends_at` theo gói mới lúc kích hoạt). Không đụng `clans.status` bằng tay: để endpoint kích hoạt làm.
+- **Việc cần làm sau:** API quản lý gói và đổi gói thuộc Sprint 6 (task 3.6.8.6, liên kết KI-19, KI-22).

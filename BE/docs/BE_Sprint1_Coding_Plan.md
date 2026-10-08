@@ -6,6 +6,8 @@ Mục tiêu của bạn là hoàn thiện xác thực, tiếp nhận và duyệt
 
 Cập nhật ngày 05/10/2026. Phần kết nối database: bạn đã xác nhận thực hiện các bước. Trước khi code, lưu kết quả kiểm tra kết nối và schema tại mục 3; trạng thái này chưa thay thế kiểm thử trực tiếp trên máy bạn.
 
+> **Tiến độ BE (cập nhật 08/10/2026): Mốc E hoàn tất ở phía BE (E1 đến E7)** — migration 0003, đăng ký Guest và giới hạn tần suất, duyệt hồ sơ, tạo Business (idempotent), cấp Owner qua Firebase (job, bù trừ, thử lại, bỏ, cấp lại mật khẩu tạm), kích hoạt và đọc clan, tài liệu bàn giao cho FE (`docs/handoff_frontend_business.md`). `pytest -q`: 1462 passed. **Còn lại:** (1) **E8**: smoke test với Firebase thật, cần phê duyệt riêng vì tạo dữ liệu thật; (2) **chạy integration sạch cả bộ** một lượt 0 failed (chưa có lượt nào kể từ E4: mỗi lần đều có lỗi hạ tầng Neon/DNS ngoài ý muốn, các test lỗi đều đã chạy riêng và pass); (3) **PR**: gộp các commit của Mốc E, mô tả thay đổi hợp đồng cho FE, chạy migration 0003 trên production theo `docs/migrations.md` (production chưa chạy); (4) các KI còn mở: 17, 21, 24, 25, 26 (email thật), 27, 28, 29, 30, 31, 32 (xem `docs/known_issues.md`).
+
 # 1 Phạm vi và thứ tự ưu tiên
 
 | **WBS 3.1.8** | **Hạng mục BE Sprint 1** | **Giờ gốc** |
@@ -195,8 +197,8 @@ Không gửi email trong transaction DB. Nếu mật khẩu chỉ tồn tại tr
 | GET /admin/business-registrations | Lọc status, phân trang; GET /{id} xem chi tiết | SA |
 | POST /admin/business-registrations/{id}/review | {decision, reason} → trạng thái mới; decision APPROVED hoặc REJECTED | SA; 409 nếu trạng thái đã đổi |
 | POST /admin/business-registrations/{id}/business | Tạo clan/subscription → 201 clan_id | SA; Idempotency-Key |
-| POST /admin/clans/{id}/owner | Cấp Owner → 202 job_id; GET /admin/provisioning-jobs/{id} xem kết quả | SA; Idempotency-Key |
-| POST /admin/clans/{id}/activate | Kích hoạt nếu đủ điều kiện → 200 trạng thái | SA; chờ D03 |
+| POST /admin/clans/{id}/owner | Cấp Owner → **201** kèm owner và mật khẩu tạm (hiện một lần); GET /admin/provisioning-jobs/{id} xem job; thêm danh sách job, `retry`, `abandon` và `POST /admin/clans/{id}/owner/temporary-password` (E6b) | SA; Idempotency-Key cho POST cấp Owner |
+| POST /admin/clans/{id}/activate | Kích hoạt nếu đủ điều kiện → 200 trạng thái clan và gói; thêm `GET /admin/clans/{id}` (đọc) | SA; D03 đã chốt: xác nhận thủ công, không kiểm thanh toán (Sprint 6); không Idempotency-Key |
 | GET /admin/users và GET /admin/users/{id} | Thông tin tài khoản tối thiểu; lọc/pagination | SA quản trị tài khoản |
 | PATCH /admin/users/{id}/status | {status, reason} → 200; khóa/disable thu hồi phiên | SA; kiểm tra chuyển trạng thái |
 | GET /clans/{id}/users | Danh sách tài khoản thuộc clan | BO hoặc FA được cấp quyền |

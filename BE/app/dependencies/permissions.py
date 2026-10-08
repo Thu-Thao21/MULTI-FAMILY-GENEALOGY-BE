@@ -54,6 +54,7 @@ class Action(StrEnum):
     CLAN_OWNER_TEMP_PASSWORD_RESET = "clan.owner.temp_password.reset"
     PROVISIONING_JOB_READ = "provisioning_job.read"
     CLAN_ACTIVATE = "clan.activate"
+    CLAN_READ = "clan.read"
     USER_LIST = "user.list"
     USER_READ = "user.read"
     USER_STATUS_UPDATE = "user.status.update"
@@ -97,6 +98,7 @@ ACTION_RULES: dict[Action, Rule] = {
     Action.CLAN_OWNER_TEMP_PASSWORD_RESET: _SA,
     Action.PROVISIONING_JOB_READ: _SA,
     Action.CLAN_ACTIVATE: _SA,
+    Action.CLAN_READ: _SA,
     Action.USER_LIST: _SA,
     Action.USER_READ: _SA,
     Action.USER_STATUS_UPDATE: _SA,
