@@ -105,7 +105,59 @@ Kết quả mong đợi:
 
 ## 5. Số liệu chạy theo từng mốc
 
-Bắt đầu bằng các bước của Mốc E (mới nhất ở trên cùng: E7), rồi tới Mốc F2.
+Bắt đầu bằng các bước của Mốc E (mới nhất ở trên cùng: E8), rồi tới Mốc F2.
+
+### Mốc E, bước E8: smoke test với Firebase thật trên project dev (09/10/2026)
+
+Chạy khoảng 02:00 đến 02:27 (UTC+7) trên project Firebase **dev** và nhánh Neon **dev** (`0003_provisioning_idempotency`). Đây là lần duy nhất của Mốc E có lời gọi Firebase thật; `pytest -q` vẫn không gọi Firebase thật. Không có test nào của repo đổi trong bước này (chỉ ghi tài liệu).
+
+**Cách chạy.** Một script riêng **nằm ngoài repo** (KI-33), do người phụ trách chạy tay, qua một launcher hỏi các giá trị cần (id project, e-mail thử, Web API key, mật khẩu của System Admin) và chỉ đặt chúng trong biến môi trường của tiến trình đó; không giá trị nào vào file, log hay repo. App chạy ngay trong process (ASGI) với adapter Firebase thật (`FirebaseIdentityProvider`) được bọc bộ đo thời gian. Các giai đoạn:
+
+| Giai đoạn | Làm gì |
+| --- | --- |
+| `--selftest` | Chỉ đồ giả, không mạng, không DB, gồm cả phép thử ngược: phá từng lớp bảo vệ thì selftest phải thất bại |
+| `--preflight` | Chỉ đọc: cấu hình, project nằm trong danh sách cho phép và được gõ lại để xác nhận, project của service account, không có emulator, nhánh DB đúng và phiên bản alembic `0003`, khóa ngoại so với thứ tự dọn, chạy thử 9 câu `DELETE` rồi hoàn tác, đọc Admin API, thử Web API key; ghi số hàng gốc (baseline) |
+| `--run --stage probe` | Tạo rồi xóa ngay các user Firebase thử (uid `own-<uuid>` và e-mail `@example.test` ngẫu nhiên), **không đụng DB**: đo độ trễ và dò chính sách mật khẩu |
+| `--run --stage main` | Luồng Business thật qua app (ghi DB dev và Firebase dev) |
+| `--verify` | Chỉ đọc: so **mọi** bảng dữ liệu với baseline và xác nhận mọi uid đã ghi nhận đều không còn ở Firebase |
+| `--cleanup` | Xóa đúng những gì lượt chạy đã tạo: user Firebase theo uid đã ghi nhận (không bao giờ theo e-mail, không liệt kê), dòng DB theo id (đã ghi nhận, hoặc tìm ra từ các e-mail thử của lượt chạy), trong một giao dịch |
+
+Giữa probe và main, người chạy quyết định `OWNER_TEMP_PASSWORD_REQUIRE_SYMBOL` theo kết quả probe. Uid được ghi vào file trạng thái (chỉ id, không bí mật, `fsync`) **trước** mỗi lần tạo user; mọi dòng in ra đi qua bộ lọc che key, mật khẩu, token, e-mail và uid.
+
+**Điều kiện để chạy lại:**
+
+- Project Firebase dev đã bật nhà cung cấp **Email/Password**.
+- Một user System Admin phải được **tạo tay trước** trong Firebase Console. Script không bao giờ tạo hay xóa tài khoản Firebase này; nó chỉ thêm 2 dòng DB cho tài khoản (nếu chưa có) và chỉ xóa 2 dòng đó khi chính nó đã thêm.
+- Chạy từ thư mục `BE` (để tìm thấy `.env`). Trên Windows script đặt chính sách vòng lặp sự kiện kiểu selector **trước** `asyncio.run`, vì `psycopg` ở chế độ async không chạy được trên vòng lặp mặc định của Windows (lần đầu quên bước này, preflight dừng ở `InterfaceError`).
+- Nhánh DB dev: các e-mail thử chưa có trong `users` và `business_registrations`, không có user `firebase_uid` dạng `own-%`, các bảng giữ nguyên đúng số hàng (3 gói, 6 giới hạn tính năng, `roles`/`permissions`/`role_permissions` = 4/18/0) và có ít nhất một gói `ACTIVE`; preflight dừng nếu một điều kiện không đúng.
+
+**Kết quả:**
+
+| Giai đoạn | Kết quả |
+| --- | --- |
+| `--preflight` | Đạt. Web API key được Google chấp nhận **không cần referer** (gửi qua header). Ba bảng của sprint sau (`person_merge_history`, `restore_jobs`, `violation_reports`) có khóa ngoại mà thứ tự dọn không phủ nhưng **rỗng**, nên được bỏ qua có theo dõi (KI-34) |
+| `--run --stage probe` | Chính sách mật khẩu của project: **chấp nhận mật khẩu 16 ký tự gồm chữ hoa, chữ thường, chữ số, không ký hiệu; độ dài tối thiểu 6**. Vậy `OWNER_TEMP_PASSWORD_REQUIRE_SYMBOL=false` là đủ, không cần đổi cấu hình. Độ trễ: lời gọi đơn **chậm nhất 2,5 giây**; ba lời gọi liên tiếp ở mức chậm nhất đó là **7,5 giây**, so với lease 90 giây và timeout 15 giây mỗi lời gọi (KI-28) |
+| `--run --stage main` | **14 kiểm tra đạt** (danh sách dưới đây) |
+| `--cleanup`, `--verify` | **CLEAN**: mọi bảng dữ liệu về đúng baseline, mọi user Firebase của lượt chạy không còn; `roles`/`permissions`/`role_permissions` vẫn 4/18/0, ba gói `DEV-` và 6 giới hạn tính năng còn nguyên, alembic `0003` |
+
+Mười bốn kiểm tra của giai đoạn main:
+
+1. System Admin đăng nhập bằng tài khoản Firebase thật, nhận ID token thật; phiên được tạo.
+2. Guest xem được danh sách gói.
+3. Business A: đăng ký, tra mã theo dõi, duyệt, tạo Business.
+4. Cấp Owner A: user Firebase thật được tạo (`201`), mật khẩu tạm nhận trong bộ nhớ.
+5. Owner A đăng nhập bằng mật khẩu tạm: phiên bị giới hạn (`requires_password_change`).
+6. Owner A đổi mật khẩu (`set_password` thật: cập nhật và thu hồi refresh token).
+7. ID token cũ bị từ chối (`401`): việc thu hồi token là thật.
+8. Owner A đăng nhập lại: phiên đầy đủ, clan còn `PENDING`, chưa có quyền nào, các hành động của clan bị `403`.
+9. Kích hoạt clan A: Owner A có quyền ngay trong cùng phiên; `GET /admin/clans/{id}` khớp.
+10. Business B: đăng ký, tra mã, duyệt, tạo Business.
+11. Cấp Owner B rồi cấp lại mật khẩu tạm (`set_owner_password` thật).
+12. Owner B: mật khẩu tạm cũ bị Firebase từ chối, mật khẩu mới cho phiên bị giới hạn.
+13. Business C: đăng ký, tra mã, duyệt, tạo Business.
+14. Job C: sau khi "mất câu trả lời" (cố ý), user Firebase thật đã tồn tại; `abandon` xóa nó theo uid `own-<job_id>` và xác nhận đã mất.
+
+Không ghi ở đây: e-mail, uid, khóa, mật khẩu, mã theo dõi hay fingerprint của DB.
 
 ### Mốc F2: vòng đời Family Admin (06/10/2026)
 

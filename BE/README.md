@@ -28,6 +28,8 @@ Copy-Item .env.example .env          # rồi điền giá trị thật vào .env
 .venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8001
 ```
 
+**Trên Windows luôn chạy với `--reload`:** không có `--reload`, uvicorn dùng `ProactorEventLoop` và kết nối DB lỗi (`InterfaceError`, `/api/health/ready` trả `503`); xem KI-36 trong [`docs/known_issues.md`](docs/known_issues.md).
+
 Mở `http://localhost:8001/docs` để xem OpenAPI. `GET /api/health` (liveness), `GET /api/health/ready` (readiness: kiểm tra `SELECT 1`; `503` khi database lỗi).
 
 ## Biến môi trường

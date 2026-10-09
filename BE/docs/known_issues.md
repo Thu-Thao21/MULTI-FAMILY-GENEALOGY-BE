@@ -251,3 +251,28 @@ Mô tả gốc:
   2. **Nếu gói thật sự đã ngừng bán:** chọn gói đang bán `ACTIVE` cho khách (đã thỏa thuận với họ) rồi đổi gói của subscription còn `PENDING`: `UPDATE clan_subscriptions SET plan_id = '<plan_id_moi>' WHERE subscription_id = '<subscription_id>' AND status = 'PENDING';`
   Sau đó SA gọi lại `POST /admin/clans/{id}/activate` (nó đọc lại gói và tính `ends_at` theo gói mới lúc kích hoạt). Không đụng `clans.status` bằng tay: để endpoint kích hoạt làm.
 - **Việc cần làm sau:** API quản lý gói và đổi gói thuộc Sprint 6 (task 3.6.8.6, liên kết KI-19, KI-22).
+
+## KI-33 Script smoke test E8 nằm ngoài repo: không chạy lại được từ một bản checkout
+
+- **Hiện trạng:** smoke test với Firebase thật (Mốc E, bước E8, kết quả ở `docs/testing.md` mục 5) chạy bằng một script và một launcher PowerShell **nằm ngoài repo**, do người phụ trách giữ. Repo chỉ có kết quả và các điều kiện chạy lại, không có chính script. Không có CI nào chạy nó (cố ý: nó ghi vào Firebase và DB dev thật).
+- **Hệ quả:** người khác, hoặc chính nhóm sau này, muốn lặp lại bài kiểm tra (ví dụ sau khi đổi adapter Firebase hay luồng cấp Owner) phải xin script từ người giữ nó.
+- **Việc cần làm sau:** nhóm quyết định có đưa script vào repo (ví dụ `scripts/`) hay không. Nếu đưa vào thì phải rà soát như mã chạm hệ thống thật: không giá trị bí mật nào trong file, launcher chỉ hỏi và đặt biến môi trường, và giữ phần selftest toàn đồ giả.
+
+## KI-34 Ba bảng của sprint sau nằm ngoài thứ tự dọn của E8: đang rỗng, được theo dõi
+
+- **Hiện trạng:** lúc preflight, khóa ngoại của `person_merge_history`, `restore_jobs` và `violation_reports` trỏ vào `users`, `clans` hoặc bảng đi theo clan mà **không** có `ON DELETE CASCADE` hay `SET NULL`, và thứ tự dọn của E8 (9 bảng, `users` cuối cùng) không xóa chúng. Cả ba **rỗng** và luồng E8 không ghi vào, nên preflight cho qua và ghi ba bảng vào danh sách theo dõi. Một bảng như vậy mà có dữ liệu thì preflight dừng.
+- **Hệ quả:** khi một tính năng của sprint sau bắt đầu ghi vào các bảng này (hoặc vào bất kỳ bảng nào có khóa ngoại kiểu đó), một lượt E8 mới sẽ dừng ở preflight, hoặc dừng ở cuối giai đoạn main và đầu `--cleanup` nếu dữ liệu xuất hiện giữa chừng, và **không xóa gì** (kể cả user Firebase) cho tới khi có người quyết định.
+- **Việc cần làm sau:** khi các tính năng đó vào, thêm các bảng tương ứng vào thứ tự dọn của script trước khi chạy lại E8. Liên quan KI-33.
+
+## KI-35 E8 chạy với Web API key không bị hạn chế theo HTTP referrer
+
+- **Hiện trạng:** bước kiểm tra key của preflight cho thấy Google chấp nhận Web API key **không kèm referer** (key gửi qua header), nghĩa là trong lần chạy E8 key không có hạn chế HTTP referrer nào có hiệu lực cho lời gọi đăng nhập. Chưa thử trường hợp key bị hạn chế theo referrer.
+- **Hệ quả:** nếu nhóm sau này hạn chế key theo referrer, script E8 chỉ chạy được khi đặt `E8_HTTP_REFERER` thành một referer được phép (launcher có hỏi giá trị này). BE không dùng Web API key, nên không bị ảnh hưởng.
+- **Việc cần làm sau:** không có việc nào của BE; ghi lại để người chạy lại E8 biết.
+
+## KI-36 Windows: chạy `uvicorn` không có `--reload` thì kết nối DB lỗi (`psycopg` async trên `ProactorEventLoop`) — Đã xác nhận, có cách tránh
+
+- **Triệu chứng (xác nhận ngày 09/10/2026, Windows, uvicorn 0.54.0, cùng máy và cùng `.env`):** `uvicorn app.main:app --port 8000` **không** có `--reload` ghi log "Database connectivity check failed at startup (InterfaceError)" và `GET /api/health/ready` trả `503`. Với `--reload` thì khởi động xong không có thông báo đó và `GET /api/health/ready` trả `200`.
+- **Nguyên nhân:** `psycopg` ở chế độ async không chạy được trên `ProactorEventLoop`. `app/main.py` và `app/db/postgres.py` đặt `WindowsSelectorEventLoopPolicy` ngay khi import, nhưng uvicorn 0.54.0 tự truyền một *loop factory* cho `asyncio.run`: trên Windows nó là `ProactorEventLoop` khi không có `--reload` và `--workers` (`uvicorn/loops/asyncio.py`), nên chính sách đã đặt bị bỏ qua. Với `--reload` hoặc `--workers` uvicorn dùng vòng lặp selector. Cùng nguyên nhân với lỗi `InterfaceError` mà script E8 gặp ở lần preflight đầu (E8 đã tự đặt chính sách trước `asyncio.run`).
+- **Cách tránh:** trên Windows luôn chạy `uvicorn app.main:app --reload` như README ghi. Docker và Linux **không** bị ảnh hưởng (vòng lặp selector là mặc định ở đó).
+- **Chưa có sửa trong code.** Một hướng có thể làm sau (chưa quyết định): một runner dev nhỏ khởi động uvicorn với loop factory kiểu selector, để chạy được cả khi không có `--reload`.
