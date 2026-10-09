@@ -28,7 +28,7 @@ $env:ALLOW_DB_TESTS = "1"
 
 - Thiếu `ALLOW_DB_TESTS=1` thì toàn bộ nhóm này bị skip. Thiếu `-m integration` thì không chạy.
 - Mỗi test chạy trong một transaction và ROLLBACK ở cuối; dữ liệu tự tạo, không phụ thuộc seed. Không DDL, không ghi `roles`, `permissions`, `role_permissions` (chỉ SELECT role theo code).
-- Kết nối tới Neon chậm (vài giây mỗi lần mở, ~0,3 giây mỗi truy vấn), cả nhóm chạy vài phút.
+- Kết nối tới Neon chậm (vài giây mỗi lần mở, ~0,3 giây mỗi truy vấn): mỗi test chạm DB mất khoảng 25 đến 45 giây, nên **cả bộ (456 test) mất khoảng 4 đến 5 giờ** (lượt 09/10/2026: 4 giờ 47 phút; số liệu ở mục 5). Chạy từng file để kiểm nhanh.
 - **Cần migration đã áp dụng (gói migration, `docs/migrations.md`; đã áp dụng lên dev_minhquan ngày 06/10/2026):** `test_db_constraints.py`, `test_db_provisioning.py` (migration 0003, áp dụng lên dev ngày 06/10/2026), `test_user_roles_unique_index.py` (KI-03), `test_db_rejects_a_duplicate_token_hash` (`test_sessions_db.py`), `test_duplicate_sa_grant_is_rejected_by_the_db_and_the_count_stays_one` (`test_system_admin_guard.py`) và vài test Family Admin đã đổi theo KI-08 (`test_user_admin_db.py`, `test_family_admin_lifecycle_db.py`, `test_family_admin_concurrency.py`) kỳ vọng DB đã có bốn index mới. Trên DB **chưa** migrate chúng fail, và đó là cách phát hiện thiếu migration. `tests/test_migration_guard.py` không cần DB.
 - **Gói `DEV-` đã seed trên dev (Mốc E, E3):** các test tích hợp của hồ sơ đăng ký và seed gói (`test_registration_db.py`, `test_registration_concurrency.py`, `test_seed_plans.py`) **không bao giờ xóa hay sửa gói `DEV-`**. Mỗi test tự tạo gói riêng (`ITEST-...`, hoặc tiền tố `DEV-ITEST-<mã>-` cho test cleanup) và chỉ đếm hoặc liệt kê gói theo tiền tố của chính nó. Test cleanup luôn truyền tiền tố riêng; cleanup mặc định (tiền tố `DEV-`) không test nào gọi.
 - Bỏ test đồng thời: `-m "integration and not concurrency"`. Chỉ chạy test đồng thời: `-m concurrency`.
@@ -105,7 +105,22 @@ Kết quả mong đợi:
 
 ## 5. Số liệu chạy theo từng mốc
 
-Bắt đầu bằng các bước của Mốc E (mới nhất ở trên cùng: E8), rồi tới Mốc F2.
+Bắt đầu bằng lượt chạy integration cả bộ ngày 09/10/2026 và các bước của Mốc E (mới nhất ở trên cùng: E8), rồi tới Mốc F2.
+
+### Chạy integration cả bộ (09/10/2026)
+
+Lệnh: `ALLOW_DB_TESTS=1 pytest -m integration -q`, chạy từ `BE` trên nhánh dev (alembic `0003_provisioning_idempotency`), một lần duy nhất, không sửa mã trong lúc chạy. Không lệnh nào gọi Firebase thật (provider giả).
+
+| Lệnh | Kết quả |
+| --- | --- |
+| `ALLOW_DB_TESTS=1 pytest -m integration -q` (cả bộ, một lần) | **455 passed, 1 failed**, 5 warnings (cảnh báo `on_event` đã biết), **4 giờ 47 phút 22 giây** |
+| Test lỗi: `test_a_suspended_member_can_still_be_revoked_and_non_fas_are_404` (`tests/integration/test_family_admin_lifecycle_db.py`) | `psycopg.OperationalError: server closed the connection unexpectedly`, phát sinh **trong phần dựng dữ liệu của chính test** (`world.business_owner()` chạy `INSERT INTO clans`), sau khi các khẳng định trước đó của test đã đạt |
+| Chạy lại riêng test đó | **1 passed** (37 giây) |
+| Chạy lại cả file `test_family_admin_lifecycle_db.py` | **12 passed**, hai lần (273 giây và 277 giây) |
+
+**Kết luận:** kết nối bị đứt giữa một lượt chạy rất dài, không phải lỗi mã; cả 456 test integration đều pass (455 trong lượt cả bộ và 1 khi chạy lại riêng). Chưa có một lượt liền mạch 0 failed; nguyên nhân phía Neon chưa xác định (KI-23, KI-37). `pool_pre_ping` đã bật cho engine của test (qua `make_engine`) nhưng chỉ thay kết nối đã chết lúc lấy ra khỏi pool, không cứu được kết nối đứt khi đang dùng.
+
+**Thời gian thực tế:** mỗi test chạm DB mất khoảng 25 đến 45 giây (kết nối Neon chậm, nhiều truy vấn tuần tự), nên cả bộ 456 test mất **khoảng 4 đến 5 giờ**, không phải vài chục phút. Muốn kiểm nhanh thì chạy từng file (xem mục 2).
 
 ### Mốc E, bước E8: smoke test với Firebase thật trên project dev (09/10/2026)
 

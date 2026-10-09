@@ -63,7 +63,7 @@ Kiểm tra cấu hình Firebase/CORS chạy trong sự kiện khởi động c�
 
 ```powershell
 .venv\Scripts\python.exe -m pytest -q                                   # test thường, không cần database
-$env:ALLOW_DB_TESTS = "1"; .venv\Scripts\python.exe -m pytest -m integration -q   # trên PostgreSQL thật, mất vài chục phút
+$env:ALLOW_DB_TESTS = "1"; .venv\Scripts\python.exe -m pytest -m integration -q   # trên PostgreSQL thật; cả bộ (456 test) mất khoảng 4-5 giờ, nên chạy từng file khi kiểm nhanh
 ```
 
 Test không gọi Firebase thật và không phụ thuộc `.env` cho cấu hình Firebase/CORS. Chi tiết, seed dữ liệu dev và số liệu mới nhất: [`docs/testing.md`](docs/testing.md).
