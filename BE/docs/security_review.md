@@ -99,7 +99,7 @@ Ngày: 06/10/2026. Phạm vi: các endpoint đã cài (xác thực, quản trị
 - **Container chưa được chạy** và **chưa quét CVE của image** (KI-14).
 - **Kiểm tĩnh việc ghi log (3.3)** chỉ thấy các lời gọi `logger.<mức>(...)` bằng tên biến; không chứng minh được mọi đường dữ liệu động.
 - **Test 2.4** chạy với session giả: chứng minh `WHERE` có `clan_id`, không chứng minh kết quả trên dữ liệu thật (phần đó do các test tích hợp ở 2.3 và 2.6 đảm nhiệm).
-- **Mốc E ngoài bước E3** (duyệt hồ sơ, tạo Business, cấp Owner, Idempotency-Key, job cấp tài khoản) chưa có nên chưa rà. Bước E3 được rà ở mục 9, kèm các hạn chế riêng ở cuối mục đó.
+- **Mốc E đã được rà theo từng bước** ở mục 9 (E3), mục 10 (E4), mục 11 (E5), mục 12 (E6a), mục 13 (E6b) và mục 14 (E7), kèm các hạn chế riêng ở cuối mỗi mục. Bước E8 (smoke test với Firebase thật, chạy tay bằng script ngoài repo) không có mục rà soát riêng; kết quả và các điều kiện chạy ở `docs/testing.md` mục 5.
 
 
 ## 9. Mốc E, bước E3: endpoint Guest (gói, đăng ký, theo dõi) và bộ giới hạn tần suất
