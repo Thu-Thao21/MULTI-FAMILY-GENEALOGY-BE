@@ -1,8 +1,12 @@
 __pycache__/
 .env
+credentials/
+firebase-service-account.json
+venv
 venv/
+venv.dataless-backup-*/
 dist/
 *.pyc
 *.db
-.env.*
-!.env.example
+.pytest_cache/
+*.log

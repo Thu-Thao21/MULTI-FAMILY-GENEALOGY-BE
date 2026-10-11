@@ -1,107 +1,97 @@
-from datetime import datetime, timezone
-from typing import Callable, List
-from fastapi import Depends, HTTPException, Header, status
-from sqlalchemy import or_, select
+from __future__ import annotations
+
+from typing import Annotated, Callable, List
+
+from fastapi import Depends, HTTPException, Security, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.core.firebase import verify_firebase_token
 from app.db.postgres import get_db
-from app.models.postgres import Account, UserSession
-from app.services.auth_service import bootstrap_account, calculate_primary_role, get_account_by_firebase_uid
+from app.models.postgres import Account
+from app.services.auth_service import bootstrap_account, get_account_by_firebase_uid
+
+
+firebase_bearer = HTTPBearer(
+    scheme_name="FirebaseBearer",
+    bearerFormat="JWT",
+    description="Nhập Firebase ID token (không thêm tiền tố Bearer).",
+    auto_error=False,
+)
 
 
 async def get_current_account(
-    authorization: str = Header(None, description="Bearer <Token>"),
-    db: AsyncSession = Depends(get_db),
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Security(firebase_bearer),
+    ],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Account:
-    """
-    Extracts Bearer token (Firebase ID Token or Custom Backend Token),
-    loads Account from PostgreSQL DB and verifies active status.
-    """
-    if not authorization or not authorization.startswith("Bearer "):
+    """Verify Firebase and resolve its canonical Neon users row."""
+    if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Thiếu Authorization header dạng Bearer <token>.",
+            detail="Thiếu Authorization header dạng Bearer <Firebase ID token>.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    id_token = authorization.split("Bearer ")[1].strip()
+    id_token = credentials.credentials.strip()
     if not id_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token không hợp lệ.",
+            detail="Firebase ID token không hợp lệ.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Local password sessions are opaque random tokens, not role or account IDs.
-    if id_token.startswith("session_"):
-        stmt = select(Account).join(UserSession, UserSession.user_id == Account.id).options(
-            selectinload(Account.roles)
-        ).where(
-            UserSession.session_token == id_token,
-            UserSession.expires_at > datetime.now(timezone.utc),
-            UserSession.revoked_at.is_(None),
-        )
-        res = await db.execute(stmt)
-        account = res.scalar_one_or_none()
-
-        if account:
-            if account.status != "active":
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Tài khoản của bạn đã bị khóa hoặc tạm ngưng hoạt động.",
-                )
-            return account
-
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Tài khoản không tồn tại hoặc token không hợp lệ.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    # 2. Handle Firebase Auth Tokens
     try:
         decoded_token = verify_firebase_token(id_token)
-    except Exception as e:
+    except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Token không hợp lệ hoặc đã hết hạn: {str(e)}",
+            detail="Firebase ID token không hợp lệ hoặc đã hết hạn.",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+    firebase_uid = decoded_token.get("uid")
+    if not firebase_uid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Firebase ID token không có UID.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    firebase_uid = decoded_token.get("uid")
     account = await get_account_by_firebase_uid(db, firebase_uid)
+    if account is None:
+        try:
+            account = await bootstrap_account(db, decoded_token)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
 
-    if not account:
-        account = await bootstrap_account(db, decoded_token)
-
-    if account.status != "active":
+    if account.status.upper() != "ACTIVE":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Tài khoản của bạn đã bị khóa hoặc tạm ngưng hoạt động.",
+            detail="Tài khoản đã bị khóa hoặc tạm ngưng hoạt động.",
         )
-
     return account
 
 
 def require_roles(allowed_roles: List[str]) -> Callable:
-    """
-    FastAPI Role Guard Dependency Factory.
-    Ensures current authenticated account has at least one of allowed_roles in PostgreSQL.
-    """
-    async def role_checker(account: Account = Depends(get_current_account)) -> Account:
-        user_roles = [r.role.lower() for r in account.roles if r.status == "active"]
-        
-        # Super admin always bypasses specific role checks
-        if "admin" in user_roles:
-            return account
-
-        has_permission = any(role.lower() in user_roles for role in allowed_roles)
-        if not has_permission:
+    async def role_checker(
+        account: Account = Depends(get_current_account),
+    ) -> Account:
+        active_roles = {
+            assignment.role_record.code.lower()
+            for assignment in account.roles
+            if assignment.revoked_at is None
+        }
+        allowed = {role.lower() for role in allowed_roles}
+        if "admin" not in active_roles and active_roles.isdisjoint(allowed):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Bạn không có quyền truy cập tính năng này. Yêu cầu một trong các quyền: {', '.join(allowed_roles)}.",
+                detail="Bạn không có vai trò cần thiết để truy cập tính năng này.",
             )
         return account
 

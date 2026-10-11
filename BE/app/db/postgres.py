@@ -17,8 +17,15 @@ class Base(DeclarativeBase):
     pass
 
 
-engine = create_async_engine(settings.DATABASE_URL, echo=False)
-async_session_maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+engine = create_async_engine(
+    settings.DATABASE_URL,
+    echo=False,
+    pool_pre_ping=True,
+    pool_recycle=300,
+)
+async_session_maker = async_sessionmaker(
+    engine, expire_on_commit=False, class_=AsyncSession
+)
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -27,24 +34,16 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """Tạo tất cả bảng trong database và tự động thêm các cột mới nếu thiếu."""
-    import app.models.postgres  # noqa: F401
-    from sqlalchemy import text
+    """Create canonical tables only for local SQLite.
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        try:
-            await conn.execute(text("ALTER TABLE accounts ADD COLUMN password_hash TEXT;"))
-        except Exception:
-            pass
-        try:
-            await conn.execute(text("ALTER TABLE families ADD COLUMN owner_id VARCHAR(36);"))
-        except Exception:
-            pass
-        try:
-            await conn.execute(text("ALTER TABLE families ADD COLUMN branches JSON DEFAULT '[]';"))
-        except Exception:
-            pass
+    Neon is externally managed and is never created, altered, migrated, or
+    seeded by application startup.
+    """
+    import app.models.postgres  # noqa: F401
+
+    if engine.dialect.name == "sqlite":
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
 
 
 async def close_db() -> None:

@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite+aiosqlite:///./dev.db"
     FIREBASE_PROJECT_ID: str = "multi-family-genealogy"
     FIREBASE_CREDENTIALS_PATH: str = ""
+    ALLOW_INSECURE_FIREBASE_DEV: bool = False
 
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587

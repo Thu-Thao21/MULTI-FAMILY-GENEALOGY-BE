@@ -1,16 +1,5 @@
 import asyncio
 from logging.config import fileConfig
-import os
-import sys
-
-# Ensure the backend directory is in the path
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-
-if sys.platform.startswith("win"):
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-from dotenv import load_dotenv
-load_dotenv()
 
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
@@ -18,26 +7,27 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 
-# Import your models here
-from app.db.postgres import Base
-import app.models.postgres  # This ensures all models are registered with Base
-
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
-
-# Overwrite sqlalchemy.url with the value from .env
-db_url = os.getenv("DATABASE_URL")
-if db_url:
-    config.set_main_option("sqlalchemy.url", db_url)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# add your model's MetaData object here
-# for 'autogenerate' support
+import os
+import sys
+
+# Thêm đường dẫn BE vào sys.path để import app.models
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+from app.core.config import settings
+from app.db.postgres import Base
+import app.models.postgres  # noqa
+
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+
 target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,

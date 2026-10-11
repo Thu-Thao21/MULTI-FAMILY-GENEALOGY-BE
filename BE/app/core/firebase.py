@@ -37,19 +37,17 @@ def verify_firebase_token(id_token: str) -> Dict[str, Any]:
     """
     Verifies a Firebase ID token sent from Frontend.
     Returns decoded token dict or raises Exception on invalid/expired token.
-    Uses instant non-blocking JWT decoding for local dev environment when Google credentials file is not mounted.
+    Unsigned decoding is available only when explicitly enabled for local development.
     """
-    cred_path = settings.FIREBASE_CREDENTIALS_PATH or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    try:
+        get_firebase_app()
+        return firebase_auth.verify_id_token(id_token, clock_skew_seconds=10)
+    except Exception as verification_error:
+        if not settings.ALLOW_INSECURE_FIREBASE_DEV:
+            logger.warning("Firebase token verification failed")
+            raise ValueError("Firebase token verification failed") from verification_error
 
-    # If Service Account certificate file is present, try official Admin SDK verification
-    if cred_path and os.path.exists(cred_path):
-        try:
-            get_firebase_app()
-            return firebase_auth.verify_id_token(id_token, clock_skew_seconds=10)
-        except Exception as e:
-            logger.warning(f"Firebase Admin SDK verification failed, falling back to JWT: {e}")
-
-    # Fast non-blocking JWT decoding for local development environment
+    logger.warning("Using explicitly enabled insecure Firebase token decoding for local development")
     try:
         decoded = jwt.decode(id_token, options={"verify_signature": False})
 
@@ -70,7 +68,5 @@ def verify_firebase_token(id_token: str) -> Dict[str, Any]:
 
         return decoded
     except Exception as jwt_err:
-        logger.error(f"JWT fallback decoding failed: {jwt_err}")
-        raise ValueError(f"Xác thực Firebase Token thất bại: {jwt_err}")
-
-
+        logger.error("Insecure local Firebase token decoding failed")
+        raise ValueError("Firebase token verification failed") from jwt_err
