@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.postgres import Account, Person, Relationship
 from app.repositories.family_repository import FamilyRepository
-from app.repositories.genealogy_repository import GenealogyRepository
+from app.models.genealogy import GenealogyRepository
 from app.schemas.genealogy import (
     PersonCreate,
     PersonResponse,

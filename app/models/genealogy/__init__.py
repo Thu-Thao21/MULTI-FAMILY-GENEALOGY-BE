@@ -7,6 +7,7 @@ from app.models.genealogy.entities import (
     PersonClosure,
     Relationship,
 )
+from app.models.genealogy.repository import GenealogyRepository
 
 __all__ = [
     "Branch",
@@ -14,4 +15,5 @@ __all__ = [
     "Person",
     "PersonClosure",
     "Relationship",
+    "GenealogyRepository",
 ]

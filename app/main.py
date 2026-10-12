@@ -17,7 +17,7 @@ from app.controllers.family_management.owner_admin_router import router as owner
 from app.controllers.family_management.registration_admin_router import (
     router as registration_admin_router,
 )
-from app.routers.genealogy import router as genealogy_router
+from app.controllers.genealogy import router as genealogy_router
 from app.core.config import settings
 from app.core.errors import UnhandledErrorMiddleware, register_exception_handlers
 from app.core.rate_limit import build_rate_limiters

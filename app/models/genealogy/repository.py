@@ -1,3 +1,5 @@
+"""M03. Genealogy Model - Data Access Repository."""
+
 from __future__ import annotations
 
 from typing import List, Optional
@@ -5,7 +7,7 @@ from typing import List, Optional
 from sqlalchemy import and_, delete, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.postgres import Person, PersonClosure, Relationship
+from app.models.genealogy.entities import Person, PersonClosure, Relationship
 
 
 class GenealogyRepository:
