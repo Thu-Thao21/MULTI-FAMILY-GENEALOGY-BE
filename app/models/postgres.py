@@ -3,7 +3,7 @@
 All actual models are declared in:
 - app.models.user_access.entities (Auth, Users, Roles, Sessions)
 - app.models.family.entities (Clans, Memberships, Subscriptions, Provisioning)
-- app.models.family.genealogy (Branches, Persons, Relationships, PersonClosure)
+- app.models.genealogy.entities (Branches, Persons, Relationships, PersonClosure)
 """
 
 from __future__ import annotations
