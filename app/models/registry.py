@@ -27,7 +27,7 @@ from app.models.family.entities import (  # noqa: F401
     SubscriptionPlan,
     SupportAccessGrant,
 )
-from app.models.family.genealogy import (  # noqa: F401
+from app.models.genealogy.entities import (  # noqa: F401
     FamilyBranch,
     Person,
     PersonClosure,

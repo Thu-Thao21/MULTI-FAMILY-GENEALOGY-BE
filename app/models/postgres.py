@@ -18,7 +18,7 @@ from app.models.family.entities import (
     IdempotencyKey,
     ProvisioningJob,
 )
-from app.models.family.genealogy import (
+from app.models.genealogy.entities import (
     Branch,
     FamilyBranch,
     Person,
