@@ -150,8 +150,8 @@ class Relationship(Base):
         nullable=False,
         index=True,
     )
-    relationship_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    parent_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    relationship_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    parent_type: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     child_order: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     marriage_order: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     started_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
@@ -160,10 +160,10 @@ class Relationship(Base):
     verified: Mapped[bool] = mapped_column(
         Boolean, server_default="false", default=False, nullable=False
     )
-    created_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+    created_by: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("users.user_id", ondelete="SET NULL"),
-        nullable=True,
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
