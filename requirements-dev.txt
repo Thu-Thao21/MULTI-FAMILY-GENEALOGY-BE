@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest~=9.1.1
+pytest-asyncio~=1.4.0
+# TestClient and the integration tests use httpx directly (it also arrives via firebase-admin).
+httpx~=0.28.1
