@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.postgres import Account
 from app.schemas.genealogy import PersonCreate, PersonUpdate, RelationshipCreate
-from app.services.genealogy_service import GenealogyService
+from app.services.genealogy import GenealogyService
 
 
 class GenealogyController:
