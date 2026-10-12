@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.controllers.genealogy_controller import GenealogyController
+from app.controllers.genealogy import GenealogyController
 from app.db.postgres import get_db
 from app.dependencies.auth import get_current_account
 from app.models.postgres import Account
