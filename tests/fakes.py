@@ -1,0 +1,1038 @@
+"""In-memory fakes for the auth/permission repositories. No DB, no Firebase."""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+
+from types import SimpleNamespace
+
+from sqlalchemy.exc import IntegrityError, OperationalError
+
+from app.core.firebase import (
+    InvalidIdToken,
+    ProviderEmailTaken,
+    ProviderUnavailable,
+    ProviderUser,
+    ProviderUserExists,
+    ProviderUserNotFound,
+    VerifiedIdentity,
+    require_own_uid,
+)
+from app.core.tokens import hash_session_token
+from app.models.family.entities import (
+    BusinessRegistration,
+    Clan,
+    ClanMembership,
+    ClanOwnershipHistory,
+    ClanProfile,
+    ClanSubscription,
+    FamilyAdminAssignment,
+    IdempotencyKey,
+    PlanFeatureLimit,
+    RegistrationAttachment,
+    RegistrationStatusHistory,
+    SubscriptionPlan,
+)
+from app.models.user_access.entities import CredentialMetadata, LoginHistory, User, UserSession
+
+NOW = datetime(2026, 10, 5, 8, 0, tzinfo=timezone.utc)
+
+
+def make_user(
+    status: str = "ACTIVE",
+    *,
+    first_login_required: bool = False,
+    firebase_uid: str | None = None,
+) -> User:
+    return User(
+        user_id=uuid.uuid4(),
+        firebase_uid=firebase_uid or f"fake-uid-{uuid.uuid4().hex[:12]}",
+        email=f"{uuid.uuid4().hex[:8]}@example.test",
+        display_name="Test User",
+        status=status,
+        first_login_required=first_login_required,
+        email_verified=False,
+        phone_verified=False,
+        created_at=NOW - timedelta(days=1),
+        updated_at=NOW - timedelta(days=1),
+    )
+
+
+@dataclass
+class After:
+    """A fault that fires AFTER the fake operation took effect (a timeout whose call still worked)."""
+
+    error: Exception
+
+
+@dataclass
+class FakeIdentityProvider:
+    """Stands in for Firebase. Tokens are opaque strings mapped to identities.
+
+    Never stores passwords: set_password records only the UID.
+    """
+
+    identities: dict[str, VerifiedIdentity] = field(default_factory=dict)
+    unavailable: bool = False
+    set_password_error: Exception | None = None
+    password_changes: list[str] = field(default_factory=list)
+    owner_password_sets: list[str] = field(default_factory=list)  # uids given a new password by set_owner_password
+
+    # --- M???c E6: the Admin API. Nothing here ever calls Firebase; passwords are NEVER stored. ---
+    admin_api_enabled: bool = True
+    provider_users: dict[str, ProviderUser] = field(default_factory=dict)
+    provider_calls: list[tuple[str, str]] = field(default_factory=list)  # (operation, uid)
+    # operation -> queue of faults. An Exception is raised BEFORE the operation has any effect;
+    # After(exc) lets the operation take effect and THEN raises (the call worked, the answer was lost).
+    faults: dict[str, list] = field(default_factory=dict)
+    hooks: dict[str, object] = field(default_factory=dict)  # operation -> async callable(uid), awaited first
+    probe: object = None  # callable() -> True while a database transaction holds uncommitted work
+    open_transaction_calls: list[str] = field(default_factory=list)  # operations called with one open
+    # (operation, length, has_upper, has_lower, has_digit, has_symbol): the SHAPE of the password only
+    password_shapes: list[tuple] = field(default_factory=list)
+
+    def issue(
+        self,
+        uid: str,
+        *,
+        auth_time: datetime | None = None,
+        email: str | None = "someone@example.test",
+    ) -> str:
+        token = f"fake-id-token-{uuid.uuid4().hex}"
+        self.identities[token] = VerifiedIdentity(
+            uid=uid,
+            email=email,
+            email_verified=False,
+            auth_time=auth_time or datetime.now(timezone.utc) - timedelta(seconds=30),
+            sign_in_provider="password",
+        )
+        return token
+
+    async def verify_id_token(self, id_token: str) -> VerifiedIdentity:
+        if self.unavailable:
+            raise ProviderUnavailable("fake_unavailable")
+        identity = self.identities.get(id_token)
+        if identity is None:
+            raise InvalidIdToken("invalid")
+        return identity
+
+    async def set_owner_password(self, uid: str, new_password: str) -> None:
+        """Like the real adapter: only an own-<uuid>, refused before anything else; a missing user is
+        ProviderUserNotFound. The password is never stored, only its shape."""
+        require_own_uid(uid)
+        fault = await self._enter("set_owner_password", uid)
+        if isinstance(fault, Exception):
+            raise fault
+        if uid not in self.provider_users:
+            raise ProviderUserNotFound()
+        self.owner_password_sets.append(uid)
+        self._record_shape("set_owner_password", new_password)
+        if isinstance(fault, After):
+            raise fault.error
+
+    async def set_password(self, uid: str, new_password: str) -> None:
+        if self.set_password_error is not None:
+            raise self.set_password_error
+        fault = await self._enter("set_password", uid)
+        if isinstance(fault, Exception):
+            raise fault
+        self.password_changes.append(uid)
+        self._record_shape("set_password", new_password)
+        if isinstance(fault, After):
+            raise fault.error
+
+    # ----- the Admin API of E6 -----
+
+    async def _enter(self, operation: str, uid: str):
+        self.provider_calls.append((operation, uid))
+        if callable(self.probe) and self.probe():
+            self.open_transaction_calls.append(operation)
+        hook = self.hooks.get(operation)
+        if hook is not None:
+            await hook(uid)
+        queue = self.faults.get(operation)
+        return queue.pop(0) if queue else None
+
+    def _record_shape(self, operation: str, password: str) -> None:
+        self.password_shapes.append((
+            operation, len(password), any(c.isupper() for c in password), any(c.islower() for c in password),
+            any(c.isdigit() for c in password), any(not c.isalnum() for c in password),
+        ))
+
+    async def get_user(self, uid: str):
+        fault = await self._enter("get_user", uid)
+        if isinstance(fault, Exception):
+            raise fault
+        return self.provider_users.get(uid)
+
+    async def create_user(self, *, uid: str, email: str, display_name: str, password: str):
+        require_own_uid(uid)
+        fault = await self._enter("create_user", uid)
+        if isinstance(fault, Exception):
+            raise fault
+        if uid in self.provider_users:
+            raise ProviderUserExists()
+        if any((u.email or "").lower() == email.lower() for u in self.provider_users.values()):
+            raise ProviderEmailTaken()
+        user = ProviderUser(uid=uid, email=email, display_name=display_name, disabled=False)
+        self.provider_users[uid] = user
+        self._record_shape("create_user", password)
+        if isinstance(fault, After):
+            raise fault.error
+        return user
+
+    async def delete_user(self, uid: str) -> bool:
+        require_own_uid(uid)  # like the real adapter: refused before any call
+        fault = await self._enter("delete_user", uid)
+        if isinstance(fault, Exception):
+            raise fault
+        existed = self.provider_users.pop(uid, None) is not None
+        if isinstance(fault, After):
+            raise fault.error
+        return existed
+
+
+class _SqlStateError(Exception):
+    """Stands in for a psycopg error that carries a SQLSTATE (e.g. 55P03 lock_not_available)."""
+
+    def __init__(self, sqlstate: str) -> None:
+        super().__init__("simulated")
+        self.sqlstate = sqlstate
+
+
+class _DbError(Exception):
+    """Stands in for psycopg's error object: IntegrityError.orig.diag.constraint_name."""
+
+    def __init__(self, constraint_name: str) -> None:
+        super().__init__("simulated")
+        self.diag = SimpleNamespace(constraint_name=constraint_name)
+
+
+@dataclass
+class FakeDb:
+    """Unit of work. commit() snapshots what the repo holds, to prove commit order."""
+
+    repo: "FakeUserAccessRepo | None" = None
+    fail_commit: bool = False
+    commits: int = 0
+    rollbacks: int = 0
+    committed_login_history: list[LoginHistory] = field(default_factory=list)
+
+    async def commit(self) -> None:
+        if self.fail_commit:
+            raise OperationalError("COMMIT", {}, Exception("simulated"))
+        self.commits += 1
+        if self.repo is not None:
+            self.committed_login_history = list(self.repo.login_history)
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+@dataclass
+class RoleGrant:
+    user_id: uuid.UUID
+    role_code: str
+    clan_id: uuid.UUID | None
+    revoked: bool = False
+
+
+@dataclass
+class FakeUserAccessRepo:
+    users: dict[uuid.UUID, User] = field(default_factory=dict)
+    sessions: dict[str, UserSession] = field(default_factory=dict)  # by token hash
+    creds: dict[uuid.UUID, CredentialMetadata] = field(default_factory=dict)
+    roles: list[RoleGrant] = field(default_factory=list)
+    calls: list[str] = field(default_factory=list)
+    seen_hashes: list[str] = field(default_factory=list)
+    login_history: list[LoginHistory] = field(default_factory=list)
+    audit: list[dict] = field(default_factory=list)
+
+    # --- setup helpers ---
+    def add_user(self, user: User) -> User:
+        self.users[user.user_id] = user
+        return user
+
+    def seed_session(
+        self,
+        user: User,
+        token: str = "tok-valid",
+        *,
+        created_at: datetime = NOW - timedelta(hours=1),
+        expires_at: datetime = NOW + timedelta(hours=7),
+        revoked_at: datetime | None = None,
+    ) -> str:
+        self.sessions[hash_session_token(token)] = UserSession(
+            session_id=uuid.uuid4(),
+            user_id=user.user_id,
+            token_jti_hash=hash_session_token(token),
+            created_at=created_at,
+            expires_at=expires_at,
+            revoked_at=revoked_at,
+        )
+        return token
+
+    def set_cred(self, user: User, **kwargs) -> None:
+        values = {"must_change_password": False, "failed_login_count": 0, **kwargs}
+        self.creds[user.user_id] = CredentialMetadata(user_id=user.user_id, **values)
+
+    def grant(self, user: User, role_code: str, clan_id: uuid.UUID | None = None, *, revoked=False):
+        self.roles.append(RoleGrant(user.user_id, role_code, clan_id, revoked))
+
+    # --- AuthRepository ---
+    async def get_session_by_token_hash(self, token_jti_hash: str):
+        self.seen_hashes.append(token_jti_hash)
+        return self.sessions.get(token_jti_hash)
+
+    async def get_user_by_id(self, user_id):
+        self.calls.append("get_user_by_id")
+        return self.users.get(user_id)
+
+    async def get_credential_metadata(self, user_id):
+        return self.creds.get(user_id)
+
+    async def lock_credential_metadata(self, user_id):
+        self.calls.append("lock_credential")
+        return self.creds.get(user_id)
+
+    async def get_user_fresh(self, user_id):
+        self.calls.append("get_user_fresh")
+        return self.users.get(user_id)
+
+    # --- RoleRepository / SystemAdminGuardRepository ---
+    async def has_active_role(self, user_id, role_code, *, clan_id):
+        return any(
+            g.user_id == user_id and g.role_code == role_code and g.clan_id == clan_id
+            and not g.revoked
+            for g in self.roles
+        )
+
+    async def lock_active_system_admin_roles(self) -> None:
+        self.calls.append("lock")
+
+    async def count_active_system_admins(self, *, exclude_user_id=None) -> int:
+        self.calls.append("count")
+        ids = {
+            g.user_id
+            for g in self.roles
+            if g.role_code == "SYSTEM_ADMIN" and g.clan_id is None and not g.revoked
+            and self.users.get(g.user_id) is not None
+            and self.users[g.user_id].status == "ACTIVE"
+        }
+        ids.discard(exclude_user_id)
+        return len(ids)
+
+    async def list_active_role_grants(self, user_id):
+        return [(g.role_code, g.clan_id) for g in self.roles if g.user_id == user_id and not g.revoked]
+
+    # --- M???c D: login / session writes ---
+    async def get_user_by_firebase_uid(self, firebase_uid):
+        return next((u for u in self.users.values() if u.firebase_uid == firebase_uid), None)
+
+    async def get_user_by_email_ci(self, email):
+        self.calls.append("get_user_by_email_ci")
+        return next((u for u in self.users.values() if u.email.lower() == email.lower()), None)
+
+    async def create_user_account(
+        self, *, user_id, firebase_uid, email, display_name, phone, status, first_login_required, now
+    ):
+        self.calls.append("create_user_account")
+        if any(u.email.lower() == email.lower() for u in self.users.values()):
+            raise IntegrityError("INSERT users", {}, _DbError("uq_users_email_lower"))
+        if any(u.firebase_uid == firebase_uid for u in self.users.values()):
+            raise IntegrityError("INSERT users", {}, _DbError("users_firebase_uid_key"))
+        user = User(
+            user_id=user_id, firebase_uid=firebase_uid, email=email, phone=phone, display_name=display_name,
+            status=status, email_verified=False, phone_verified=False,
+            first_login_required=first_login_required, created_at=now, updated_at=now,
+        )
+        self.users[user_id] = user
+        return user
+
+    async def add_session(self, **values) -> UserSession:
+        row = UserSession(session_id=uuid.uuid4(), **values)
+        self.sessions[values["token_jti_hash"]] = row
+        return row
+
+    def _revoke(self, rows, reason, now) -> int:
+        count = 0
+        for s in rows:
+            if s.revoked_at is None:
+                s.revoked_at, s.revoke_reason = now, reason
+                count += 1
+        return count
+
+    async def revoke_session(self, session_id, *, reason, now) -> int:
+        return self._revoke([s for s in self.sessions.values() if s.session_id == session_id], reason, now)
+
+    async def revoke_all_sessions(self, user_id, *, reason, now) -> int:
+        return self._revoke([s for s in self.sessions.values() if s.user_id == user_id], reason, now)
+
+    async def add_login_history(self, **values) -> LoginHistory:
+        row = LoginHistory(login_id=uuid.uuid4(), **values)
+        self.login_history.append(row)
+        return row
+
+    async def add_credential_metadata(self, user_id, *, now) -> CredentialMetadata:
+        self.set_cred(self.users[user_id])
+        self.creds[user_id].auth_provider = "FIREBASE"  # what the real repository writes
+        return self.creds[user_id]
+
+    async def add_audit_log(self, **values) -> None:
+        self.audit.append(values)
+
+    # --- M???c F ---
+    known_permissions: set[str] = field(
+        default_factory=lambda: {
+            "MEMBER_ACCOUNT_MANAGE", "ADMIN_MANAGE", "PERSON_VIEW", "TREE_VIEW", "AUDIT_VIEW",
+        }
+    )
+
+    async def get_user_for_update(self, user_id):
+        self.calls.append("lock_user")
+        return self.users.get(user_id)
+
+    def _filtered(self, status, q):
+        needle = (q or "").lower()
+        rows = [
+            u for u in self.users.values()
+            if (status is None or u.status == status)
+            and (not needle or needle in u.email.lower() or needle in u.display_name.lower())
+        ]
+        return sorted(rows, key=lambda u: str(u.user_id))
+
+    async def list_users(self, *, status, q, limit, offset):
+        return self._filtered(status, q)[offset : offset + limit]
+
+    async def count_users(self, *, status, q):
+        return len(self._filtered(status, q))
+
+    async def list_clan_role_codes(self, clan_id, user_ids):
+        out: dict = {}
+        for g in self.roles:
+            if g.clan_id == clan_id and not g.revoked and g.user_id in user_ids:
+                out.setdefault(g.user_id, set()).add(g.role_code)
+        return {uid: sorted(codes) for uid, codes in out.items()}
+
+    async def existing_permission_codes(self, codes):
+        return set(codes) & self.known_permissions
+
+    # --- M???c F2: clan role rows ---
+    role_codes_present: set[str] = field(
+        default_factory=lambda: {"SYSTEM_ADMIN", "BUSINESS_OWNER", "FAMILY_ADMIN", "FAMILY_MEMBER"}
+    )
+
+    async def get_role_by_code(self, code):
+        if code not in self.role_codes_present:
+            return None
+
+        class _Role:
+            pass
+
+        role = _Role()
+        role.role_id = uuid.uuid5(uuid.NAMESPACE_DNS, code)
+        role.code = code
+        return role
+
+    async def add_clan_role(self, *, user_id, role_id, clan_id, granted_by, now):
+        self.calls.append("add_clan_role")
+        code = next(c for c in self.role_codes_present if uuid.uuid5(uuid.NAMESPACE_DNS, c) == role_id)
+        # uq_active_user_role_scope: a second ACTIVE grant of (user, role, clan) is rejected.
+        if any(
+            g.user_id == user_id and g.role_code == code and g.clan_id == clan_id and not g.revoked
+            for g in self.roles
+        ):
+            from sqlalchemy.exc import IntegrityError
+
+            raise IntegrityError("INSERT user_roles", {}, Exception("uq_active_user_role_scope"))
+        self.roles.append(RoleGrant(user_id, code, clan_id))
+
+    async def revoke_clan_role(self, *, user_id, clan_id, role_code, now):
+        self.calls.append("revoke_clan_role")
+        count = 0
+        for g in self.roles:
+            if g.user_id == user_id and g.clan_id == clan_id and g.role_code == role_code and not g.revoked:
+                g.revoked = True
+                count += 1
+        return count
+
+
+@dataclass
+class FakeAssignment:
+    """One family_admin_assignments row with its family_admin_permissions codes."""
+
+    clan_id: uuid.UUID
+    user_id: uuid.UUID
+    branch_id: uuid.UUID | None
+    codes: set[str] = field(default_factory=set)
+    revoked: bool = False
+    assignment_id: uuid.UUID = field(default_factory=uuid.uuid4)
+
+    def as_entity(self) -> FamilyAdminAssignment:
+        return FamilyAdminAssignment(
+            assignment_id=self.assignment_id, user_id=self.user_id, clan_id=self.clan_id,
+            branch_id=self.branch_id, revoked_at=NOW if self.revoked else None,
+        )
+
+
+@dataclass
+class FakeFamilyRepo:
+    clans: dict[uuid.UUID, Clan] = field(default_factory=dict)
+    memberships: list[ClanMembership] = field(default_factory=list)
+    owners: list[ClanOwnershipHistory] = field(default_factory=list)
+    assignments: list[FakeAssignment] = field(default_factory=list)
+    calls: list[str] = field(default_factory=list)
+
+    users: dict[uuid.UUID, User] = field(default_factory=dict)  # for list_clan_members
+
+    # --- M???c E, step E3: public catalog and Guest registration ---
+    plans: dict[uuid.UUID, SubscriptionPlan] = field(default_factory=dict)
+    plan_features: list[PlanFeatureLimit] = field(default_factory=list)
+    registrations: list[BusinessRegistration] = field(default_factory=list)
+    registration_history: list[RegistrationStatusHistory] = field(default_factory=list)
+    # Constraint names to raise (as IntegrityError) from the next create_registration calls.
+    create_registration_errors: list[str] = field(default_factory=list)
+    # True: exists_pending_registration says "no", so only the unique index can stop a duplicate.
+    precheck_blind: bool = False
+
+    def add_plan(
+        self, code: str, *, price="0.00", status="ACTIVE", features=(), months=12, **extra
+    ) -> SubscriptionPlan:
+        from decimal import Decimal
+
+        plan = SubscriptionPlan(
+            plan_id=uuid.uuid4(), code=code, name=f"Plan {code}", description=None,
+            price=Decimal(price), billing_period_months=months, status=status,
+            created_at=NOW, updated_at=NOW, **extra,
+        )
+        self.plans[plan.plan_id] = plan
+        for feature_code, enabled, limit in features:
+            self.plan_features.append(PlanFeatureLimit(
+                plan_feature_id=uuid.uuid4(), plan_id=plan.plan_id, feature_code=feature_code,
+                enabled=enabled, limit_value=None if limit is None else Decimal(str(limit)),
+                feature_metadata={},
+            ))
+        return plan
+
+    async def get_plan_by_id(self, plan_id):
+        self.calls.append("get_plan_by_id")
+        return self.plans.get(plan_id)
+
+    async def list_active_plans_page(self, *, limit, offset):
+        self.calls.append("list_active_plans_page")
+        rows = sorted(
+            (p for p in self.plans.values() if p.status == "ACTIVE"), key=lambda p: (p.price, p.code)
+        )
+        return rows[offset : offset + limit]
+
+    async def count_active_plans(self):
+        self.calls.append("count_active_plans")
+        return sum(1 for p in self.plans.values() if p.status == "ACTIVE")
+
+    async def list_feature_limits_for_plans(self, plan_ids):
+        self.calls.append("list_feature_limits_for_plans")
+        wanted = set(plan_ids)
+        return sorted(
+            (f for f in self.plan_features if f.plan_id in wanted),
+            key=lambda f: (str(f.plan_id), f.feature_code),
+        )
+
+    async def exists_pending_registration(self, *, email, clan_name):
+        self.calls.append("exists_pending_registration")
+        if self.precheck_blind:
+            return False
+        return self._pending_same(email, clan_name)
+
+    def _pending_same(self, email, clan_name) -> bool:
+        return any(
+            r.status == "PENDING"
+            and r.representative_email.lower() == email.lower()
+            and r.clan_name.lower() == clan_name.lower()
+            for r in self.registrations
+        )
+
+    async def create_registration(self, **v):
+        self.calls.append("create_registration")
+        if self.create_registration_errors:
+            name = self.create_registration_errors.pop(0)
+            raise IntegrityError("INSERT business_registrations", {}, _DbError(name))
+        # What the database would enforce, so the index path is reachable without a database.
+        if self._pending_same(v["representative_email"], v["clan_name"]):
+            raise IntegrityError(
+                "INSERT business_registrations", {}, _DbError("uq_registration_pending_same_applicant")
+            )
+        if any(r.tracking_code_hash == v["tracking_code_hash"] for r in self.registrations):
+            raise IntegrityError(
+                "INSERT business_registrations", {},
+                _DbError("business_registrations_tracking_code_hash_key"),
+            )
+        row = BusinessRegistration(
+            registration_id=v["registration_id"], requested_plan_id=v["requested_plan_id"],
+            representative_name=v["representative_name"], representative_email=v["representative_email"],
+            representative_phone=v["representative_phone"], clan_name=v["clan_name"],
+            origin_place=v["origin_place"], status="PENDING",
+            tracking_code_hash=v["tracking_code_hash"], created_at=v["now"], updated_at=v["now"],
+        )
+        self.registrations.append(row)
+        return row
+
+    async def add_registration_status_history(self, **v):
+        self.calls.append("add_registration_status_history")
+        row = RegistrationStatusHistory(
+            history_id=uuid.uuid4(), registration_id=v["registration_id"], from_status=v["from_status"],
+            to_status=v["to_status"], changed_by=v["changed_by"], reason=v["reason"], changed_at=v["now"],
+        )
+        self.registration_history.append(row)
+        return row
+
+    async def get_registration_by_tracking_hash(self, tracking_code_hash):
+        self.calls.append("get_registration_by_tracking_hash")
+        return next((r for r in self.registrations if r.tracking_code_hash == tracking_code_hash), None)
+
+    # --- M???c E, step E4: registration administration for the System Admin ---
+    registration_attachments: list[RegistrationAttachment] = field(default_factory=list)
+
+    def add_registration(
+        self, plan, *, name="Tran Thi Test", email=None, clan_name=None, status="PENDING",
+        created_at=None, phone="+84 912 345 678", origin_place="Itest Village", reviewed_by=None,
+        reviewed_at=None, rejection_reason=None,
+    ) -> BusinessRegistration:
+        tag = uuid.uuid4().hex[:8]
+        row = BusinessRegistration(
+            registration_id=uuid.uuid4(), requested_plan_id=plan.plan_id, representative_name=name,
+            representative_email=email or f"applicant-{tag}@example.test",
+            representative_phone=phone, clan_name=clan_name or f"Ho Test {tag}", origin_place=origin_place,
+            status=status, tracking_code_hash=uuid.uuid4().hex + uuid.uuid4().hex,
+            reviewed_by=reviewed_by, reviewed_at=reviewed_at, rejection_reason=rejection_reason,
+            created_at=created_at or NOW, updated_at=created_at or NOW,
+        )
+        self.registrations.append(row)
+        return row
+
+    def add_history(self, registration, from_status, to_status, *, changed_by=None, reason=None, at=None):
+        row = RegistrationStatusHistory(
+            history_id=uuid.uuid4(), registration_id=registration.registration_id, from_status=from_status,
+            to_status=to_status, changed_by=changed_by, reason=reason, changed_at=at or NOW,
+        )
+        self.registration_history.append(row)
+        return row
+
+    def add_attachment(self, registration, file_name="doc.pdf"):
+        row = RegistrationAttachment(
+            attachment_id=uuid.uuid4(), registration_id=registration.registration_id, file_name=file_name,
+            storage_key="secret/storage/key/" + uuid.uuid4().hex, mime_type="application/pdf", uploaded_at=NOW,
+        )
+        self.registration_attachments.append(row)
+        return row
+
+    def _matches(self, r, status, q, created_from, created_to) -> bool:
+        if status is not None and r.status != status:
+            return False
+        if q:
+            needle = q.lower()  # a literal substring: %, _ and backslash are ordinary characters
+            haystack = (r.clan_name, r.representative_name, r.representative_email)
+            if not any(needle in value.lower() for value in haystack):
+                return False
+        if created_from is not None and r.created_at < created_from:
+            return False
+        if created_to is not None and r.created_at >= created_to:
+            return False
+        return True
+
+    async def list_registrations_page(self, *, status, q, created_from, created_to, limit, offset):
+        self.calls.append("list_registrations_page")
+        rows = [r for r in self.registrations if self._matches(r, status, q, created_from, created_to)]
+        rows.sort(key=lambda r: (r.created_at, str(r.registration_id)), reverse=True)
+        return [
+            SimpleNamespace(
+                registration_id=r.registration_id, clan_name=r.clan_name,
+                representative_name=r.representative_name, requested_plan_id=r.requested_plan_id,
+                requested_plan_code=self.plans[r.requested_plan_id].code, status=r.status,
+                created_at=r.created_at, reviewed_at=r.reviewed_at,
+            )
+            for r in rows[offset: offset + limit]
+        ]
+
+    async def count_registrations(self, *, status, q, created_from, created_to):
+        self.calls.append("count_registrations")
+        return sum(1 for r in self.registrations if self._matches(r, status, q, created_from, created_to))
+
+    async def get_registration_with_plan(self, registration_id):
+        self.calls.append("get_registration_with_plan")
+        row = next((r for r in self.registrations if r.registration_id == registration_id), None)
+        return None if row is None else (row, self.plans[row.requested_plan_id].code)
+
+    async def lock_registration(self, registration_id):
+        self.calls.append("lock_registration")
+        if self.lock_wait_error:
+            raise OperationalError("SELECT ... FOR NO KEY UPDATE", {}, _SqlStateError("55P03"))
+        return next((r for r in self.registrations if r.registration_id == registration_id), None)
+
+    async def apply_registration_review(self, registration, *, status, reviewed_by, rejection_reason, now):
+        self.calls.append("apply_registration_review")
+        registration.status = status
+        registration.reviewed_by = reviewed_by
+        registration.reviewed_at = now
+        registration.rejection_reason = rejection_reason
+        registration.updated_at = now
+
+    async def list_registration_status_history(self, registration_id):
+        self.calls.append("list_registration_status_history")
+        return sorted((h for h in self.registration_history if h.registration_id == registration_id),
+                      key=lambda h: h.changed_at)
+
+    async def list_registration_attachments(self, registration_id):
+        self.calls.append("list_registration_attachments")
+        return [a for a in self.registration_attachments if a.registration_id == registration_id]
+
+    async def get_clan_by_registration_id(self, registration_id):
+        self.calls.append("get_clan_by_registration_id")
+        return next((c for c in self.clans.values() if c.registration_id == registration_id), None)
+
+    # --- M???c E, step E5: create the Business (clan, profile, subscription) ---
+    clan_profiles: list[ClanProfile] = field(default_factory=list)
+    subscriptions: list[ClanSubscription] = field(default_factory=list)
+    # Constraint names to raise (as IntegrityError) from the next create_clan calls, before any
+    # real check: an unknown name reaches the use case as an unexpected IntegrityError.
+    create_clan_errors: list[str] = field(default_factory=list)
+    # The names of the unique indexes the database would enforce are still checked after those.
+    lock_wait_error: bool = False  # lock_registration times out (SQLSTATE 55P03)
+
+    async def get_clan_by_code(self, clan_code):
+        self.calls.append("get_clan_by_code")
+        return next((c for c in self.clans.values() if c.clan_code == clan_code), None)
+
+    async def create_clan(self, *, registration_id, clan_code, name, created_by, now):
+        self.calls.append("create_clan")
+        if self.create_clan_errors:
+            raise IntegrityError("INSERT clans", {}, _DbError(self.create_clan_errors.pop(0)))
+        if any(c.clan_code == clan_code for c in self.clans.values()):
+            raise IntegrityError("INSERT clans", {}, _DbError("clans_clan_code_key"))
+        if any(c.registration_id == registration_id for c in self.clans.values()):
+            raise IntegrityError("INSERT clans", {}, _DbError("clans_registration_id_key"))
+        clan = Clan(
+            clan_id=uuid.uuid4(), registration_id=registration_id, clan_code=clan_code, name=name,
+            status="PENDING", created_by=created_by, created_at=now, updated_at=now,
+        )
+        self.clans[clan.clan_id] = clan
+        return clan
+
+    async def create_clan_profile(self, *, clan_id, origin_place, now):
+        self.calls.append("create_clan_profile")
+        row = ClanProfile(clan_id=clan_id, origin_place=origin_place, updated_at=now)
+        self.clan_profiles.append(row)
+        return row
+
+    async def lock_subscriptions(self, clan_id):
+        self.calls.append("lock_subscriptions")
+        return sorted((s for s in self.subscriptions if s.clan_id == clan_id), key=lambda s: str(s.subscription_id))
+
+    async def list_subscriptions(self, clan_id):
+        self.calls.append("list_subscriptions")
+        return sorted((s for s in self.subscriptions if s.clan_id == clan_id), key=lambda s: s.starts_at, reverse=True)
+
+    async def activate_clan(self, clan, *, now):
+        self.calls.append("activate_clan")
+        clan.status, clan.activated_at, clan.updated_at = "ACTIVE", now, now
+
+    async def activate_subscription(self, subscription, *, starts_at, ends_at):
+        self.calls.append("activate_subscription")
+        assert ends_at > starts_at, "clan_subscriptions_check"  # the CHECK of the table
+        subscription.status, subscription.starts_at, subscription.ends_at = "ACTIVE", starts_at, ends_at
+
+    async def create_subscription(self, *, clan_id, plan_id, starts_at, ends_at, status, now):
+        self.calls.append("create_subscription")
+        row = ClanSubscription(
+            subscription_id=uuid.uuid4(), clan_id=clan_id, plan_id=plan_id, starts_at=starts_at,
+            ends_at=ends_at, status=status, auto_renew=False, created_at=now,
+        )
+        self.subscriptions.append(row)
+        return row
+
+    async def get_registration_by_id(self, registration_id):
+        self.calls.append("get_registration_by_id")
+        return next((r for r in self.registrations if r.registration_id == registration_id), None)
+
+    async def lock_clan(self, clan_id):
+        self.calls.append("lock_clan")
+        return self.clans.get(clan_id)
+
+    async def create_membership(self, *, clan_id, user_id, status, now):
+        self.calls.append("create_membership")
+        if any(m.clan_id == clan_id and m.user_id == user_id for m in self.memberships):
+            raise IntegrityError("INSERT clan_memberships", {}, _DbError("clan_memberships_clan_id_user_id_key"))
+        row = ClanMembership(
+            membership_id=uuid.uuid4(), clan_id=clan_id, user_id=user_id, status=status, joined_at=now
+        )
+        self.memberships.append(row)
+        return row
+
+    async def create_ownership(self, *, clan_id, user_id, now):
+        self.calls.append("create_ownership")
+        if any(o.clan_id == clan_id and o.ended_at is None for o in self.owners):
+            raise IntegrityError("INSERT clan_ownership_history", {}, _DbError("uq_active_clan_owner"))
+        row = ClanOwnershipHistory(
+            ownership_id=uuid.uuid4(), clan_id=clan_id, user_id=user_id, started_at=now
+        )
+        self.owners.append(row)
+        return row
+
+    def add_clan(self, status: str = "ACTIVE") -> Clan:
+        clan = Clan(clan_id=uuid.uuid4(), clan_code=uuid.uuid4().hex[:8], name="Clan", status=status,
+                    created_at=NOW - timedelta(days=5), updated_at=NOW - timedelta(days=5))
+        self.clans[clan.clan_id] = clan
+        return clan
+
+    def add_member(self, clan: Clan, user: User, status: str = "ACTIVE", revoked_at=None):
+        self.memberships.append(
+            ClanMembership(
+                membership_id=uuid.uuid4(), clan_id=clan.clan_id, user_id=user.user_id,
+                status=status, revoked_at=revoked_at,
+            )
+        )
+
+    def add_owner(self, clan: Clan, user: User, *, ended_at=None):
+        self.owners.append(
+            ClanOwnershipHistory(
+                ownership_id=uuid.uuid4(), clan_id=clan.clan_id, user_id=user.user_id,
+                started_at=NOW - timedelta(days=1), ended_at=ended_at,
+            )
+        )
+
+    def add_fa(self, clan: Clan, user: User, code: str, branch_id=None, revoked=False):
+        return self.add_fa_assignment(clan, user, [code], branch_id=branch_id, revoked=revoked)
+
+    def add_fa_assignment(
+        self, clan: Clan, user: User, codes: list[str], branch_id=None, revoked=False
+    ) -> FakeAssignment:
+        row = FakeAssignment(clan.clan_id, user.user_id, branch_id, set(codes), revoked)
+        self.assignments.append(row)
+        return row
+
+    async def get_clan_by_id(self, clan_id):
+        return self.clans.get(clan_id)
+
+    async def get_membership(self, clan_id, user_id):
+        return next(
+            (m for m in self.memberships if m.clan_id == clan_id and m.user_id == user_id), None
+        )
+
+    async def get_active_owner(self, clan_id):
+        return next(
+            (o for o in self.owners if o.clan_id == clan_id and o.ended_at is None), None
+        )
+
+    async def list_active_fa_grants(self, clan_id, user_id):
+        return [
+            (a.assignment_id, a.branch_id, code)
+            for a in self.assignments
+            if a.clan_id == clan_id and a.user_id == user_id and not a.revoked
+            for code in sorted(a.codes)
+        ]
+
+    async def list_fa_permission_codes(self, clan_id, user_id):
+        return sorted({code for _a, _b, code in await self.list_active_fa_grants(clan_id, user_id)})
+
+    # --- M???c F ---
+    async def list_clan_members(self, clan_id, *, membership_status, limit, offset):
+        self.calls.append(f"list_clan_members:{clan_id}")
+        rows = [
+            (m, self.users[m.user_id])
+            for m in self.memberships
+            if m.clan_id == clan_id and (membership_status is None or m.status == membership_status)
+        ]
+        rows.sort(key=lambda r: (r[1].display_name, str(r[1].user_id)))
+        return rows[offset : offset + limit]
+
+    async def count_clan_members(self, clan_id, *, membership_status):
+        return sum(
+            1 for m in self.memberships
+            if m.clan_id == clan_id and (membership_status is None or m.status == membership_status)
+        )
+
+    async def list_active_fa_user_ids(self, clan_id, user_ids):
+        return {
+            a.user_id for a in self.assignments
+            if a.clan_id == clan_id and not a.revoked and a.user_id in user_ids
+        }
+
+    async def lock_active_fa_assignments(self, clan_id, user_id):
+        self.calls.append("lock_fa")
+        return [
+            a.as_entity() for a in self.assignments
+            if a.clan_id == clan_id and a.user_id == user_id and not a.revoked
+        ]
+
+    def _assignment(self, assignment_id) -> FakeAssignment:
+        return next(a for a in self.assignments if a.assignment_id == assignment_id)
+
+    async def list_assignment_permission_codes(self, assignment_id):
+        return set(self._assignment(assignment_id).codes)
+
+    async def add_fa_permissions(self, assignment_id, codes, *, granted_by, now):
+        self.calls.append("add_fa_permissions")
+        self._assignment(assignment_id).codes.update(codes)
+
+    async def delete_fa_permissions(self, assignment_id, codes):
+        self.calls.append("delete_fa_permissions")
+        self._assignment(assignment_id).codes.difference_update(codes)
+
+    # --- M???c F2: Family Admin lifecycle ---
+    async def lock_membership(self, clan_id, user_id):
+        self.calls.append("lock_membership")
+        return await self.get_membership(clan_id, user_id)
+
+    async def create_fa_assignment(self, clan_id, user_id, *, assigned_by, now):
+        self.calls.append("create_fa_assignment")
+        row = FakeAssignment(clan_id, user_id, None, set(), False)
+        self.assignments.append(row)
+        return row.as_entity()
+
+    async def revoke_fa_assignments(self, clan_id, user_id, *, now):
+        self.calls.append("revoke_fa_assignments")
+        ids = []
+        for a in self.assignments:
+            if a.clan_id == clan_id and a.user_id == user_id and not a.revoked:
+                a.revoked = True
+                ids.append(a.assignment_id)
+        return sorted(ids)
+
+    async def delete_all_fa_permissions(self, clan_id, assignment_ids):
+        self.calls.append("delete_all_fa_permissions")
+        count = 0
+        for a in self.assignments:
+            if a.clan_id == clan_id and a.assignment_id in assignment_ids:
+                count += len(a.codes)
+                a.codes.clear()
+        return count
+
+    async def list_memberships_with_clans(self, user_id):
+        return [
+            (m, self.clans[m.clan_id])
+            for m in self.memberships
+            if m.user_id == user_id and m.revoked_at is None and m.status != "REVOKED"
+        ]
+
+
+@dataclass
+class FakeIdempotencyRepo:
+    """In-memory idempotency_keys with the unique key (actor, endpoint, key) and the same protocol
+    as IdempotencyRepository. `calls` can be the SAME list as the family fake, to see the order."""
+
+    calls: list[str] = field(default_factory=list)
+    rows: list[IdempotencyKey] = field(default_factory=list)
+    lock_timeout_seconds: int | None = None
+    wait_error: bool = False  # the INSERT waits for a lock and times out (SQLSTATE 55P03)
+    vanish_once: bool = False  # the conflicting row disappears between INSERT and SELECT
+
+    def _find(self, actor_id, endpoint, key):
+        return next(
+            (r for r in self.rows
+             if r.actor_id == actor_id and r.endpoint == endpoint and r.idempotency_key == key), None)
+
+    async def set_lock_timeout(self, seconds):
+        self.calls.append("idem.set_lock_timeout")
+        self.lock_timeout_seconds = seconds
+
+    async def insert_in_progress(self, *, actor_id, endpoint, idempotency_key, request_hash, created_at, expires_at):
+        self.calls.append("idem.insert")
+        if self.wait_error:
+            raise OperationalError("INSERT idempotency_keys", {}, _SqlStateError("55P03"))
+        if self._find(actor_id, endpoint, idempotency_key) is not None:
+            return None
+        row = IdempotencyKey(
+            idempotency_id=uuid.uuid4(), actor_id=actor_id, endpoint=endpoint,
+            idempotency_key=idempotency_key, request_hash=request_hash, status="IN_PROGRESS",
+            created_at=created_at, expires_at=expires_at,
+        )
+        self.rows.append(row)
+        return row
+
+    async def lock_existing(self, *, actor_id, endpoint, idempotency_key):
+        self.calls.append("idem.lock_existing")
+        row = self._find(actor_id, endpoint, idempotency_key)
+        if self.vanish_once and row is not None:
+            self.vanish_once = False
+            self.rows.remove(row)
+            return None
+        return row
+
+    async def lock_by_resource(self, *, resource_type, resource_id):
+        self.calls.append("idem.lock_by_resource")
+        return next((r for r in self.rows if r.resource_type == resource_type and r.resource_id == resource_id), None)
+
+    async def reset(self, row, *, request_hash, created_at, expires_at):
+        self.calls.append("idem.reset")
+        row.request_hash, row.status, row.created_at, row.expires_at = request_hash, "IN_PROGRESS", created_at, expires_at
+        row.resource_type = row.resource_id = row.response_status = row.response_body = None
+
+    async def complete(self, row, *, response_status, response_body, resource_type, resource_id):
+        self.calls.append("idem.complete")
+        row.status, row.response_status, row.response_body = "COMPLETED", response_status, response_body
+        row.resource_type, row.resource_id = resource_type, resource_id
+
+    async def delete(self, row):
+        self.calls.append("idem.delete")
+        self.rows.remove(row)
+
+    async def set_resource(self, row, *, resource_type, resource_id):
+        self.calls.append("idem.set_resource")
+        row.resource_type, row.resource_id = resource_type, resource_id
+
+    def rollback_uncommitted(self, committed: list) -> None:
+        """What a rollback does to the rows written since the last commit."""
+        self.rows[:] = committed
+
+
+class FakeTx(FakeDb):
+    """A unit of work that really rolls back what the E5 fakes wrote.
+
+    The harness calls begin() at the start of each request (as a new database transaction would
+    start); commit() makes the current state the new baseline; rollback() restores the baseline.
+    Covers the idempotency rows, the clans, profiles, subscriptions and audit rows.
+    """
+
+    def __init__(self, *, idem=None, family=None, users=None) -> None:
+        super().__init__(repo=users)
+        self.idem, self.family, self.users = idem, family, users
+        self._baseline = None
+        self.events: list[str] = []
+
+    def _capture(self):
+        import copy
+
+        return {
+            "idem": [copy.copy(r) for r in self.idem.rows] if self.idem is not None else None,
+            "clans": dict(self.family.clans) if self.family is not None else None,
+            "profiles": list(self.family.clan_profiles) if self.family is not None else None,
+            "subscriptions": list(self.family.subscriptions) if self.family is not None else None,
+            "audit": list(self.users.audit) if self.users is not None else None,
+        }
+
+    def begin(self) -> None:
+        self._baseline = self._capture()
+
+    async def commit(self) -> None:
+        self.events.append("commit")
+        await super().commit()
+        self._baseline = self._capture()
+
+    async def rollback(self) -> None:
+        self.events.append("rollback")
+        await super().rollback()
+        b = self._baseline
+        if b is None:
+            return
+        if self.idem is not None:
+            import copy
+
+            self.idem.rows[:] = [copy.copy(r) for r in b["idem"]]
+        if self.family is not None:
+            self.family.clans.clear()
+            self.family.clans.update(b["clans"])
+            self.family.clan_profiles[:] = b["profiles"]
+            self.family.subscriptions[:] = b["subscriptions"]
+        if self.users is not None:
+            self.users.audit[:] = b["audit"]
