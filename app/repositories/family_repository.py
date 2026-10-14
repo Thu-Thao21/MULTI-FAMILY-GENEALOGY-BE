@@ -1,18 +1,37 @@
+import uuid
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.postgres import Family, FamilyBranch
 from typing import List, Optional
 
+
+def _as_uuid(val: str | uuid.UUID | None) -> uuid.UUID | None:
+    if val is None:
+        return None
+    if isinstance(val, uuid.UUID):
+        return val
+    try:
+        return uuid.UUID(str(val))
+    except (ValueError, AttributeError):
+        return None
+
+
 class FamilyRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def get_family_by_id(self, family_id: str) -> Optional[Family]:
-        result = await self.db.execute(select(Family).where(Family.id == family_id))
+    async def get_family_by_id(self, family_id: str | uuid.UUID) -> Optional[Family]:
+        cid = _as_uuid(family_id)
+        if not cid:
+            return None
+        result = await self.db.execute(select(Family).where(Family.clan_id == cid))
         return result.scalar_one_or_none()
 
-    async def update_family(self, family_id: str, data: dict) -> Optional[Family]:
-        stmt = update(Family).where(Family.id == family_id).values(**data).returning(Family)
+    async def update_family(self, family_id: str | uuid.UUID, data: dict) -> Optional[Family]:
+        cid = _as_uuid(family_id)
+        if not cid:
+            return None
+        stmt = update(Family).where(Family.clan_id == cid).values(**data).returning(Family)
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 

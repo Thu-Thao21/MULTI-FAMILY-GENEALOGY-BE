@@ -58,6 +58,87 @@ async def create_session(
     )
 
 
+from datetime import datetime, timezone, timedelta
+from pydantic import BaseModel
+from sqlalchemy import select
+from app.core.config import settings
+from app.core.errors import AppError
+from app.core.tokens import generate_session_token, hash_session_token
+from app.models.user_access.entities import User
+from app.schemas.auth import SessionUser
+
+
+class DevSessionRequest(BaseModel):
+    email: str = "dev-sa@example.test"
+
+
+@router.post(
+    "/dev-session",
+    status_code=201,
+    response_model=SessionCreateResponse,
+)
+async def dev_session(
+    body: DevSessionRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    users: UserAccessRepository = Depends(get_user_access_repo),
+) -> SessionCreateResponse:
+    if not settings.DEBUG:
+        raise AppError(ErrorCode.FORBIDDEN)
+
+    target_email = body.email.strip().lower()
+    if target_email in ("admin@test.com", "admin", "dev-sa"):
+        target_email = "dev-sa@example.test"
+    elif target_email in ("member@test.com", "member", "dev-member-a"):
+        target_email = "dev-member-a@example.test"
+
+    stmt = select(User).where(User.email == target_email)
+    res = await db.execute(stmt)
+    user = res.scalar_one_or_none()
+    if not user:
+        stmt_fallback = select(User).where(User.email == "dev-sa@example.test")
+        user = (await db.execute(stmt_fallback)).scalar_one_or_none()
+    if not user:
+        raise AppError(ErrorCode.ACCOUNT_BLOCKED)
+
+    now = datetime.now(timezone.utc)
+    token = generate_session_token()
+    expires_at = now + timedelta(hours=settings.SESSION_TTL_HOURS)
+    client = ClientInfo.from_request(request)
+
+    await users.add_session(
+        user_id=user.user_id,
+        token_jti_hash=hash_session_token(token),
+        created_at=now,
+        expires_at=expires_at,
+        ip_address=client.ip_address,
+        user_agent=client.user_agent,
+    )
+    user.last_login_at = now
+    await users.add_login_history(
+        user_id=user.user_id,
+        identifier=user.email,
+        success=True,
+        failure_reason=None,
+        ip_address=client.ip_address,
+        user_agent=client.user_agent,
+        occurred_at=now,
+    )
+    await db.commit()
+
+    return SessionCreateResponse(
+        access_token=token,
+        expires_at=expires_at,
+        user=SessionUser(
+            user_id=user.user_id,
+            display_name=user.display_name,
+            email=user.email,
+            status=user.status,
+        ),
+        requires_password_change=False,
+    )
+
+
 # The three routes below are the ONLY ones using get_principal_allow_restricted.
 
 

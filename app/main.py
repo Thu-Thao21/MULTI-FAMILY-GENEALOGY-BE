@@ -25,7 +25,7 @@ from app.core.request_id import RequestIdMiddleware
 from app.core.startup_checks import ConfigurationError, validate_runtime_config
 from app.db.postgres import check_db, close_db, init_db
 from app.dependencies.auth import API_PREFIX
-from app.routers import health
+from app.controllers import health
 
 logger = logging.getLogger("mfg")
 
@@ -107,6 +107,15 @@ app.include_router(public_router, prefix=API_PREFIX)
 app.include_router(registration_admin_router, prefix=API_PREFIX)
 app.include_router(owner_admin_router, prefix=API_PREFIX)
 app.include_router(clan_admin_router, prefix=API_PREFIX)
+
+# Also mount at root for seamless compatibility with FE calls
+app.include_router(auth_router)
+app.include_router(user_admin_router)
+app.include_router(public_router)
+app.include_router(registration_admin_router)
+app.include_router(owner_admin_router)
+app.include_router(clan_admin_router)
+
 app.include_router(genealogy_router)
 
 # To run: uvicorn app.main:app --reload --port 8001

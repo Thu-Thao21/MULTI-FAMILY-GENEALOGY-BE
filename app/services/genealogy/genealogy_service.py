@@ -21,7 +21,7 @@ from app.schemas.genealogy import (
     TreeDataResponse,
     TreeNode,
 )
-from app.services.access_service import AccessService
+from app.services.auth_access.access_service import AccessService
 
 
 PARENT_RELATIONSHIP_TYPES = {

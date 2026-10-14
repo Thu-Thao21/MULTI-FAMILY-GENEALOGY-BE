@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     # Firebase project whose ID tokens are accepted (token audience). No default on
     # purpose: when empty, POST /auth/session fails closed with 503.
     FIREBASE_PROJECT_ID: str = ""
+    FIREBASE_API_KEY: str = "AIzaSyBT-yyl7zQo_d8rZandALAWTdMvCYetLnQ"
     # Service account JSON path, only for the Admin API (password change, token
     # revocation check). The file content is never read or logged by app code.
     FIREBASE_SERVICE_ACCOUNT_PATH: str = ""

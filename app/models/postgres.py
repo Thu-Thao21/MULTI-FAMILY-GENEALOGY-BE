@@ -42,6 +42,7 @@ AccountRole = UserRole
 AccountSession = UserSession
 Family = Clan
 FamilyMembership = ClanMembership
+Member = ClanMembership
 
 __all__ = [
     "Account",
