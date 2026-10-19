@@ -79,6 +79,7 @@ class TreeNode(BaseModel):
     generation: int
     branch_id: Optional[str] = Field(None, alias="branchId")
     avatar_url: Optional[str] = Field(None, alias="avatarUrl")
+    is_alive: bool = Field(True, alias="isLiving")
     status: str
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
@@ -89,10 +90,57 @@ class TreeDataResponse(BaseModel):
     edges: List[RelationshipResponse]
 
 
+class FocusViewNode(BaseModel):
+    id: str
+    full_name: str = Field(alias="fullName")
+    gender: str
+    generation: int
+    branch_id: Optional[str] = Field(None, alias="branchId")
+    avatar_url: Optional[str] = Field(None, alias="avatarUrl")
+    depth: int
+    is_ego: bool = Field(False, alias="isEgo")
+    status: str
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class FocusViewResponse(BaseModel):
+    ego: PersonResponse
+    nodes: List[FocusViewNode]
+    edges: List[RelationshipResponse]
+    max_depth: int = Field(alias="maxDepth")
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
 class RelationshipPath(BaseModel):
     from_person_id: str = Field(alias="fromPersonId")
     to_person_id: str = Field(alias="toPersonId")
     path: List[RelationshipResponse]
+
+
+class RelationshipCalculationResponse(BaseModel):
+    found: bool
+    from_person: Optional[PersonResponse] = Field(None, alias="fromPerson")
+    to_person: Optional[PersonResponse] = Field(None, alias="toPerson")
+    path: List[PersonResponse] = []
+    edges: List[RelationshipResponse] = []
+    kinship_name: str = Field(alias="kinshipName")
+    address_title: str = Field(alias="addressTitle")
+    generation_diff: int = Field(0, alias="generationDiff")
+    description: str = ""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class PublicClanSummary(BaseModel):
+    id: str
+    name: str
+    code: Optional[str] = None
+    description: Optional[str] = None
+    status: str = "ACTIVE"
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 __all__ = [
@@ -104,5 +152,9 @@ __all__ = [
     "RelationshipResponse",
     "TreeNode",
     "TreeDataResponse",
+    "FocusViewNode",
+    "FocusViewResponse",
     "RelationshipPath",
+    "RelationshipCalculationResponse",
+    "PublicClanSummary",
 ]

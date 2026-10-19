@@ -53,3 +53,16 @@ class FamilyRepository:
         stmt = update(FamilyBranch).where(FamilyBranch.id == branch_id).values(**data).returning(FamilyBranch)
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def search_public_families(
+        self,
+        search: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Family]:
+        stmt = select(Family).where(Family.status == "ACTIVE")
+        if search:
+            stmt = stmt.where(Family.name.ilike(f"%{search}%"))
+        stmt = stmt.order_by(Family.name).limit(limit).offset(offset)
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())

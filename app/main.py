@@ -18,6 +18,7 @@ from app.controllers.family_management.registration_admin_router import (
     router as registration_admin_router,
 )
 from app.controllers.genealogy import router as genealogy_router
+from app.controllers.inter_family.router import router as inter_family_router
 from app.core.config import settings
 from app.core.errors import UnhandledErrorMiddleware, register_exception_handlers
 from app.core.rate_limit import build_rate_limiters
@@ -115,7 +116,13 @@ app.include_router(public_router)
 app.include_router(registration_admin_router)
 app.include_router(owner_admin_router)
 app.include_router(clan_admin_router)
+app.include_router(inter_family_router, prefix=API_PREFIX)
+app.include_router(inter_family_router)
+
+from app.controllers.member_api_router import router as member_api_router
 
 app.include_router(genealogy_router)
+app.include_router(member_api_router)
+app.include_router(member_api_router, prefix=API_PREFIX)
 
 # To run: uvicorn app.main:app --reload --port 8001

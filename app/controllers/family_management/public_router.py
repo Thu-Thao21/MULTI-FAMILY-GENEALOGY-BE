@@ -84,3 +84,26 @@ async def track_registration(
 ) -> BusinessRegistrationTrackResponse:
     response.headers["Cache-Control"] = NO_STORE
     return await use_cases.track_registration(family=family, body=body)
+
+
+@router.get("/public/families")
+@router.get("/families")
+async def search_public_families(
+    search: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db=Depends(get_db),
+):
+    from app.repositories.family_repository import FamilyRepository as RealFamilyRepo
+    repo = RealFamilyRepo(db)
+    families = await repo.search_public_families(search=search, limit=limit, offset=offset)
+    return [
+        {
+            "id": str(f.clan_id),
+            "name": f.name,
+            "clan_code": f.clan_code,
+            "status": f.status,
+            "activated_at": f.activated_at,
+        }
+        for f in families
+    ]

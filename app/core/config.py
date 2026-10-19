@@ -27,6 +27,8 @@ def _normalize_database_url(url: str) -> str:
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=("BE/.env", ".env"), env_file_encoding="utf-8", extra="ignore")
+
     DATABASE_URL: str
     # When true, unhandled-error logs include the traceback. Keep false outside local dev.
     DEBUG: bool = False
