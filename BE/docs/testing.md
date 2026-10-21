@@ -105,7 +105,17 @@ Kết quả mong đợi:
 
 ## 5. Số liệu chạy theo từng mốc
 
-Bắt đầu bằng lượt chạy integration cả bộ ngày 09/10/2026 và các bước của Mốc E (mới nhất ở trên cùng: E8), rồi tới Mốc F2.
+Mới nhất ở trên cùng: Mốc H1 (21/10/2026), rồi lượt chạy integration cả bộ ngày 09/10/2026 và các bước của Mốc E (E8 trước), rồi tới Mốc F2.
+
+### Mốc H1: header bảo mật và `no-store` cho router xác thực (21/10/2026)
+
+Chạy từ `BE`, Python 3.13.7, `.venv` của dự án, nhánh `feature/sprint1-auth-business`. Không lệnh nào gọi Firebase thật.
+
+| Lệnh | Kết quả |
+| --- | --- |
+| `pytest -q` | **1476 passed**, 456 deselected (nhóm `integration`), 0 failed, 0 skipped, 5 warnings (`on_event` đã biết), ~91 giây. Gồm 14 test mới trong `test_security_headers.py`; `test_cors.py` đổi test thứ tự middleware thành `test_middleware_order_is_request_id_then_security_headers_then_cors_then_unhandled_error` |
+| `ALLOW_DB_TESTS=1 pytest -m "integration and not concurrency" -q tests/integration/test_auth_flow_db.py` | **8 passed**, 0 failed, 0 skipped, ~57 giây (router `/auth` thật, nay dùng `NoStoreRoute`, trên DB dev thật) |
+| Cả bộ integration (456 test) | **Chưa chạy lại** ở Mốc H1: mất 4 đến 5 giờ trên Neon (xem lượt 09/10/2026 bên dưới). Thay đổi H1 chỉ chạm tầng HTTP (middleware, route class), không chạm truy vấn hay schema; file integration chạy router xác thực thật đã chạy ở dòng trên |
 
 ### Chạy integration cả bộ (09/10/2026)
 
@@ -344,6 +354,7 @@ Nhóm test theo nội dung:
 | Ràng buộc toàn vẹn của migration 0002 (KI-03, KI-04, KI-08, email; cần migration đã áp dụng) | `integration/test_db_constraints.py`, `integration/test_user_roles_unique_index.py` |
 | Hợp đồng OpenAPI so với `api_contract.md` | `test_openapi_contract.py` |
 | CORS (mọi loại response, kể cả 500) | `test_cors.py` |
+| Header bảo mật, `no-store` cho router xác thực (Mốc H1, L-26) | `test_security_headers.py` |
 | Cấu hình khởi động, lỗi `DATABASE_URL` không lộ chuỗi | `test_startup_checks.py`, `test_config_secrets.py` |
 | Kiểm tra bảo mật cơ khí (xem `security_review.md`) | `test_security_checks.py`, `test_no_insecure_auth.py` |
 

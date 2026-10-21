@@ -4,11 +4,11 @@ Trạng thái: **đề xuất**. Schema Pydantic đã có trong `app/schemas/`. 
 
 ## Trạng thái cài đặt
 
-Cập nhật 06/10/2026 (Mốc G). Chỉ ghi chú trạng thái; nội dung hợp đồng ở các mục sau không đổi. `tests/test_openapi_contract.py` khóa danh sách "đã cài" và đối chiếu từng endpoint với tài liệu này.
+Cập nhật 06/10/2026 (Mốc G); ghi chú Mốc H1 thêm 21/10/2026. Chỉ ghi chú trạng thái; nội dung hợp đồng ở các mục sau không đổi. `tests/test_openapi_contract.py` khóa danh sách "đã cài" và đối chiếu từng endpoint với tài liệu này.
 
 | Endpoint | Trạng thái | Ghi chú |
 | --- | --- | --- |
-| `POST /auth/session` | Đã cài (Mốc D) | Mã `429` trong hợp đồng chưa cài (chưa có rate limit, KI-06) |
+| `POST /auth/session` | Đã cài (Mốc D) | Mã `429` trong hợp đồng chưa cài (chưa có rate limit, KI-06). Mốc H1 (L-26): mọi response của router `/auth` (`session`, `me`, `logout`, `change-password`), thành công hay lỗi, có `Cache-Control: no-store` và `Pragma: no-cache` |
 | `GET /auth/me` | Đã cài (Mốc D) | `permissions[]` tạm thời, chờ lead (mục 6, quyết định 16) |
 | `POST /auth/logout` | Đã cài (Mốc D) | |
 | `POST /auth/change-password` | Đã cài (Mốc D) | Đổi xong phải đăng nhập lại |
@@ -34,6 +34,7 @@ OpenAPI do FastAPI sinh ra (`/docs`, `/openapi.json`) khai báo mọi mã lỗi 
 | Prefix | `/api/v1` cho mọi API dưới đây |
 | Xác thực | `Authorization: Bearer <access_token>` lấy từ `POST /auth/session`. API "Guest" không cần header này |
 | Request ID | Gửi `X-Request-ID` (8–128 ký tự `A-Z a-z 0-9 . _ -`) nếu có; nếu thiếu hoặc không hợp lệ, server tự sinh UUID. Mọi response đều có header `X-Request-ID` |
+| Header bảo mật | (Mốc H1) Mọi response, kể cả lỗi, `404`, envelope `500` và preflight CORS, có `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`; header handler đã đặt thì giữ nguyên. Chưa có `Strict-Transport-Security` (chưa chạy sau HTTPS). Mọi response của các API xác thực (mục 3), thành công hay lỗi, thêm `Cache-Control: no-store` và `Pragma: no-cache` |
 | Idempotency | API có ghi "Idempotency-Key" bắt buộc gửi header `Idempotency-Key`: **8 đến 128 ký tự ASCII in được, không có khoảng trắng** (khuyến nghị UUID); thiếu hoặc sai độ dài hay ký tự thì `422` (giá trị không được in lại). Phạm vi của key là (người gọi, endpoint), sống **7 ngày**. Cùng key + cùng yêu cầu (đường dẫn, kể cả mã trong đường dẫn, và body đã chuẩn hóa; body vắng, `{}` và trường `null` là một) thì phát lại **đúng phản hồi thành công đã lưu**, kèm header `Idempotency-Replayed: true`; cùng key + yêu cầu khác trả `409 IDEMPOTENCY_KEY_CONFLICT`. **Chỉ phản hồi thành công được lưu**: lỗi không được lưu, nên gửi lại với cùng key sẽ kiểm tra điều kiện lại từ đầu. Hai request cùng key cùng lúc: request sau chờ request trước xong rồi nhận phát lại. Key và hàng làm việc nằm trong cùng một giao dịch, nên request chết giữa chừng không để lại key kẹt. Phản hồi đã lưu không bao giờ chứa bí mật |
 | ID | UUID dạng chuỗi |
 | Thời gian | ISO 8601 UTC có hậu tố `Z`, ví dụ `2026-10-05T08:00:00Z`. Input phải có múi giờ; datetime không múi giờ bị `422` |
@@ -91,7 +92,7 @@ Schema nằm trong `app/schemas/auth.py`.
 ### POST /auth/session
 - **Quyền:** Guest (đổi Firebase ID token lấy phiên ứng dụng)
 - **Body:** `SessionCreateRequest` `{id_token}`
-- **Thành công:** `201` `SessionCreateResponse` `{access_token, token_type: "Bearer", expires_at, user: {user_id, display_name, email, status}, requires_password_change}`. `access_token` chỉ trả một lần
+- **Thành công:** `201` `SessionCreateResponse` `{access_token, token_type: "Bearer", expires_at, user: {user_id, display_name, email, status}, requires_password_change}`. `access_token` chỉ trả một lần, kèm `Cache-Control: no-store` và `Pragma: no-cache` (Mốc H1, L-26; response lỗi cũng vậy)
 - **Lỗi:** `401 INVALID_ID_TOKEN`; `403 ACCOUNT_BLOCKED`, `403 TEMPORARY_PASSWORD_EXPIRED`; `422`; `429` (chưa cài, KI-06); `503 PROVIDER_UNAVAILABLE`
 - **Mốc D:** `401 INVALID_ID_TOKEN` dùng chung cho token sai/hết hạn/thu hồi, UID chưa có trong `users`, và ID token có `auth_time` trước lần đổi mật khẩu gần nhất. Cùng thông điệp, không lộ UID có tồn tại hay không. Không bao giờ tự tạo user, không nối tài khoản theo email. `expires_at` = lúc tạo + `SESSION_TTL_HOURS` (8 giờ).
 

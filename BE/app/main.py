@@ -21,6 +21,7 @@ from app.core.config import settings
 from app.core.errors import UnhandledErrorMiddleware, register_exception_handlers
 from app.core.rate_limit import build_rate_limiters
 from app.core.request_id import RequestIdMiddleware
+from app.core.security_headers import SecurityHeadersMiddleware
 from app.core.startup_checks import ConfigurationError, validate_runtime_config
 from app.db.postgres import check_db, close_db, init_db
 from app.dependencies.auth import API_PREFIX
@@ -34,10 +35,16 @@ def create_app() -> FastAPI:
     application = FastAPI(title="Multi-family Genealogy API")
 
     # Middleware order: the LAST one added is the OUTERMOST. From outside in:
-    #   RequestIdMiddleware -> CORSMiddleware -> UnhandledErrorMiddleware -> handlers/routes
+    #   RequestIdMiddleware -> SecurityHeadersMiddleware -> CORSMiddleware
+    #     -> UnhandledErrorMiddleware -> handlers/routes
     # UnhandledErrorMiddleware must sit inside CORS so a 500 envelope still gets the
     # Access-Control-* headers; RequestIdMiddleware outermost so every response, preflight
     # and error included, carries a request_id.
+    # SecurityHeadersMiddleware (Mốc H1) keeps that order and goes just outside CORS: CORS
+    # answers a preflight itself without calling inner layers, and the 500 envelope is built
+    # in UnhandledErrorMiddleware, so only a layer outside both sees those responses. It stays
+    # inside RequestIdMiddleware (still the outermost); RequestId never produces a response of
+    # its own, so nothing escapes the security headers there.
     application.add_middleware(UnhandledErrorMiddleware)
     application.add_middleware(
         CORSMiddleware,
@@ -48,6 +55,7 @@ def create_app() -> FastAPI:
         # Without this the browser hides these headers from frontend JavaScript.
         expose_headers=["X-Request-ID", "Retry-After", "Idempotency-Replayed"],
     )
+    application.add_middleware(SecurityHeadersMiddleware)
     application.add_middleware(RequestIdMiddleware)
     register_exception_handlers(application)
     # In-memory, per process (docs/known_issues.md KI-17). Tests replace it to use a fake clock.

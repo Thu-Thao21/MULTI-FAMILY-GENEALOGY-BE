@@ -226,10 +226,16 @@ def test_real_app_error_responses_have_cors(real):
     assert_cors_ok(r, origin)
 
 
-def test_middleware_order_is_request_id_then_cors_then_unhandled_error():
-    """Pins the order that makes the 500 envelope pass through CORS (outermost first)."""
+def test_middleware_order_is_request_id_then_security_headers_then_cors_then_unhandled_error():
+    """Pins the order that makes the 500 envelope pass through CORS (outermost first), and the
+    preflight and the 500 envelope pass through the security headers (Mốc H1)."""
     names = [m.cls.__name__ for m in real_app.user_middleware]
-    assert names == ["RequestIdMiddleware", "CORSMiddleware", "UnhandledErrorMiddleware"]
+    assert names == [
+        "RequestIdMiddleware",
+        "SecurityHeadersMiddleware",
+        "CORSMiddleware",
+        "UnhandledErrorMiddleware",
+    ]
 
 
 def test_response_already_started_is_not_replaced():

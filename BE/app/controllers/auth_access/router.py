@@ -1,4 +1,7 @@
-"""Auth routes (api_contract.md section 3). Mounted under /api/v1."""
+"""Auth routes (api_contract.md section 3). Mounted under /api/v1.
+
+Every response of this router, success or error, is Cache-Control: no-store and
+Pragma: no-cache (NoStoreRoute, Mốc H1 / L-26): POST /auth/session returns the access token."""
 
 from __future__ import annotations
 
@@ -13,6 +16,7 @@ from app.core.openapi_responses import (
     BASE,
     error_responses,
 )
+from app.core.security_headers import NoStoreRoute
 from app.db.postgres import get_db
 from app.dependencies.auth import Principal, get_principal_allow_restricted, get_user_access_repo
 from app.dependencies.permissions import get_family_repo
@@ -26,7 +30,7 @@ from app.schemas.auth import (
     SessionCreateResponse,
 )
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter(prefix="/auth", tags=["auth"], route_class=NoStoreRoute)
 
 
 @router.post(

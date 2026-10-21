@@ -94,7 +94,7 @@ Ngày: 06/10/2026. Phạm vi: các endpoint đã cài (xác thực, quản trị
 - **Danh sách mã không được ủy quyền chỉ có `ADMIN_MANAGE`** (KI-09); các mã nhạy cảm khác vẫn ủy quyền được.
 - **IP sau reverse proxy** (KI-11).
 - **`allow_methods=["*"]` và `allow_headers=["*"]`** trong CORS: rộng hơn mức cần thiết; an toàn hơn khi giới hạn danh sách header/phương thức khi FE đã ổn định. Chưa thu hẹp để tránh làm gãy FE.
-- **Không đặt security header** (HSTS, `X-Content-Type-Options`...) trong ứng dụng; thường do reverse proxy đảm nhiệm. Chưa kiểm.
+- **Security header:** từ Mốc H1 (mục 15) ứng dụng tự đặt `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, và `Cache-Control: no-store` + `Pragma: no-cache` cho router xác thực. **Chưa có HSTS** (chưa chạy sau HTTPS); lỗi trong các middleware ngoài cùng không có security header (mục 15).
 - **TLS** (HTTPS) thuộc hạ tầng triển khai, chưa kiểm.
 - **Container chưa được chạy** và **chưa quét CVE của image** (KI-14).
 - **Kiểm tĩnh việc ghi log (3.3)** chỉ thấy các lời gọi `logger.<mức>(...)` bằng tên biến; không chứng minh được mọi đường dữ liệu động.
@@ -277,3 +277,31 @@ Hai endpoint của System Admin: `POST /admin/clans/{id}/activate` (clan `PENDIN
 - **Chưa có danh sách clan** (KI-31).
 - **Kích hoạt không kiểm thanh toán** (D03; Sprint 6): kích hoạt là xác nhận thủ công của SA, và đồng hồ gói chạy ngay lúc kích hoạt dù Owner chưa đăng nhập.
 - **Owner, thành viên và vai trò được đọc không khóa** trong lúc kích hoạt: nếu Owner bị khóa đúng lúc, kết quả vẫn nhất quán (clan `ACTIVE`, Owner bị khóa thì không dùng được).
+
+## 15. Mốc H1: header bảo mật của response và `no-store` cho router xác thực (L-26)
+
+Ngày: 21/10/2026. Nguồn: phát hiện L-26 của lượt E2E (KI-38): `POST /auth/session` trả `access_token` mà response không có `Cache-Control: no-store`, nên trình duyệt hoặc proxy trung gian có thể lưu token. Cùng mốc thêm ba header bảo mật cơ bản cho mọi response (trước đây mục 8 ghi "không đặt security header").
+
+**Phạm vi:**
+
+- `app/core/security_headers.py`, `NoStoreRoute`: route class của router `/auth` (`app/controllers/auth_access/router.py`, gắn dưới `/api/v1`). Mọi response của router, thành công hay lỗi (`AppError`, `HTTPException`, `422`, `500`), có `Cache-Control: no-store` (ghi đè giá trị handler đặt) và `Pragma: no-cache`. Lỗi chưa xử lý được bọc ngay trong route bằng cùng `UnhandledErrorMiddleware`, nên envelope `500` giống hệt bản của app và vẫn có hai header này.
+- `SecurityHeadersMiddleware` (ASGI thuần): `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer` trên **mọi** response HTTP; header handler đã đặt thì **giữ nguyên**, không ghi đè. **Không có `Strict-Transport-Security`**: dịch vụ chưa chạy sau HTTPS, HSTS đặt sai có thể khóa trình duyệt vào HTTPS khi hạ tầng chưa sẵn sàng.
+- Router khác giữ nguyên: các endpoint `family_management` vẫn tự đặt `Cache-Control: no-store` như trước, không thêm `Pragma`; endpoint công khai (`GET /service-plans`) không bị ép `no-store`.
+
+**Quyết định vị trí middleware.** Thứ tự từ ngoài vào: `RequestIdMiddleware` -> `SecurityHeadersMiddleware` -> `CORSMiddleware` -> `UnhandledErrorMiddleware` -> route (ghi chú trong `app/main.py`, khóa bởi `test_cors.py::test_middleware_order_is_request_id_then_security_headers_then_cors_then_unhandled_error`). Lý do: `CORSMiddleware` tự trả preflight mà không gọi lớp trong, và envelope `500` được dựng trong `UnhandledErrorMiddleware`, nên chỉ một lớp nằm **ngoài cả hai** mới thấy các response đó. `RequestIdMiddleware` vẫn ngoài cùng (giữ quyết định của Mốc G, KI-12) và không tự sinh response nào, nên không response bình thường nào lọt qua mà thiếu header bảo mật.
+
+| # | Kiểm tra | Kết quả | Cách kiểm chứng |
+| --- | --- | --- | --- |
+| 15.1 | `201` của `POST /auth/session` (có `access_token`) là `no-store` + `no-cache` và có header bảo mật | Đạt | **Test** `test_security_headers.py::test_session_201_with_the_access_token_is_no_store`; DB thật `integration/test_auth_flow_db.py` (router thật, 8 passed ngày 21/10/2026) |
+| 15.2 | Lỗi của router xác thực (`401`, `422`) là `no-store`; `GET /auth/me`, `POST /auth/logout`, `POST /auth/change-password` cũng vậy cả khi thành công lẫn khi lỗi | Đạt | **Test** `::test_session_401_is_no_store`, `::test_session_422_validation_error_is_no_store`, `::test_me_is_no_store_on_200_and_on_401`, `::test_logout_is_no_store_on_204_and_on_401`, `::test_change_password_error_is_no_store` |
+| 15.3 | Lỗi chưa xử lý trong route xác thực: envelope `500` không lộ thông điệp lỗi, vẫn `no-store`, có header bảo mật, CORS và `X-Request-ID` khớp `request_id` | Đạt | **Test** `::test_an_unhandled_error_in_an_auth_route_is_a_500_still_no_store_and_with_cors` |
+| 15.4 | Header bảo mật có trên `200`, `404`, envelope `500` (cùng CORS) và preflight CORS; không có HSTS | Đạt | **Test** `::test_health_has_the_security_headers_and_no_hsts`, `::test_service_plans_have_the_security_headers`, `::test_a_404_has_the_security_headers`, `::test_a_500_envelope_has_the_security_headers_and_the_cors_headers`, `::test_a_cors_preflight_has_the_security_headers` |
+| 15.5 | Header handler đã đặt không bị ghi đè hay nhân đôi | Đạt | **Test** `::test_a_header_set_by_the_handler_is_not_replaced` |
+| 15.6 | `no-store` của `family_management` không đổi (một giá trị, không thêm `Pragma`) | Đạt | **Test** `::test_family_management_no_store_is_unchanged` |
+
+**Giới hạn còn lại (không phải kết luận "đạt"):**
+
+- **Lỗi trong các middleware ngoài cùng không có security header.** Nếu chính `RequestIdMiddleware` hoặc `SecurityHeadersMiddleware` ném lỗi, response `500` do `ServerErrorMiddleware` của Starlette (lớp ngoài cùng, ngoài mọi middleware của ứng dụng) dựng ra sẽ không có `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` (và cũng không có CORS, như đã biết từ KI-12). Hai middleware này nhỏ và không chạm dữ liệu người dùng, nên rủi ro thấp; chưa có test cho trường hợp này.
+- **Chưa có HSTS**; đặt khi triển khai sau HTTPS (ở ứng dụng hoặc reverse proxy). TLS vẫn chưa kiểm (mục 8).
+- **Đường dẫn `/api/v1/auth/...` không khớp route nào** (ví dụ gõ sai) trả `404` có header bảo mật nhưng **không** ép `no-store`: `NoStoreRoute` chỉ áp dụng cho route có thật. Response đó không chứa token.
+- Chưa có Content-Security-Policy: API chỉ trả JSON; CSP thuộc phía FE (nơi phục vụ HTML).
