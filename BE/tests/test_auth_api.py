@@ -17,7 +17,14 @@ from app.core.request_id import RequestIdMiddleware
 from app.db.postgres import get_db
 from app.dependencies.auth import get_user_access_repo
 from app.dependencies.permissions import get_family_repo, owner_actions, system_admin_actions
-from tests.fakes import FakeDb, FakeFamilyRepo, FakeIdentityProvider, FakeUserAccessRepo, make_user
+from tests.fakes import (
+    FakeDb,
+    FakeFamilyRepo,
+    FakeIdentityProvider,
+    FakeUserAccessRepo,
+    disabled_rate_limiters,
+    make_user,
+)
 
 
 def utcnow() -> datetime:
@@ -34,6 +41,7 @@ class World:
         app.add_middleware(RequestIdMiddleware)
         register_exception_handlers(app)
         app.include_router(router, prefix="/api/v1")
+        app.state.rate_limiters = disabled_rate_limiters()  # the limiter: test_session_rate_limit.py
         app.dependency_overrides[get_db] = lambda: self.db
         app.dependency_overrides[get_user_access_repo] = lambda: self.repo
         app.dependency_overrides[get_family_repo] = lambda: self.family

@@ -36,8 +36,8 @@ V422 = {"VALIDATION_ERROR"}
 EXPECTED: dict[tuple[str, str], dict] = {
     ("post", "/auth/session"): dict(
         success=201, request="SessionCreateRequest", response="SessionCreateResponse", params=set(),
-        errors={401: {"INVALID_ID_TOKEN"}, 403: AUTHED_403,
-                422: V422, 500: BOOM, 503: DB | {"PROVIDER_UNAVAILABLE"}},
+        errors={401: {"INVALID_ID_TOKEN"}, 403: AUTHED_403, 422: V422,
+                429: {"RATE_LIMITED"}, 500: BOOM, 503: DB | {"PROVIDER_UNAVAILABLE"}},
     ),
     ("get", "/auth/me"): dict(
         success=200, request=None, response="MeResponse", params=set(),
@@ -176,7 +176,7 @@ EXPECTED: dict[tuple[str, str], dict] = {
 
 # Status/code pairs the contract lists that the code does NOT implement yet (known issues).
 CONTRACT_NOT_IMPLEMENTED: dict[tuple[str, str], set[str]] = {
-    ("post", "/auth/session"): {"429"},  # KI-06: no rate limiter yet
+    # Empty since Mốc H2: the 429 of POST /auth/session (KI-06) is implemented.
 }
 
 OUTSIDE_CONTRACT = {"/api/health", "/api/health/ready"}

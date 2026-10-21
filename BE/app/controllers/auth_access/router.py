@@ -1,7 +1,8 @@
 """Auth routes (api_contract.md section 3). Mounted under /api/v1.
 
 Every response of this router, success or error, is Cache-Control: no-store and
-Pragma: no-cache (NoStoreRoute, Mốc H1 / L-26): POST /auth/session returns the access token."""
+Pragma: no-cache (NoStoreRoute, Mốc H1 / L-26): POST /auth/session returns the access token.
+POST /auth/session is rate limited per IP (limiter "session", Mốc H2 / KI-06)."""
 
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from app.core.openapi_responses import (
     BASE,
     error_responses,
 )
+from app.core.rate_limit import rate_limited
 from app.core.security_headers import NoStoreRoute
 from app.db.postgres import get_db
 from app.dependencies.auth import Principal, get_principal_allow_restricted, get_user_access_repo
@@ -37,11 +39,14 @@ router = APIRouter(prefix="/auth", tags=["auth"], route_class=NoStoreRoute)
     "/session",
     status_code=201,
     response_model=SessionCreateResponse,
+    # Route dependencies run before the endpoint, so a refused call never reaches Firebase.
+    dependencies=[Depends(rate_limited("session"))],
     responses=error_responses(
         ErrorCode.INVALID_ID_TOKEN,
         ErrorCode.ACCOUNT_BLOCKED,
         ErrorCode.TEMPORARY_PASSWORD_EXPIRED,
         ErrorCode.VALIDATION_ERROR,
+        ErrorCode.RATE_LIMITED,
         ErrorCode.PROVIDER_UNAVAILABLE,
         *BASE,
     ),

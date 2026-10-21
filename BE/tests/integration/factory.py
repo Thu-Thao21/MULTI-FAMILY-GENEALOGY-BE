@@ -429,6 +429,7 @@ def build_full_app(session, *, rate_limiters=None) -> FastAPI:
         enabled=False,
         registration=SlidingWindowLimiter(5, 3600),
         track=SlidingWindowLimiter(20, 600),
+        session=SlidingWindowLimiter(20, 600),
     )
 
     async def db_override():

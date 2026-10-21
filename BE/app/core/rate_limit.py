@@ -1,4 +1,12 @@
-"""In-memory sliding-window rate limiter for the public endpoints (Mốc E, step E3).
+"""In-memory sliding-window rate limiter for the public endpoints (Mốc E step E3, Mốc H2).
+
+Three limiters, each per caller address (settings RATE_LIMIT_<NAME>_MAX / _WINDOW_SECONDS):
+  * "registration": POST /business-registrations (default 5 per hour);
+  * "track": POST /business-registrations/track (default 20 per 10 minutes);
+  * "session": POST /auth/session, the login (default 20 per 10 minutes; KI-06). It runs before
+    the Firebase ID token is verified, so refused calls never reach Firebase.
+They count separately: using up one never affects the others. An unknown name is an error
+(ValueError), never "no limit".
 
 Exact sliding log: every key keeps the times of its allowed calls inside the window. A call is
 refused when the window already holds `limit` calls; the refusal is not recorded, so waiting
@@ -18,9 +26,11 @@ Memory is bounded:
 
 Safe for threads (a lock) and for the event loop (check() never awaits).
 
-LIMITS (docs/known_issues.md KI-17): the counters live in ONE process. N workers allow N times
-the limit, a restart resets everything, and behind a reverse proxy without TRUST_PROXY_HEADERS
-all clients share one address. It slows down simple spam; it is not a defence against a
+LIMITS (docs/known_issues.md KI-17), for all three limiters: the counters live in ONE process.
+N workers allow N times the limit, a restart resets everything, and behind a reverse proxy
+without TRUST_PROXY_HEADERS all clients share one address (one busy client can then lock
+everyone out of the login). Callers behind one NAT, or one IPv6 /64, share a bucket too. It slows
+down simple spam and password-spraying through the login; it is not a defence against a
 distributed attacker. A shared limiter (Redis, a table) or a limit at the proxy is the
 follow-up.
 """
@@ -43,6 +53,7 @@ from app.schemas.errors import ErrorCode
 
 UNKNOWN_CLIENT = "unknown"
 DEFAULT_SWEEP_INTERVAL_SECONDS = 60.0
+LIMITER_NAMES = ("registration", "track", "session")
 
 
 def limiter_key(ip: str | None) -> str:
@@ -133,20 +144,30 @@ class RateLimiters:
         enabled: bool,
         registration: SlidingWindowLimiter,
         track: SlidingWindowLimiter,
+        session: SlidingWindowLimiter,
         trust_proxy_headers: bool = False,
         trusted_proxy_count: int = 1,
     ) -> None:
         self.enabled = enabled
         self.registration = registration
         self.track = track
+        self.session = session
         self.trust_proxy_headers = trust_proxy_headers
         self.trusted_proxy_count = trusted_proxy_count
 
+    def limiter(self, which: str) -> SlidingWindowLimiter:
+        """The limiter called `which`; ValueError for any other name (never silently unlimited)."""
+        if which not in LIMITER_NAMES:
+            raise ValueError(f"unknown rate limiter {which!r}; expected one of {LIMITER_NAMES}")
+        return getattr(self, which)
+
     def enforce(self, which: str, request: Request) -> None:
-        """Raise 429 (with Retry-After) when the caller is over the limit; do nothing when disabled."""
+        """Raise 429 (with Retry-After) when the caller is over the limit; do nothing when disabled.
+
+        The name is checked first, so a typo fails even while rate limiting is disabled."""
+        limiter = self.limiter(which)
         if not self.enabled:
             return
-        limiter = {"registration": self.registration, "track": self.track}[which]
         ip = client_ip(
             request,
             trust_proxy_headers=self.trust_proxy_headers,
@@ -176,13 +197,23 @@ def build_rate_limiters(settings, clock: Callable[[], float] = time.monotonic) -
             max_keys=settings.RATE_LIMIT_MAX_KEYS,
             clock=clock,
         ),
+        session=SlidingWindowLimiter(
+            settings.RATE_LIMIT_SESSION_MAX,
+            settings.RATE_LIMIT_SESSION_WINDOW_SECONDS,
+            max_keys=settings.RATE_LIMIT_MAX_KEYS,
+            clock=clock,
+        ),
         trust_proxy_headers=settings.TRUST_PROXY_HEADERS,
         trusted_proxy_count=settings.TRUSTED_PROXY_COUNT,
     )
 
 
 def rate_limited(which: str):
-    """Route dependency. Runs before the body is validated, so invalid bodies count too."""
+    """Route dependency. Runs before the body is validated, so invalid bodies count too.
+
+    An unknown name fails here, when the route is declared, not on the first request."""
+    if which not in LIMITER_NAMES:
+        raise ValueError(f"unknown rate limiter {which!r}; expected one of {LIMITER_NAMES}")
 
     async def dependency(request: Request) -> None:
         limiters = getattr(request.app.state, "rate_limiters", None)

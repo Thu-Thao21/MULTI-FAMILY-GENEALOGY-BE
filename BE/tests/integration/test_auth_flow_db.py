@@ -29,7 +29,7 @@ from app.models.user_access.entities import (
     User,
     UserSession,
 )
-from tests.fakes import FakeIdentityProvider
+from tests.fakes import FakeIdentityProvider, disabled_rate_limiters
 
 
 def utcnow() -> datetime:
@@ -47,6 +47,7 @@ async def api(session, provider):
     app.add_middleware(RequestIdMiddleware)
     register_exception_handlers(app)
     app.include_router(router, prefix="/api/v1")
+    app.state.rate_limiters = disabled_rate_limiters()  # POST /auth/session is rate limited (Mốc H2)
 
     async def db_override():
         yield session

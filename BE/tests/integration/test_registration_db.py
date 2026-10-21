@@ -371,6 +371,7 @@ async def test_the_sixth_registration_in_the_hour_is_429_and_writes_nothing(sess
         enabled=True,
         registration=SlidingWindowLimiter(5, 3600, clock=clock),
         track=SlidingWindowLimiter(20, 600, clock=clock),
+        session=SlidingWindowLimiter(20, 600, clock=clock),
     )
     app = build_full_app(session, rate_limiters=limiters)
     plan = await make_plan(world, session, f"ITEST-{tag()}-A")

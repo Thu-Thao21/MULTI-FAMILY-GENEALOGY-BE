@@ -47,6 +47,7 @@ from tests.fakes import (
     FakeIdentityProvider,
     FakeUserAccessRepo,
     _DbError,
+    disabled_rate_limiters,
     make_user,
 )
 from tests.fakes_owner import FakeProvisioningRepo, OwnerTx
@@ -90,6 +91,7 @@ class OwnerWorld:
         register_exception_handlers(app)
         app.include_router(owner_router, prefix="/api/v1")
         app.include_router(auth_router, prefix="/api/v1")
+        app.state.rate_limiters = disabled_rate_limiters()  # POST /auth/session is rate limited
         app.dependency_overrides.update({
             get_db: lambda: self.tx,
             get_user_access_repo: lambda: self.repo,

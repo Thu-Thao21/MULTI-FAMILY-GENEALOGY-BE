@@ -253,6 +253,7 @@ def make_limiters(**kw) -> RateLimiters:
         enabled=kw.pop("enabled", True),
         registration=SlidingWindowLimiter(2, 60, clock=clock),
         track=SlidingWindowLimiter(1, 60, clock=clock),
+        session=SlidingWindowLimiter(3, 60, clock=clock),
         **kw,
     )
 

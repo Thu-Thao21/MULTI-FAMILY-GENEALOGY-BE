@@ -53,6 +53,8 @@ class GuestWorld:
         registration_window: int = 3600,
         track_max: int = 20,
         track_window: int = 600,
+        session_max: int = 20,
+        session_window: int = 600,
         max_keys: int = 10_000,
         enabled: bool = True,
         trust_proxy_headers: bool = False,
@@ -69,6 +71,9 @@ class GuestWorld:
                 registration_max, registration_window, max_keys=max_keys, clock=self.clock
             ),
             track=SlidingWindowLimiter(track_max, track_window, max_keys=max_keys, clock=self.clock),
+            session=SlidingWindowLimiter(
+                session_max, session_window, max_keys=max_keys, clock=self.clock
+            ),
             trust_proxy_headers=trust_proxy_headers,
             trusted_proxy_count=trusted_proxy_count,
         )

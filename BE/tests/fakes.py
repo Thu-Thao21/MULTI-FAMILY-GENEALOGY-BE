@@ -20,6 +20,7 @@ from app.core.firebase import (
     VerifiedIdentity,
     require_own_uid,
 )
+from app.core.rate_limit import RateLimiters, SlidingWindowLimiter
 from app.core.tokens import hash_session_token
 from app.models.family.entities import (
     BusinessRegistration,
@@ -57,6 +58,17 @@ def make_user(
         phone_verified=False,
         created_at=NOW - timedelta(days=1),
         updated_at=NOW - timedelta(days=1),
+    )
+
+
+def disabled_rate_limiters() -> RateLimiters:
+    """For a test app that mounts a rate-limited router (POST /auth/session, Mốc H2) but does not
+    test the limiter: without app.state.rate_limiters the dependency fails loudly."""
+    return RateLimiters(
+        enabled=False,
+        registration=SlidingWindowLimiter(5, 3600),
+        track=SlidingWindowLimiter(20, 600),
+        session=SlidingWindowLimiter(20, 600),
     )
 
 
