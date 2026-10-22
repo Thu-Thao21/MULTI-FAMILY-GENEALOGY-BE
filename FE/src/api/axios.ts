@@ -13,7 +13,7 @@ export const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 8000,
+  timeout: 30000,
 });
 
 // Chỉ gửi access_token của BE mới (lấy từ POST /auth/session); không gửi Firebase ID token.

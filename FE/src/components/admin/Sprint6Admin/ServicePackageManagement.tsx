@@ -58,8 +58,10 @@ function packageToForm(item: ServicePackage): PackageFormState {
   };
 }
 
+import apiClient from '../../../api/axios';
+
 export const ServicePackageManagement: React.FC = () => {
-  const [packages, setPackages] = useState<ServicePackage[]>(() => initialServicePackages.map((item) => ({ ...item, features: [...item.features] })));
+  const [packages, setPackages] = useState<ServicePackage[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | ServicePackageStatus>('all');
@@ -73,8 +75,28 @@ export const ServicePackageManagement: React.FC = () => {
   const { toast, showToast, dismissToast } = useAdminToast();
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setLoading(false), 320);
-    return () => window.clearTimeout(timer);
+    setLoading(true);
+    apiClient.get<any>('/service-plans')
+      .then((res) => {
+        const items = Array.isArray(res.data?.items) ? res.data.items : Array.isArray(res.data) ? res.data : [];
+        const mapped: ServicePackage[] = items.map((p: any) => ({
+          id: p.id || p.plan_id,
+          code: p.code || p.plan_code || 'PLAN',
+          name: p.name || 'Gói dịch vụ',
+          description: p.description || '',
+          monthlyPrice: p.price_cents ? p.price_cents / 100 : p.monthly_price || 0,
+          durationMonths: p.duration_months || 12,
+          memberLimit: p.member_limit || 500,
+          storageGb: p.storage_gb || 20,
+          subscriberCount: p.subscriber_count || 0,
+          features: Array.isArray(p.features) ? p.features : ['Cây gia phả', 'Hồ sơ thành viên'],
+          status: (p.status || 'active').toLowerCase(),
+          updatedAt: p.updated_at ? p.updated_at.slice(0, 10) : new Date().toISOString().slice(0, 10),
+        }));
+        setPackages(mapped);
+      })
+      .catch(() => setPackages([]))
+      .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => setPage(1), [searchQuery, statusFilter]);

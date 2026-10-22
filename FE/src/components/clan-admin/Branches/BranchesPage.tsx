@@ -12,12 +12,32 @@ interface Branch {
   level: 'chi' | 'nhanh' | 'canh';
 }
 
+import { fetchMembers } from '../../../services/member.service';
+
 export const BranchesPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  
-  // Mock data
-  const data: Branch[] = [];
+  const [data, setData] = useState<Branch[]>([]);
+
+  React.useEffect(() => {
+    fetchMembers({ limit: 500 }).then((res) => {
+      const items = res.items || [];
+      const branchCounts = new Map<string, number>();
+      items.forEach((m: any) => {
+        const b = m.branch || 'Chi Trưởng';
+        branchCounts.set(b, (branchCounts.get(b) || 0) + 1);
+      });
+      const mapped: Branch[] = Array.from(branchCounts.entries()).map(([name, count], index) => ({
+        id: `branch-${index + 1}`,
+        name,
+        leader: 'Trưởng chi',
+        memberCount: count,
+        location: 'Đang cập nhật',
+        level: 'chi',
+      }));
+      setData(mapped);
+    }).catch(() => setData([]));
+  }, []);
 
   const getLevelLabel = (level: string) => {
     switch(level) {

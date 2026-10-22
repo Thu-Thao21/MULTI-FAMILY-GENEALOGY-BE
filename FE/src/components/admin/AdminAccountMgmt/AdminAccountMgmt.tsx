@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import apiClient from '../../../api/axios';
+import React, { useState, useEffect, useCallback } from 'react';
+import { fetchAdminUsers, updateAdminUserStatus, type AdminUserItem } from '../../../services/admin.service';
 import './AdminAccountMgmt.css';
 
 export interface UserAccountItem {
@@ -13,15 +13,8 @@ export interface UserAccountItem {
   created_at?: string;
 }
 
-const DEMO_ACCOUNTS: UserAccountItem[] = [
-  { id: 'USR-001', username: 'admin.system', email: 'admin@giaphaviet.vn', phone_e164: '+84901234567', display_name: 'Quản trị Hệ thống', primary_role: 'admin', status: 'active', created_at: '01/01/2026' },
-  { id: 'USR-002', username: 'nguyenvanminh', email: 'minh.nguyen@example.vn', phone_e164: '+84912345678', display_name: 'Nguyễn Văn Minh', primary_role: 'family_head', status: 'active', created_at: '12/02/2026' },
-  { id: 'USR-003', username: 'tranthilan', email: 'lan.tran@example.vn', phone_e164: '+84987654321', display_name: 'Trần Thị Lan', primary_role: 'member', status: 'active', created_at: '18/03/2026' },
-  { id: 'USR-004', username: 'lehoanglong', email: 'long.le@example.vn', display_name: 'Lê Hoàng Long', primary_role: 'viewer', status: 'locked', created_at: '04/05/2026' },
-];
-
 export const AdminAccountMgmt: React.FC = () => {
-  const [accounts, setAccounts] = useState<UserAccountItem[]>(() => DEMO_ACCOUNTS.map((item) => ({ ...item })));
+  const [accounts, setAccounts] = useState<UserAccountItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [roleFilter, setRoleFilter] = useState<string>('');
@@ -32,38 +25,60 @@ export const AdminAccountMgmt: React.FC = () => {
   const [editDisplayName, setEditDisplayName] = useState<string>('');
   const [msg, setMsg] = useState<string>('');
 
-  const fetchAccounts = async () => {
+  const mapBackendUser = (u: AdminUserItem): UserAccountItem => ({
+    id: u.user_id,
+    email: u.email,
+    display_name: u.display_name,
+    username: u.email.split('@')[0],
+    primary_role: u.display_name.toLowerCase().includes('admin') ? 'admin' : 'member',
+    status: u.status.toLowerCase() === 'active' ? 'active' : 'locked',
+    created_at: u.created_at ? new Date(u.created_at).toLocaleDateString('vi-VN') : undefined,
+  });
+
+  const fetchAccounts = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await apiClient.get<UserAccountItem[]>('/users');
-      if (Array.isArray(res.data) && res.data.length > 0) {
-        setAccounts(res.data);
+      const res = await fetchAdminUsers({ q: searchTerm.trim() || undefined, page_size: 100 });
+      if (res && Array.isArray(res.items)) {
+        setAccounts(res.items.map(mapBackendUser));
       }
-    } catch {
-      // Keep the local demo accounts when the optional endpoint is unavailable.
+    } catch (err: any) {
+      console.error('Lỗi khi tải danh sách người dùng:', err);
+      setMsg('Không thể tải danh sách tài khoản từ máy chủ. Vui lòng kiểm tra quyền quản trị viên.');
     } finally {
       setLoading(false);
     }
-  };
+  }, [searchTerm]);
 
   useEffect(() => {
     fetchAccounts();
-  }, []);
+  }, [fetchAccounts]);
 
-  const handleToggleLock = (acc: UserAccountItem) => {
-    const newStatus = acc.status === 'locked' ? 'active' : 'locked';
-    setAccounts((prev) =>
-      prev.map((item) => (item.id === acc.id ? { ...item, status: newStatus } : item))
-    );
-    setMsg(`Đã ${newStatus === 'locked' ? 'khóa' : 'mở khóa'} tài khoản ${acc.display_name || acc.username}`);
-    setTimeout(() => setMsg(''), 3000);
+  const handleToggleLock = async (acc: UserAccountItem) => {
+    const nextStatus = acc.status === 'locked' ? 'ACTIVE' : 'LOCKED';
+    try {
+      await updateAdminUserStatus(acc.id, nextStatus, 'Thay đổi trạng thái tài khoản từ trang Quản trị');
+      setAccounts((prev) =>
+        prev.map((item) =>
+          item.id === acc.id ? { ...item, status: nextStatus === 'ACTIVE' ? 'active' : 'locked' } : item
+        )
+      );
+      setMsg(`Đã ${nextStatus === 'LOCKED' ? 'khóa' : 'mở khóa'} tài khoản ${acc.display_name || acc.email}`);
+    } catch (err: any) {
+      setMsg(`Không thể cập nhật trạng thái tài khoản: ${err?.response?.data?.message || err?.message || 'Lỗi thao tác'}`);
+    }
+    setTimeout(() => setMsg(''), 4000);
   };
 
   const handleDeleteAccount = (acc: UserAccountItem) => {
-    if (window.confirm(`Bạn có chắc chắn muốn xóa tài khoản "${acc.display_name || acc.username}"?`)) {
-      setAccounts((prev) => prev.filter((item) => item.id !== acc.id));
-      setMsg(`Đã xóa tài khoản thành công.`);
-      setTimeout(() => setMsg(''), 3000);
+    if (window.confirm(`Bạn có chắc chắn muốn vô hiệu hóa tài khoản "${acc.display_name || acc.username}"?`)) {
+      updateAdminUserStatus(acc.id, 'DISABLED', 'Vô hiệu hóa tài khoản').then(() => {
+        setAccounts((prev) => prev.filter((item) => item.id !== acc.id));
+        setMsg(`Đã vô hiệu hóa tài khoản thành công.`);
+        setTimeout(() => setMsg(''), 3000);
+      }).catch((err) => {
+        setMsg(`Lỗi: ${err?.message}`);
+      });
     }
   };
 
@@ -75,26 +90,31 @@ export const AdminAccountMgmt: React.FC = () => {
     setIsEditModalOpen(true);
   };
 
-  const handleSaveAccount = (e: React.FormEvent) => {
+  const handleSaveAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedAcc) return;
 
-    setAccounts((prev) =>
-      prev.map((item) =>
-        item.id === selectedAcc.id
-          ? {
-              ...item,
-              display_name: editDisplayName,
-              primary_role: editRole,
-              status: editStatus,
-            }
-          : item
-      )
-    );
-
-    setIsEditModalOpen(false);
-    setMsg(`Cập nhật tài khoản "${editDisplayName}" thành công!`);
-    setTimeout(() => setMsg(''), 3000);
+    try {
+      const targetStatus = editStatus === 'locked' ? 'LOCKED' : 'ACTIVE';
+      await updateAdminUserStatus(selectedAcc.id, targetStatus, `Cập nhật thông tin bởi quản trị viên`);
+      setAccounts((prev) =>
+        prev.map((item) =>
+          item.id === selectedAcc.id
+            ? {
+                ...item,
+                display_name: editDisplayName,
+                primary_role: editRole,
+                status: editStatus,
+              }
+            : item
+        )
+      );
+      setIsEditModalOpen(false);
+      setMsg(`Cập nhật tài khoản "${editDisplayName}" thành công!`);
+    } catch (err: any) {
+      setMsg(`Lỗi khi cập nhật tài khoản: ${err?.response?.data?.message || err.message}`);
+    }
+    setTimeout(() => setMsg(''), 4000);
   };
 
   const filteredAccounts = accounts.filter((acc) => {

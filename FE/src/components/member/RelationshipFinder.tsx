@@ -1,5 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { fetchMembers } from '../../services/member.service';
+import {
+  fetchRelationshipCalculation,
+  fetchPersonAncestors,
+  fetchPersonDescendants,
+} from '../../services/genealogy.service';
 import type { Member } from '../../types/member';
 import './RelationshipFinder.css';
 
@@ -8,6 +13,7 @@ export const RelationshipFinder: React.FC = () => {
   const [personAId, setPersonAId] = useState<string>('');
   const [personBId, setPersonBId] = useState<string>('');
   const [loading, setLoading] = useState(true);
+  const [calculating, setCalculating] = useState(false);
   const [activeTab, setActiveTab] = useState<'finder' | 'lineage'>('finder');
 
   // Result state
@@ -31,96 +37,131 @@ export const RelationshipFinder: React.FC = () => {
       if (items.length >= 2) {
         setPersonAId(items[0].id);
         setPersonBId(items[1].id);
+        setLineagePersonId(items[0].id);
       }
       setLoading(false);
     });
   }, []);
 
-  const calculateRelationship = () => {
+  const calculateRelationship = async () => {
     if (!personAId || !personBId) return;
+
+    const pA = members.find((m) => m.id === personAId);
+    const pB = members.find((m) => m.id === personBId);
+    if (!pA || !pB) return;
 
     if (personAId === personBId) {
       setResult({
         found: true,
         relationshipName: 'Chính mình',
         addressTitle: 'Tôi',
-        path: [members.find((m) => m.id === personAId)?.fullName || ''],
+        path: [pA.fullName],
         description: 'Hai đối tượng được chọn là cùng một người.',
       });
       return;
     }
 
-    const pA = members.find((m) => m.id === personAId);
-    const pB = members.find((m) => m.id === personBId);
+    setCalculating(true);
+    const familyId = (pA as any).familyId || (pA as any).clanId || 'default-family';
 
-    if (!pA || !pB) {
-      setResult({
-        found: false,
-        relationshipName: 'Không xác định',
-        addressTitle: 'N/A',
-        path: [],
-        description: 'Dữ liệu thành viên không tồn tại.',
-      });
-      return;
-    }
-
-    const genA = pA.generation || 1;
-    const genB = pB.generation || 1;
-    const diff = genA - genB;
-
-    let relName = '';
-    let address = '';
-
-    if (diff === 0) {
-      if (pA.gender === 'male' && pB.gender === 'female' && ((pA as any).spouseId === pB.id || (pB as any).spouseId === pA.id)) {
-        relName = 'Vợ chồng';
-        address = 'Chồng gọi Vợ, Vợ gọi Chồng';
+    try {
+      const res = await fetchRelationshipCalculation(familyId, personAId, personBId);
+      if (res.found) {
+        setResult({
+          found: true,
+          relationshipName: res.kinshipName,
+          addressTitle: res.addressTitle,
+          path: res.path.length > 0 ? res.path.map((p) => p.fullName) : [pA.fullName, pB.fullName],
+          description: res.description,
+        });
       } else {
-        relName = 'Anh chị em đồng thế hệ';
-        address = (pA.birthDate || '') > (pB.birthDate || '') ? 'Em (xưng Anh/Chị)' : 'Anh/Chị (xưng Em)';
+        setResult({
+          found: false,
+          relationshipName: res.kinshipName || 'Không xác định',
+          addressTitle: res.addressTitle || 'N/A',
+          path: [],
+          description: res.description || 'Không tìm thấy liên kết quan hệ trong gia phả.',
+        });
       }
-    } else if (diff === 1) {
-      relName = 'Cha/Mẹ và Con';
-      address = 'Con (gọi Cha/Mẹ)';
-    } else if (diff === -1) {
-      relName = 'Cha/Mẹ và Con';
-      address = 'Cha/Mẹ (gọi Con)';
-    } else if (diff === 2) {
-      relName = 'Ông/Bà và Cháu';
-      address = 'Cháu (gọi Ông/Bà)';
-    } else if (diff === -2) {
-      relName = 'Ông/Bà và Cháu';
-      address = 'Ông/Bà (gọi Cháu)';
-    } else if (diff > 2) {
-      relName = `Cụ/Tổ tiên cách ${diff} đời`;
-      address = 'Cháu/Hậu duệ (gọi Cụ/Cụ tổ)';
-    } else {
-      relName = `Hậu duệ cách ${Math.abs(diff)} đời`;
-      address = 'Tổ tiên (gọi Cháu/Chắt/Chít)';
-    }
+    } catch {
+      // Client-side fallback if server unreachable
+      const genA = pA.generation || 1;
+      const genB = pB.generation || 1;
+      const diff = genA - genB;
 
-    setResult({
-      found: true,
-      relationshipName: relName,
-      addressTitle: address,
-      path: [pA.fullName, `Thế hệ ${genA} ➔ Thế hệ ${genB}`, pB.fullName],
-      description: `Kết nối giữa ${pA.fullName} (Đời ${genA}) và ${pB.fullName} (Đời ${genB}).`,
-    });
+      let relName = 'Họ hàng';
+      let address = 'N/A';
+
+      if (diff === 0) {
+        relName = 'Anh chị em';
+        address = (pA.birthDate || '') > (pB.birthDate || '') ? 'Em (xưng Anh/Chị)' : 'Anh/Chị (xưng Em)';
+      } else if (diff === 1) {
+        relName = 'Cha/Mẹ và Con';
+        address = 'Cha/Mẹ (gọi Con)';
+      } else if (diff === -1) {
+        relName = 'Cha/Mẹ và Con';
+        address = 'Con (gọi Cha/Mẹ)';
+      } else if (diff === 2) {
+        relName = 'Ông/Bà và Cháu';
+        address = 'Ông/Bà (gọi Cháu)';
+      } else if (diff === -2) {
+        relName = 'Ông/Bà và Cháu';
+        address = 'Cháu (gọi Ông/Bà)';
+      }
+
+      setResult({
+        found: true,
+        relationshipName: relName,
+        addressTitle: address,
+        path: [pA.fullName, `Thế hệ ${genA} ➔ Thế hệ ${genB}`, pB.fullName],
+        description: `Kết nối giữa ${pA.fullName} (Đời ${genA}) và ${pB.fullName} (Đời ${genB}).`,
+      });
+    } finally {
+      setCalculating(false);
+    }
   };
 
-  const handleLineageLookup = () => {
+  const handleLineageLookup = async () => {
     if (!lineagePersonId) return;
 
     const current = members.find((m) => m.id === lineagePersonId);
     if (!current) return;
 
-    // Find ancestors (lower generation numbers)
-    const anc = members.filter((m) => (m.generation || 1) < (current.generation || 1));
-    // Find descendants (higher generation numbers)
-    const desc = members.filter((m) => (m.generation || 1) > (current.generation || 1));
+    const familyId = (current as any).familyId || (current as any).clanId || 'default-family';
 
-    setAncestors(anc);
-    setDescendants(desc);
+    try {
+      const [ancRes, descRes] = await Promise.all([
+        fetchPersonAncestors(familyId, lineagePersonId),
+        fetchPersonDescendants(familyId, lineagePersonId),
+      ]);
+
+      const ancMembers: Member[] = ancRes.map((item) => ({
+        id: item.person.id,
+        fullName: item.person.fullName,
+        gender: item.person.gender as any,
+        generation: item.person.generation,
+        isAlive: item.person.isLiving,
+        status: item.person.status as any,
+      }));
+
+      const descMembers: Member[] = descRes.map((item) => ({
+        id: item.person.id,
+        fullName: item.person.fullName,
+        gender: item.person.gender as any,
+        generation: item.person.generation,
+        isAlive: item.person.isLiving,
+        status: item.person.status as any,
+      }));
+
+      setAncestors(ancMembers);
+      setDescendants(descMembers);
+    } catch {
+      // Fallback to local filtering
+      const anc = members.filter((m) => (m.generation || 1) < (current.generation || 1));
+      const desc = members.filter((m) => (m.generation || 1) > (current.generation || 1));
+      setAncestors(anc);
+      setDescendants(desc);
+    }
   };
 
   return (

@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import apiClient from '../../../api/axios';
+import { fetchFamilyPersons, createFamilyPerson, updateFamilyPerson } from '../../../services/genealogy.service';
 import './AdminMembersMgmt.css';
 
 type MemberGender = 'male' | 'female' | 'other';
@@ -24,14 +25,6 @@ export interface MemberItem {
 
 type MemberFormData = Omit<MemberItem, 'id'>;
 type ModalMode = 'add' | 'edit' | 'detail' | null;
-
-const DEMO_MEMBERS: MemberItem[] = [
-  { id: 'mem-001', full_name: 'Võ Văn Minh', other_name: 'Ông Minh', gender: 'male', birth_date: '1952-04-18', is_alive: true, branch: 'Chi Trưởng', generation: 4, relationship: 'Trưởng tộc', status: 'active', phone: '090 315 2876', email: 'minh.vo@giaphaviet.vn', has_account: true },
-  { id: 'mem-002', full_name: 'Võ Thị Thanh', gender: 'female', birth_date: '1958-09-02', is_alive: true, branch: 'Chi Trưởng', generation: 4, relationship: 'Em gái', status: 'active', phone: '091 228 6451', has_account: true },
-  { id: 'mem-003', full_name: 'Võ Văn Thành', other_name: 'Võ Thành', gender: 'male', birth_date: '1978-01-24', is_alive: true, branch: 'Chi Hai', generation: 5, relationship: 'Con trai', status: 'active', phone: '098 410 6682', email: 'thanh.vo@giaphaviet.vn', has_account: true },
-  { id: 'mem-004', full_name: 'Nguyễn Thị Lan', gender: 'female', birth_date: '1981-07-12', is_alive: true, branch: 'Chi Hai', generation: 5, relationship: 'Con dâu', status: 'hidden', phone: '093 747 1209', has_account: false },
-  { id: 'mem-005', full_name: 'Võ Minh Khang', gender: 'male', birth_date: '2004-11-08', is_alive: true, branch: 'Chi Hai', generation: 6, relationship: 'Cháu nội', status: 'active', email: 'khang.vo@giaphaviet.vn', has_account: true },
-];
 
 const EMPTY_FORM: MemberFormData = {
   full_name: '', other_name: '', gender: 'male', birth_date: '', is_alive: true,
@@ -80,7 +73,7 @@ const getAge = (date?: string) => {
 };
 
 export const AdminMembersMgmt: React.FC = () => {
-  const [members, setMembers] = useState<MemberItem[]>(() => DEMO_MEMBERS.map((item) => ({ ...item })));
+  const [members, setMembers] = useState<MemberItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | MemberStatus>('all');
@@ -88,24 +81,50 @@ export const AdminMembersMgmt: React.FC = () => {
   const [selectedMember, setSelectedMember] = useState<MemberItem | null>(null);
   const [formData, setFormData] = useState<MemberFormData>(EMPTY_FORM);
   const [toast, setToast] = useState('');
+  const [clanId, setClanId] = useState<string>('c9a59088-7ad7-4b21-8cba-19e2ea46d15a');
 
-  // Backend hook: replace the preview rows once GET /members returns real data.
-  useEffect(() => {
-    let mounted = true;
-    const fetchMembers = async () => {
+  const loadMembers = useCallback(async (targetClanId: string) => {
+    setLoading(true);
+    try {
+      // First fetch clans if clanId is not set
+      let effectiveClanId = targetClanId;
       try {
-        const response = await apiClient.get<any>('/members');
-        const list = Array.isArray(response.data) ? response.data : response.data?.items;
-        if (mounted && Array.isArray(list) && list.length > 0) setMembers(list.map(normalizeMember));
+        const clansRes = await apiClient.get<any[]>('/admin/clans');
+        if (Array.isArray(clansRes.data) && clansRes.data.length > 0) {
+          effectiveClanId = clansRes.data[0].id || clansRes.data[0].clan_id;
+          setClanId(effectiveClanId);
+        }
       } catch {
-        // Keep the local demo members when the optional endpoint is unavailable.
-      } finally {
-        if (mounted) setLoading(false);
+        // Fall back to default DEV clan A
       }
-    };
-    fetchMembers();
-    return () => { mounted = false; };
+
+      const persons = await fetchFamilyPersons(effectiveClanId);
+      if (Array.isArray(persons)) {
+        setMembers(
+          persons.map((p) => ({
+            id: p.id,
+            full_name: p.fullName,
+            gender: p.gender || 'other',
+            birth_date: p.birthDate || undefined,
+            is_alive: p.isLiving,
+            branch: 'Chi chính',
+            generation: p.generation || 1,
+            relationship: p.generation === 1 ? 'Thủy tổ / Cụ tổ' : `Đời thứ ${p.generation}`,
+            status: p.isLiving ? 'active' : 'hidden',
+            avatar_url: p.avatarUrl || undefined,
+          }))
+        );
+      }
+    } catch (err: any) {
+      console.error('Lỗi khi tải thành viên từ BE:', err);
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    loadMembers(clanId);
+  }, [loadMembers, clanId]);
 
   useEffect(() => {
     if (!modalMode) return;
@@ -151,27 +170,47 @@ export const AdminMembersMgmt: React.FC = () => {
     setModalMode('edit');
   };
 
-  const saveMember = (event: React.FormEvent) => {
+  const saveMember = async (event: React.FormEvent) => {
     event.preventDefault();
     const cleanedName = formData.full_name.trim();
     if (!cleanedName) return;
-    if (modalMode === 'edit' && selectedMember) {
-      // Backend hook: PATCH /members/:id with formData here.
-      setMembers((current) => current.map((member) => member.id === selectedMember.id ? { ...member, ...formData, full_name: cleanedName } : member));
-      showToast(`Đã cập nhật thông tin của ${cleanedName}.`);
-    } else {
-      // Backend hook: POST /members and use the id returned by the API.
-      setMembers((current) => [{ ...formData, id: `member-${Date.now()}`, full_name: cleanedName }, ...current]);
-      showToast(`Đã thêm ${cleanedName} vào gia phả.`);
+
+    try {
+      if (modalMode === 'edit' && selectedMember) {
+        await updateFamilyPerson(clanId, selectedMember.id, {
+          fullName: cleanedName,
+          gender: formData.gender,
+          birthDate: formData.birth_date || null,
+          isLiving: formData.is_alive,
+        });
+        showToast(`Đã cập nhật thông tin của ${cleanedName} trên Backend.`);
+      } else {
+        await createFamilyPerson(clanId, {
+          fullName: cleanedName,
+          gender: formData.gender,
+          birthDate: formData.birth_date || null,
+          isLiving: formData.is_alive,
+        });
+        showToast(`Đã thêm ${cleanedName} vào gia phả thành công.`);
+      }
+      setModalMode(null);
+      loadMembers(clanId);
+    } catch (err: any) {
+      showToast(`Lỗi: ${err?.response?.data?.detail || err.message}`);
     }
-    setModalMode(null);
   };
 
-  const toggleVisibility = (member: MemberItem) => {
+  const toggleVisibility = async (member: MemberItem) => {
     const nextStatus: MemberStatus = member.status === 'hidden' ? 'active' : 'hidden';
-    // Backend hook: PATCH /members/:id/visibility with nextStatus here.
-    setMembers((current) => current.map((item) => item.id === member.id ? { ...item, status: nextStatus } : item));
-    showToast(`${member.full_name} đã được ${nextStatus === 'hidden' ? 'ẩn khỏi danh sách công khai' : 'khôi phục'}.`);
+    try {
+      await updateFamilyPerson(clanId, member.id, {
+        isLiving: nextStatus === 'active',
+      });
+      setMembers((current) => current.map((item) => item.id === member.id ? { ...item, status: nextStatus, is_alive: nextStatus === 'active' } : item));
+      showToast(`${member.full_name} đã được ${nextStatus === 'hidden' ? 'ẩn khỏi danh sách' : 'khôi phục'}.`);
+    } catch (err: any) {
+      showToast(`Lỗi: ${err?.response?.data?.detail || err.message}`);
+    }
   };
 
   const resetPassword = (member: MemberItem) => {
@@ -179,7 +218,6 @@ export const AdminMembersMgmt: React.FC = () => {
       showToast(`${member.full_name} chưa có tài khoản để đặt lại mật khẩu.`);
       return;
     }
-    // Backend hook: POST /users/:memberId/reset-password and display delivery status.
     showToast(`Đã gửi hướng dẫn đặt lại mật khẩu cho ${member.full_name}.`);
   };
 

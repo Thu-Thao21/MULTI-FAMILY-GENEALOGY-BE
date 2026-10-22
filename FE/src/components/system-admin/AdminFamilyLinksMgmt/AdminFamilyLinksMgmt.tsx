@@ -20,13 +20,19 @@ export const AdminFamilyLinksMgmt: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(false);
 
   const fetchLinkRequests = async () => {
+    setLoading(true);
     try {
       const res = await apiClient.get<LinkRequestItem[]>('/networks/link-requests');
-      if (Array.isArray(res.data) && res.data.length > 0) {
+      if (Array.isArray(res.data)) {
         setRequests(res.data);
+      } else {
+        setRequests([]);
       }
     } catch (err) {
-      console.warn('Fetch link requests failed, using mock data:', err);
+      console.error('Fetch link requests failed:', err);
+      setRequests([]);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -43,43 +49,55 @@ export const AdminFamilyLinksMgmt: React.FC = () => {
 
   const toast = useToast();
 
-  const handleReview = (id: string, newStatus: 'approved' | 'rejected') => {
-    setRequests((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, status: newStatus } : item))
-    );
-    if (newStatus === 'approved') {
-      toast.success('Chấp nhận liên kết!', 'Liên kết dòng họ đã được phê duyệt thành công.');
-    } else {
-      toast.error('Từ chối liên kết', 'Yêu cầu kết nối dòng họ đã bị từ chối.');
+  const handleReview = async (id: string, newStatus: 'approved' | 'rejected') => {
+    try {
+      await apiClient.post(`/networks/link-requests/${id}/review`, {
+        action: newStatus === 'approved' ? 'APPROVE' : 'REJECT',
+      });
+      await fetchLinkRequests();
+      if (newStatus === 'approved') {
+        toast.success('Chấp nhận liên kết!', 'Liên kết dòng họ đã được phê duyệt thành công trên cơ sở dữ liệu.');
+      } else {
+        toast.error('Từ chối liên kết', 'Yêu cầu kết nối dòng họ đã bị từ chối.');
+      }
+    } catch (err: any) {
+      toast.error('Lỗi thao tác', err?.response?.data?.detail || 'Không thể xử lý yêu cầu liên kết.');
     }
   };
 
-  const handleUnlink = (id: string) => {
+  const handleUnlink = async (id: string) => {
     if (window.confirm('Bạn có chắc chắn muốn hủy liên kết giữa 2 dòng họ này?')) {
-      setRequests((prev) => prev.filter((item) => item.id !== id));
-      toast.warning('Đã hủy liên kết', 'Liên kết giữa 2 dòng họ đã bị hủy bỏ.');
+      try {
+        await apiClient.post(`/networks/link-requests/${id}/review`, {
+          action: 'REJECT',
+          reason: 'Hủy liên kết bởi quản trị viên',
+        });
+        await fetchLinkRequests();
+        toast.warning('Đã hủy liên kết', 'Liên kết giữa 2 dòng họ đã bị hủy bỏ.');
+      } catch (err: any) {
+        toast.error('Lỗi', err?.response?.data?.detail || 'Hủy liên kết thất bại.');
+      }
     }
   };
 
-  const handleSendRequest = (e: React.FormEvent) => {
+  const handleSendRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!sendTargetFamily) return;
 
-    const newReq: LinkRequestItem = {
-      id: `req_${Date.now()}`,
-      requester_family: 'Dòng Họ Nguyễn Văn (Gốc)',
-      target_family: sendTargetFamily,
-      link_type: sendLinkType,
-      status: 'pending',
-      notes: sendNotes,
-      created_at: new Date().toISOString().split('T')[0],
-    };
-
-    setRequests((prev) => [newReq, ...prev]);
-    setIsSendModalOpen(false);
-    setSendTargetFamily('');
-    setSendNotes('');
-    toast.success('Gửi yêu cầu thành công!', `Yêu cầu kết nối tới "${sendTargetFamily}" đã được gửi.`);
+    try {
+      await apiClient.post('/networks/link-requests', {
+        target_family_id: sendTargetFamily,
+        request_type: sendLinkType,
+        message: sendNotes,
+      });
+      await fetchLinkRequests();
+      setIsSendModalOpen(false);
+      setSendTargetFamily('');
+      setSendNotes('');
+      toast.success('Gửi yêu cầu thành công!', `Yêu cầu kết nối đã được gửi tới Neon DB.`);
+    } catch (err: any) {
+      toast.error('Gửi yêu cầu thất bại', err?.response?.data?.detail || 'Vui lòng kiểm tra lại ID dòng họ.');
+    }
   };
 
   const filteredRequests = requests.filter((r) => {

@@ -49,12 +49,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     { title: 'Doanh thu dịch vụ', value: '284,6 triệu', subtext: '+14,2% so với tháng trước', tag: 'Thanh toán' },
   ];
 
-  const mockAdminActivities = [
-    { id: 1, user: 'Hệ thống', action: 'Tự động sao lưu dữ liệu toàn hệ thống thành công', time: '10 phút trước' },
-    { id: 2, user: 'Ban Quản trị', action: 'Đăng nhập vào bảng điều khiển Quản trị viên Toàn cục', time: '5 phút trước' },
-    { id: 3, user: 'Hệ thống', action: 'Đồng bộ hóa dữ liệu các chi nhánh dòng họ thành công', time: '1 giờ trước' },
-    { id: 4, user: 'Hệ thống', action: 'Khởi chạy cổng giao diện quản trị vận hành trực tuyến', time: '2 giờ trước' },
-  ];
+  const adminActivities: Array<{ id: number; user: string; action: string; time: string }> = [];
+
 
   return (
     <div className="admin-dash-container">
@@ -218,7 +214,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
 
           {/* Admin Activity Logs widget */}
-          <RecentActivitiesWidget activities={mockAdminActivities} />
+          <RecentActivitiesWidget activities={adminActivities} />
         </div>
       </div>
     </div>

@@ -13,13 +13,30 @@ interface Ancestor {
   status: 'active' | 'inactive';
 }
 
+import { fetchMembers } from '../../../services/member.service';
+
 export const AncestorsPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [selectedAncestor, setSelectedAncestor] = useState<Ancestor | null>(null);
-  
-  // Mock data
-  const data: Ancestor[] = [];
+  const [data, setData] = useState<Ancestor[]>([]);
+
+  React.useEffect(() => {
+    fetchMembers({ search: search || undefined, limit: 100 }).then((res) => {
+      const items = res.items || [];
+      const ancestorsOnly = items.filter((m: any) => m.generation === 1 || m.isAlive === false || m.is_alive === false);
+      const mapped: Ancestor[] = (ancestorsOnly.length ? ancestorsOnly : items).map((m: any) => ({
+        id: m.id,
+        name: m.fullName || m.full_name || 'Thuỷ tổ',
+        generation: m.generation || 1,
+        birthYear: m.birthDate ? new Date(m.birthDate).getFullYear() : m.birth_year || undefined,
+        deathYear: m.deathDate ? new Date(m.deathDate).getFullYear() : m.death_year || undefined,
+        title: m.otherName || m.other_name || 'Thuỷ tổ gia tộc',
+        status: 'active',
+      }));
+      setData(mapped);
+    }).catch(() => setData([]));
+  }, [search]);
 
   const columns: Column<Ancestor>[] = [
     { key: 'name', header: 'Tên Thuỷ tổ / Tiên tổ', render: (item) => (

@@ -19,10 +19,15 @@ Review (approve or reject) rules:
 from __future__ import annotations
 
 import logging
+import secrets
+import string
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+import httpx
 
 from app.controllers.auth_access.use_cases import ClientInfo, UnitOfWork
+from app.core.config import settings
 from app.core.errors import AppError
 from app.core.request_id import get_request_id
 from app.dependencies.auth import Principal
@@ -32,6 +37,7 @@ from app.schemas.business import (
     BusinessRegistrationDetail,
     BusinessRegistrationListQuery,
     BusinessRegistrationSummary,
+    BusinessApproveAndProvisionResponse,
     RegistrationAttachmentItem,
     RegistrationReviewRequest,
     RegistrationReviewResponse,
@@ -208,3 +214,346 @@ async def review_registration(
         reviewed_at=changed_at,
         reason_visible_to_applicant=new_status == "REJECTED",
     )
+
+
+def generate_clan_leader_email(clan_name: str, origin_place: str | None = None) -> str:
+    import unicodedata, re
+
+    def to_slug(text: str) -> str:
+        text = text.replace("đ", "d").replace("Đ", "d")
+        text = unicodedata.normalize("NFD", text)
+        text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+        text = text.lower()
+        text = re.sub(r"^(dong\s*ho|gia\s*pha|ho)\s+", "", text)
+        text = re.sub(r"[^a-z0-9]+", "", text)
+        return text
+
+    clan_part = to_slug(clan_name) or "clan"
+    origin_part = to_slug(origin_place) if origin_place else "vietnam"
+    return f"{clan_part}.{origin_part}@giapha.com"
+
+
+async def _provision_owner_via_firebase_rest(
+    *,
+    db: UnitOfWork,
+    users: UserAccessRepository,
+    family: FamilyRepository,
+    principal: Principal,
+    clan_id: uuid.UUID,
+    clan_name: str,
+    applicant_name: str,
+    applicant_email: str,
+    applicant_phone: str | None,
+    origin_place: str | None,
+    sender: any,
+) -> tuple[str, str, datetime, str]:
+    from app.dependencies.permissions import BUSINESS_OWNER_ROLE
+
+    clan_leader_email = generate_clan_leader_email(clan_name, origin_place)
+    prefix, domain = clan_leader_email.split("@", 1)
+    counter = 1
+    while await users.get_user_by_email_ci(clan_leader_email) is not None:
+        clan_leader_email = f"{prefix}{counter}@{domain}"
+        counter += 1
+
+    chars = string.ascii_letters + string.digits + "!@#$%"
+    temp_pass = "".join(secrets.choice(chars) for _ in range(16))
+
+    api_key = settings.FIREBASE_API_KEY
+    if not api_key:
+        raise AppError(ErrorCode.PROVIDER_UNAVAILABLE, "FIREBASE_API_KEY is not configured.")
+
+    sign_up_url = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={api_key}"
+    firebase_uid = None
+    async with httpx.AsyncClient(timeout=10.0) as http_client:
+        while True:
+            resp = await http_client.post(
+                sign_up_url,
+                json={
+                    "email": clan_leader_email,
+                    "password": temp_pass,
+                    "returnSecureToken": True,
+                },
+            )
+            data = resp.json()
+            if resp.status_code == 200:
+                firebase_uid = data.get("localId")
+                id_token = data.get("idToken")
+                if id_token:
+                    update_url = f"https://identitytoolkit.googleapis.com/v1/accounts:update?key={api_key}"
+                    try:
+                        await http_client.post(
+                            update_url,
+                            json={
+                                "idToken": id_token,
+                                "displayName": applicant_name,
+                                "returnSecureToken": False,
+                            },
+                        )
+                    except Exception as ue:
+                        logger.warning("Failed to update Firebase display name: %s", ue)
+                break
+
+            error_msg = data.get("error", {}).get("message", "")
+            if "EMAIL_EXISTS" in error_msg:
+                clan_leader_email = f"{prefix}{counter}@{domain}"
+                counter += 1
+            else:
+                logger.error("Firebase REST signUp failed: %s", data)
+                raise AppError(ErrorCode.PROVIDER_UNAVAILABLE, f"Firebase Auth error: {error_msg}")
+
+    now = _now()
+    expires_at = now + timedelta(hours=settings.OWNER_TEMP_PASSWORD_TTL_HOURS)
+    role = await users.get_role_by_code(BUSINESS_OWNER_ROLE)
+    if role is None:
+        raise AppError(ErrorCode.INTERNAL_ERROR, "Role BUSINESS_OWNER is missing in DB.")
+
+    existing_db_user = await users.get_user_by_email_ci(clan_leader_email)
+    if existing_db_user is not None:
+        user_id = existing_db_user.user_id
+    else:
+        user_id = uuid.uuid4()
+        await users.create_user_account(
+            user_id=user_id,
+            firebase_uid=firebase_uid,
+            email=clan_leader_email,
+            display_name=applicant_name,
+            phone=applicant_phone,
+            status="PENDING",
+            first_login_required=True,
+            now=now,
+        )
+        cred = await users.add_credential_metadata(user_id, now=now)
+        cred.must_change_password = True
+        cred.temporary_password_issued_at = now
+        cred.temporary_password_expires_at = expires_at
+        cred.updated_at = now
+
+    cur_membership = await family.get_membership(clan_id, user_id)
+    if cur_membership is None:
+        await family.create_membership(clan_id=clan_id, user_id=user_id, status="ACTIVE", now=now)
+
+    if not await users.has_active_role(user_id, BUSINESS_OWNER_ROLE, clan_id=clan_id):
+        await users.add_clan_role(
+            user_id=user_id, role_id=role.role_id, clan_id=clan_id, granted_by=principal.user_id, now=now
+        )
+
+    cur_owner = await family.get_active_owner(clan_id)
+    if cur_owner is None:
+        await family.create_ownership(clan_id=clan_id, user_id=user_id, now=now)
+
+    await db.commit()
+
+    delivery_status = "FAILED"
+    try:
+        mail_res = await sender.send_owner_temporary_password(
+            to_email=applicant_email,
+            display_name=applicant_name,
+            temporary_password=temp_pass,
+            expires_at=expires_at,
+            clan_name=clan_name,
+            account_email=clan_leader_email,
+        )
+        if mail_res and mail_res.status:
+            delivery_status = mail_res.status
+    except Exception as me:
+        logger.error("Failed to send credentials email: %s", me)
+
+    return clan_leader_email, temp_pass, expires_at, delivery_status
+
+
+# ----- POST /admin/business-registrations/{id}/approve-and-provision -----
+
+
+async def approve_and_provision_registration(
+    *,
+    db: UnitOfWork,
+    users: UserAccessRepository,
+    family: FamilyRepository,
+    jobs: any,
+    idempotency: any,
+    provider: any,
+    sender: any,
+    principal: Principal,
+    registration_id: uuid.UUID,
+    client: ClientInfo,
+    clan_code: str | None = None,
+) -> BusinessApproveAndProvisionResponse:
+    from app.controllers.family_management import (
+        business_admin_use_cases,
+        clan_admin_use_cases,
+        owner_provisioning_use_cases,
+    )
+    from app.schemas.business import BusinessCreateRequest, OwnerProvisionRequest
+
+    # 1. Check registration
+    found = await family.get_registration_with_plan(registration_id)
+    if found is None:
+        raise AppError(ErrorCode.NOT_FOUND)
+    registration, _ = found[0], found[1]
+
+    # Save all values to locals BEFORE any commits expire attributes
+    rep_email = str(registration.representative_email)
+    rep_name = str(registration.representative_name)
+    reg_clan_name = str(registration.clan_name)
+    reg_origin_place = str(registration.origin_place) if registration.origin_place else None
+    rep_phone = str(registration.representative_phone) if registration.representative_phone else None
+    current_reg_status = str(registration.status)
+
+    # 2. Review registration if PENDING
+    if current_reg_status == PENDING:
+        await review_registration(
+            db=db,
+            users=users,
+            family=family,
+            principal=principal,
+            registration_id=registration_id,
+            body=RegistrationReviewRequest(decision="APPROVED"),
+            client=client,
+        )
+        current_reg_status = "APPROVED"
+
+    if current_reg_status != "APPROVED":
+        raise AppError(
+            ErrorCode.STATE_CONFLICT,
+            f"The registration is {current_reg_status}; only APPROVED or PENDING can be provisioned.",
+        )
+
+    # 3. Create Clan if not created yet
+    clan = await family.get_clan_by_registration_id(registration_id)
+    if clan is None:
+        clan_key = f"auto-clan-{registration_id}"
+        await business_admin_use_cases.create_business(
+            db=db,
+            users=users,
+            family=family,
+            idempotency=idempotency,
+            principal=principal,
+            registration_id=registration_id,
+            body=BusinessCreateRequest(clan_code=clan_code),
+            key=clan_key,
+            client=client,
+        )
+        clan = await family.get_clan_by_registration_id(registration_id)
+        if clan is None:
+            raise AppError(ErrorCode.INTERNAL_ERROR, "Failed to initialize clan space.")
+
+    # 4. Provision Owner & send credentials email
+    existing_owner = await family.get_active_owner(clan.clan_id)
+    temp_pass = None
+    expires_at = None
+    delivery_status = None
+    if existing_owner is None:
+        clan_leader_email = generate_clan_leader_email(reg_clan_name, reg_origin_place)
+        prefix, domain = clan_leader_email.split("@", 1)
+        counter = 1
+        while await users.get_user_by_email_ci(clan_leader_email) is not None:
+            clan_leader_email = f"{prefix}{counter}@{domain}"
+            counter += 1
+
+        provision_success = False
+        if getattr(provider, "admin_api_enabled", False):
+            try:
+                owner_key = f"auto-owner-{clan.clan_id}"
+                prov = await owner_provisioning_use_cases.provision_owner(
+                    db=db,
+                    users=users,
+                    family=family,
+                    jobs=jobs,
+                    idempotency=idempotency,
+                    provider=provider,
+                    sender=sender,
+                    principal=principal,
+                    clan_id=clan.clan_id,
+                    body=OwnerProvisionRequest(
+                        email=clan_leader_email,
+                        display_name=rep_name,
+                        phone=rep_phone,
+                    ),
+                    key=owner_key,
+                    client=client,
+                )
+                temp_pass = prov.response.temporary_password
+                expires_at = prov.response.temporary_password_expires_at
+                delivery_status = prov.response.email_delivery_status
+                owner_email = prov.response.owner_email or clan_leader_email
+                owner_name = prov.response.owner_display_name or rep_name
+
+                mail_res = await sender.send_owner_temporary_password(
+                    to_email=rep_email,
+                    display_name=rep_name,
+                    temporary_password=temp_pass or "",
+                    expires_at=expires_at or _now(),
+                    clan_name=clan.name,
+                    account_email=owner_email,
+                )
+                if mail_res.status:
+                    delivery_status = mail_res.status
+                provision_success = True
+            except AppError as e:
+                if e.code != ErrorCode.PROVIDER_UNAVAILABLE:
+                    raise
+                logger.warning("Admin SDK provider unavailable, falling back to Firebase REST: %s", e)
+
+        if not provision_success:
+            owner_email, temp_pass, expires_at, delivery_status = await _provision_owner_via_firebase_rest(
+                db=db,
+                users=users,
+                family=family,
+                principal=principal,
+                clan_id=clan.clan_id,
+                clan_name=clan.name,
+                applicant_name=rep_name,
+                applicant_email=rep_email,
+                applicant_phone=rep_phone,
+                origin_place=reg_origin_place,
+                sender=sender,
+            )
+            owner_name = rep_name
+    else:
+        owner_user = await users.get_user_by_id(existing_owner.user_id)
+        owner_email = owner_user.email if owner_user else rep_email
+        owner_name = owner_user.display_name if owner_user else rep_name
+        delivery_status = "SENT"
+
+    # 5. Activate Clan if PENDING
+    clan_status = clan.status
+    if clan.status == "PENDING":
+        try:
+            await clan_admin_use_cases.activate_clan(
+                db=db,
+                users=users,
+                family=family,
+                idempotency=idempotency,
+                principal=principal,
+                clan_id=clan.clan_id,
+                client=client,
+            )
+            clan_status = "ACTIVE"
+        except Exception as e:
+            logger.warning("Clan activation in approve_and_provision: %s", e)
+            clan_refresh = await family.get_clan_by_registration_id(registration_id)
+            if clan_refresh:
+                clan_status = clan_refresh.status
+
+    email_sent = delivery_status == "SENT"
+    if email_sent:
+        msg = f"Đã phê duyệt và gửi email tài khoản Trưởng tộc ({owner_email}) tới hộp thư {rep_email} thành công."
+    else:
+        msg = f"Đã phê duyệt và cấp tài khoản Trưởng tộc ({owner_email})."
+
+    return BusinessApproveAndProvisionResponse(
+        registration_id=registration_id,
+        clan_id=clan.clan_id,
+        clan_name=clan.name or reg_clan_name,
+        status="APPROVED",
+        clan_status=clan_status,
+        owner_email=owner_email,
+        owner_display_name=owner_name,
+        temporary_password=temp_pass,
+        temporary_password_expires_at=expires_at,
+        email_sent=email_sent,
+        email_delivery_status=delivery_status,
+        message=msg,
+    )
+

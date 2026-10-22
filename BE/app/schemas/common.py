@@ -162,9 +162,25 @@ Phone = Annotated[
 ]
 
 
+def _validate_password_strength(val: SecretStr) -> SecretStr:
+    raw = val.get_secret_value() if hasattr(val, "get_secret_value") else str(val)
+    if len(raw) < 8:
+        raise ValueError("Password must be at least 8 characters long")
+    if not re.search(r"[A-Z]", raw):
+        raise ValueError("Password must contain at least one uppercase letter")
+    if not re.search(r"[a-z]", raw):
+        raise ValueError("Password must contain at least one lowercase letter")
+    if not re.search(r"[0-9]", raw):
+        raise ValueError("Password must contain at least one digit")
+    return val
+
+
 # Secrets are never trimmed and never echoed in repr/logs.
-# Firebase requires at least 6 characters; upper bound only limits payload size.
-Password = Annotated[SecretStr, Field(min_length=6, max_length=4096)]
+Password = Annotated[
+    SecretStr,
+    Field(min_length=8, max_length=4096),
+    AfterValidator(_validate_password_strength),
+]
 # Firebase ID tokens, oob codes, tracking codes.
 SecretToken = Annotated[SecretStr, Field(min_length=1, max_length=8192)]
 

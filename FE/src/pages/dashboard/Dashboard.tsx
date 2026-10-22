@@ -23,7 +23,7 @@ import { FamilyPaternalTab } from '../../components/network/FamilyPaternalTab';
 import { FamilyMaternalTab } from '../../components/network/FamilyMaternalTab';
 import { InLawMarriagesTab } from '../../components/network/InLawMarriagesTab';
 import { AffiliatedFamiliesTab } from '../../components/network/AffiliatedFamiliesTab';
-import { TreeLayout } from '../../components/tree/TreeLayout';
+import { TreeLayout } from '../../shared/tree/TreeLayout';
 import { MemberDashboard, AdminDashboard } from '../../components/roles';
 
 import AdminAccountMgmt from '../../components/admin/AdminAccountMgmt/AdminAccountMgmt';

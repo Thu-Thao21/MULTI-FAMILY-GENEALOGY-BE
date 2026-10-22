@@ -1,8 +1,8 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   getFamilyAdminState, importPersons, issueAccount, removeRelation, requestAccountReset,
   reviewLinkRequest, reviewProposal, saveBranch, savePerson, saveRelation, sendLinkRequest,
-  toggleAccountLock, togglePersonHidden, useFamilyAdminState,
+  toggleAccountLock, togglePersonHidden, useFamilyAdminState, syncFamilyAdminFromBackend,
   type FamilyBranch, type FamilyPerson, type FamilyRelation, type RelationType,
 } from './familyAdminStore';
 import './FamilyAdminModule.css';
@@ -64,6 +64,12 @@ function parseCsv(text: string): string[][] {
 export const FamilyAdminModule: React.FC<Props> = ({ view, onNavigate }) => {
   const data = useFamilyAdminState();
   const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
+
+  useEffect(() => {
+    // Tự động đồng bộ dữ liệu phả hệ thật từ Neon DB
+    syncFamilyAdminFromBackend('c9a59088-7ad7-4b21-8cba-19e2ea46d15a');
+  }, []);
+
   const [query, setQuery] = useState('');
   const [personForm, setPersonForm] = useState<Omit<FamilyPerson, 'id'> | null>(null);
   const [editPersonId, setEditPersonId] = useState<string | undefined>();
@@ -166,7 +172,7 @@ export const FamilyAdminModule: React.FC<Props> = ({ view, onNavigate }) => {
     {view === 'members' && <>
       <div className="fa-panel"><div className="fa-panel-heading"><div><h2>Danh sách Person</h2><p>Thêm, sửa, ẩn và khôi phục hồ sơ trong dòng họ.</p></div><button type="button" className="fa-primary" onClick={() => { setEditPersonId(undefined); setPersonForm(emptyPerson(data.branches[0]?.id || '')); }}>+ Thêm Person</button></div>
         <div className="fa-toolbar"><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Tìm tên, Chi/Nhánh hoặc email" aria-label="Tìm Person" /><span>{filteredPersons.length} kết quả</span></div>
-        <div className="fa-table-wrap"><table><thead><tr><th>Họ tên</th><th>Đời / Chi</th><th>Ngày sinh</th><th>Hiển thị</th><th>Tài khoản</th><th>Thao tác</th></tr></thead><tbody>{filteredPersons.map((person) => <tr key={person.id}><td><strong>{person.fullName}</strong><small>{person.bio || genderLabels[person.gender]}</small></td><td>Đời {person.generation}<small>{branchName(person.branchId)}</small></td><td>{person.birthDate || 'Chưa rõ'}</td><td><span className={`fa-status ${person.hidden ? 'muted' : 'approved'}`}>{person.hidden ? 'Đã ẩn' : 'Hiển thị'}</span></td><td>{data.accounts.some((account) => account.personId === person.id) ? 'Có bản nháp' : 'Chưa có'}</td><td><div className="fa-actions"><button type="button" onClick={() => { setEditPersonId(person.id); setPersonForm({ ...person }); }}>Sửa</button><button type="button" onClick={() => run(() => togglePersonHidden(person.id), 'Đã cập nhật trạng thái Person.')}>{person.hidden ? 'Khôi phục' : 'Ẩn'}</button></div></td></tr>)}</tbody></table></div>
+        <div className="fa-table-wrap"><table><thead><tr><th>Họ tên</th><th>Đời / Chi</th><th>Ngày sinh</th><th>Hiển thị</th><th>Tài khoản</th><th>Thao tác</th></tr></thead><tbody>{filteredPersons.map((person) => <tr key={person.id}><td><div className="person-avatar-cell" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><div className={`avatar avatar-placeholder ${person.gender}`} aria-label={`Avatar ${person.gender}`} style={{ width: 28, height: 28, borderRadius: '50%', background: '#e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', flexShrink: 0 }}>{person.gender === 'female' ? '👩' : '👨'}</div><div><strong>{person.fullName}</strong><small>{person.bio || genderLabels[person.gender]}</small></div></div></td><td>Đời {person.generation}<small>{branchName(person.branchId)}</small></td><td>{person.birthDate || 'Chưa rõ'}</td><td><span className={`fa-status ${person.hidden ? 'muted' : 'approved'}`}>{person.hidden ? 'Đã ẩn' : 'Hiển thị'}</span></td><td>{data.accounts.some((account) => account.personId === person.id) ? 'Có bản nháp' : 'Chưa có'}</td><td><div className="fa-actions"><button type="button" onClick={() => { setEditPersonId(person.id); setPersonForm({ ...person }); }}>Sửa</button><button type="button" onClick={() => run(() => togglePersonHidden(person.id), 'Đã cập nhật trạng thái Person.')}>{person.hidden ? 'Khôi phục' : 'Ẩn'}</button></div></td></tr>)}</tbody></table></div>
       </div>
       {personForm && <div className="fa-modal-backdrop"><div className="fa-modal" role="dialog" aria-modal="true" aria-labelledby="fa-person-form"><div className="fa-modal-title"><h2 id="fa-person-form">{editPersonId ? 'Sửa Person' : 'Thêm Person'}</h2><button type="button" onClick={() => setPersonForm(null)} aria-label="Đóng">×</button></div><form onSubmit={(event) => { event.preventDefault(); try { savePerson(personForm, editPersonId); setPersonForm(null); setNotice({ text: 'Đã lưu Person trong bản xem trước.', error: false }); } catch (error) { setNotice({ text: error instanceof Error ? error.message : 'Không thể lưu Person.', error: true }); } }}><div className="fa-form-grid">
         <label>Họ và tên *<input required value={personForm.fullName} onChange={(event) => setPersonForm({ ...personForm, fullName: event.target.value })} /></label>

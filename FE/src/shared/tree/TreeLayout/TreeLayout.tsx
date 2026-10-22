@@ -36,6 +36,9 @@ export const TreeLayout: React.FC<TreeLayoutProps> = ({
   // Toast state for action feedback
   const [isToastOpen, setIsToastOpen] = useState(false);
 
+  const [selectedBranch, setSelectedBranch] = useState<string | undefined>(undefined);
+  const [selectedGeneration, setSelectedGeneration] = useState<number | undefined>(undefined);
+
   useEffect(() => {
     fetchFamilies().then((fams) => {
       setFamilies(fams);
@@ -96,6 +99,34 @@ export const TreeLayout: React.FC<TreeLayoutProps> = ({
   const femaleCount = allMembers.filter((m) => m.gender === 'female').length;
   const maxGen = allMembers.length > 0 ? Math.max(...allMembers.map((m) => m.generation || 1)) : 1;
 
+  // Extract unique branches for filtering (FR-BO-44)
+  const branches = Array.from(
+    new Set(allMembers.map((m) => m.branch).filter((b): b is string => Boolean(b)))
+  );
+
+  // Filter nodes according to selected branch / generation
+  const filterNodeRecursive = (node: ErgoTreeNode): ErgoTreeNode | null => {
+    let match = true;
+    if (selectedBranch && node.branch !== selectedBranch) match = false;
+    if (selectedGeneration !== undefined && node.generation !== selectedGeneration) match = false;
+
+    const filteredChildren = node.children
+      .map(filterNodeRecursive)
+      .filter((c): c is ErgoTreeNode => c !== null);
+
+    if (match || filteredChildren.length > 0) {
+      return {
+        ...node,
+        children: filteredChildren,
+      };
+    }
+    return null;
+  };
+
+  const displayedTreeNodes = (selectedBranch || selectedGeneration !== undefined)
+    ? treeNodes.map(filterNodeRecursive).filter((n): n is ErgoTreeNode => n !== null)
+    : treeNodes;
+
   return (
     <div className="tree-page-layout">
       {/* Top Controls Toolbar */}
@@ -114,7 +145,9 @@ export const TreeLayout: React.FC<TreeLayoutProps> = ({
           </div>
           <p className="tree-toolbar-subtitle">
             {focusMemberId
-              ? 'Đang hiển thị phân nhánh sơ đồ theo người làm trung tâm.'
+              ? 'Đang hiển thị phân nhánh sơ đồ theo người làm trung tâm (Focus View).'
+              : selectedBranch || selectedGeneration !== undefined
+              ? 'Đang áp dụng bộ lọc chi nhánh và thế hệ gia phả.'
               : 'Hiển thị sơ đồ trực hệ đa thế hệ kết nối gia tộc.'}
           </p>
         </div>
@@ -158,13 +191,45 @@ export const TreeLayout: React.FC<TreeLayoutProps> = ({
             ))}
           </select>
 
-          {/* Focus Member Dropdown */}
+          {/* Branch Filter Dropdown (FR-BO-44) */}
+          {branches.length > 0 && (
+            <select
+              className="tree-control-select"
+              value={selectedBranch || ''}
+              onChange={(e) => setSelectedBranch(e.target.value || undefined)}
+            >
+              <option value="">-- Tất cả chi nhánh --</option>
+              {branches.map((b) => (
+                <option key={b} value={b}>
+                  Chi: {b}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {/* Generation Filter Dropdown (FR-BO-44) */}
+          <select
+            className="tree-control-select"
+            value={selectedGeneration !== undefined ? String(selectedGeneration) : ''}
+            onChange={(e) =>
+              setSelectedGeneration(e.target.value ? Number(e.target.value) : undefined)
+            }
+          >
+            <option value="">-- Tất cả thế hệ --</option>
+            {Array.from({ length: maxGen }, (_, i) => i + 1).map((g) => (
+              <option key={g} value={g}>
+                Đời thứ {g}
+              </option>
+            ))}
+          </select>
+
+          {/* Focus Member Dropdown (FR-BO-41) */}
           <select
             className="tree-control-select focus-select"
             value={focusMemberId || ''}
             onChange={(e) => setFocusMemberId(e.target.value || undefined)}
           >
-            <option value="">-- Chọn người làm trung tâm --</option>
+            <option value="">-- Người làm trung tâm (Focus) --</option>
             {allMembers.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.fullName} (Đời {m.generation})
@@ -193,8 +258,10 @@ export const TreeLayout: React.FC<TreeLayoutProps> = ({
               onClick={() => {
                 setZoomScale(1);
                 setFocusMemberId(undefined);
+                setSelectedBranch(undefined);
+                setSelectedGeneration(undefined);
               }}
-              title="Đặt lại góc nhìn"
+              title="Đặt lại góc nhìn và xóa bộ lọc"
             >
               {Math.round(zoomScale * 100)}%
             </button>
@@ -207,13 +274,13 @@ export const TreeLayout: React.FC<TreeLayoutProps> = ({
         <div className="tree-canvas-prompt-loading">
           Đang tính toán sơ đồ trực hệ gia phả...
         </div>
-      ) : treeNodes.length === 0 ? (
+      ) : displayedTreeNodes.length === 0 ? (
         <div className="tree-canvas-prompt-empty">
-          Chưa có dữ liệu cây gia phả phù hợp.
+          Chưa có dữ liệu cây gia phả phù hợp với điều kiện lọc.
         </div>
       ) : (
         <ErgoTreeCanvas
-          nodes={treeNodes}
+          nodes={displayedTreeNodes}
           onCardClick={handleCardClick}
           onContextMenu={handleContextMenu}
           zoomScale={zoomScale}

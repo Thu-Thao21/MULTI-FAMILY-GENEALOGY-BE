@@ -1,17 +1,14 @@
-"""Schemas for Genealogy module (C03)."""
-
-from __future__ import annotations
-
+import uuid
 from datetime import date
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class PersonResponse(BaseModel):
-    id: str
-    family_id: str = Field(alias="familyId")
-    branch_id: Optional[str] = Field(None, alias="branchId")
+    id: uuid.UUID | str
+    family_id: uuid.UUID | str = Field(alias="familyId")
+    branch_id: Optional[uuid.UUID | str] = Field(None, alias="branchId")
     full_name: str = Field(alias="fullName")
     gender: str
     birth_date: Optional[date] = Field(None, alias="birthDate")
@@ -36,6 +33,15 @@ class PersonCreate(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
+    @model_validator(mode="after")
+    def validate_dates(self):
+        today = date.today()
+        if self.birth_date and self.birth_date > today:
+            raise ValueError("Ngày sinh không thể ở trong tương lai (birth date cannot be in the future)")
+        if self.birth_date and self.death_date and self.death_date < self.birth_date:
+            raise ValueError("Ngày mất phải sau hoặc cùng ngày sinh (death date must be on or after birth date)")
+        return self
+
 
 class PersonUpdate(BaseModel):
     full_name: Optional[str] = Field(None, alias="fullName", min_length=1)
@@ -48,6 +54,15 @@ class PersonUpdate(BaseModel):
     status: Optional[str] = None
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    @model_validator(mode="after")
+    def validate_dates(self):
+        today = date.today()
+        if self.birth_date and self.birth_date > today:
+            raise ValueError("Ngày sinh không thể ở trong tương lai (birth date cannot be in the future)")
+        if self.birth_date and self.death_date and self.death_date < self.birth_date:
+            raise ValueError("Ngày mất phải sau hoặc cùng ngày sinh (death date must be on or after birth date)")
+        return self
 
 
 class AncestorDescendantResponse(BaseModel):
@@ -79,6 +94,7 @@ class TreeNode(BaseModel):
     generation: int
     branch_id: Optional[str] = Field(None, alias="branchId")
     avatar_url: Optional[str] = Field(None, alias="avatarUrl")
+    is_alive: bool = Field(True, alias="isLiving")
     status: str
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
@@ -89,10 +105,57 @@ class TreeDataResponse(BaseModel):
     edges: List[RelationshipResponse]
 
 
+class FocusViewNode(BaseModel):
+    id: str
+    full_name: str = Field(alias="fullName")
+    gender: str
+    generation: int
+    branch_id: Optional[str] = Field(None, alias="branchId")
+    avatar_url: Optional[str] = Field(None, alias="avatarUrl")
+    depth: int
+    is_ego: bool = Field(False, alias="isEgo")
+    status: str
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class FocusViewResponse(BaseModel):
+    ego: PersonResponse
+    nodes: List[FocusViewNode]
+    edges: List[RelationshipResponse]
+    max_depth: int = Field(alias="maxDepth")
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
 class RelationshipPath(BaseModel):
     from_person_id: str = Field(alias="fromPersonId")
     to_person_id: str = Field(alias="toPersonId")
     path: List[RelationshipResponse]
+
+
+class RelationshipCalculationResponse(BaseModel):
+    found: bool
+    from_person: Optional[PersonResponse] = Field(None, alias="fromPerson")
+    to_person: Optional[PersonResponse] = Field(None, alias="toPerson")
+    path: List[PersonResponse] = []
+    edges: List[RelationshipResponse] = []
+    kinship_name: str = Field(alias="kinshipName")
+    address_title: str = Field(alias="addressTitle")
+    generation_diff: int = Field(0, alias="generationDiff")
+    description: str = ""
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class PublicClanSummary(BaseModel):
+    id: str
+    name: str
+    code: Optional[str] = None
+    description: Optional[str] = None
+    status: str = "ACTIVE"
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
 __all__ = [
@@ -104,5 +167,9 @@ __all__ = [
     "RelationshipResponse",
     "TreeNode",
     "TreeDataResponse",
+    "FocusViewNode",
+    "FocusViewResponse",
     "RelationshipPath",
+    "RelationshipCalculationResponse",
+    "PublicClanSummary",
 ]

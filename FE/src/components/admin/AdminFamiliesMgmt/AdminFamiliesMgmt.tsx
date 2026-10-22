@@ -14,14 +14,8 @@ export interface FamilyItem {
   status?: string;
 }
 
-const DEMO_FAMILIES: FamilyItem[] = [
-  { id: 'FAM-001', name: 'Dòng họ Nguyễn · Nam Định', founder_name: 'Cụ Nguyễn Văn An', origin_place: 'Xuân Trường, Nam Định', ancestral_house_address: 'Xã Xuân Hồng, Xuân Trường', history: 'Khởi lập từ đầu thế kỷ XIX.', description: 'Gia phả gồm bốn chi chính và nhiều nhánh liên tỉnh.', branches: ['Chi Trưởng', 'Chi Hai', 'Chi Ba', 'Chi Hải Dương'], status: 'active' },
-  { id: 'FAM-002', name: 'Dòng họ Trần · Hải Hậu', founder_name: 'Cụ Trần Đức Phúc', origin_place: 'Hải Hậu, Nam Định', ancestral_house_address: 'Thị trấn Yên Định, Hải Hậu', history: 'Hình thành từ năm 1884.', description: 'Dòng họ thông gia đã xác minh liên kết.', branches: ['Chi Đông', 'Chi Tây'], status: 'active' },
-  { id: 'FAM-003', name: 'Dòng họ Phạm · Hải Dương', founder_name: 'Cụ Phạm Công Thành', origin_place: 'Gia Lộc, Hải Dương', ancestral_house_address: 'Xã Gia Tân, Gia Lộc', history: 'Lưu giữ sắc phong và gia phả chữ Hán.', description: 'Dòng họ bên ngoại của Chi Hai.', branches: ['Chi Gia Tân', 'Chi Hà Nội'], status: 'active' },
-];
-
 export const AdminFamiliesMgmt: React.FC = () => {
-  const [families, setFamilies] = useState<FamilyItem[]>(() => DEMO_FAMILIES.map((item) => ({ ...item, branches: [...(item.branches || [])] })));
+  const [families, setFamilies] = useState<FamilyItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
@@ -39,12 +33,26 @@ export const AdminFamiliesMgmt: React.FC = () => {
   const fetchFamilies = async () => {
     setLoading(true);
     try {
-      const res = await apiClient.get<FamilyItem[]>('/families');
-      if (Array.isArray(res.data) && res.data.length > 0) {
-        setFamilies(res.data);
+      const res = await apiClient.get<any[]>('/families');
+      if (Array.isArray(res.data)) {
+        const mapped: FamilyItem[] = res.data.map((f: any) => ({
+          id: f.id || f.clan_id,
+          name: f.name || f.clan_name || 'Dòng họ',
+          founder_name: f.founder_name || f.representative_name || 'Chưa cập nhật',
+          origin_place: f.origin_place || 'Chưa cập nhật',
+          ancestral_house_address: f.ancestral_house_address || f.address || 'Chưa cập nhật',
+          history: f.history || '',
+          description: f.description || (f.clan_code ? `Mã dòng họ: ${f.clan_code}` : ''),
+          branches: f.branches || ['Chi Trưởng', 'Chi Thứ'],
+          status: f.status || 'active',
+        }));
+        setFamilies(mapped);
+      } else {
+        setFamilies([]);
       }
-    } catch {
-      // Keep the local demo families when the optional endpoint is unavailable.
+    } catch (err: any) {
+      console.error('Không thể tải danh sách dòng họ từ Neon DB:', err);
+      setFamilies([]);
     } finally {
       setLoading(false);
     }

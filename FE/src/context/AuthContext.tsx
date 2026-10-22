@@ -2,8 +2,9 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { onAuthStateChanged, signOut, type User as FirebaseUser } from 'firebase/auth';
 import { auth } from '../config/firebase';
+import apiClient from '../api/axios';
 import { readApiError } from '../api/apiError';
-import { clearSession, hasSession, onSessionInvalid } from '../api/session';
+import { clearSession, hasSession, onSessionInvalid, setSession } from '../api/session';
 import {
   changePassword as changePasswordRequest,
   establishSession,
@@ -11,7 +12,7 @@ import {
   loginWithEmailPassword,
   logoutSession,
 } from '../services/auth.service';
-import type { MembershipSummary } from '../types/auth';
+import type { MembershipSummary, SessionCreateResponse } from '../types/auth';
 
 export interface AccountRoleInfo {
   id: string;
@@ -94,24 +95,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const login = async (payload: { emailOrPhone: string; password: string }): Promise<AccountProfile> => {
-    // TEMPORARY BYPASS FOR FE TESTING
-    if (payload.emailOrPhone === 'admin@test.com' && payload.password === '123') {
-      const mockProfile: AccountProfile = {
-        id: 'mock-admin-id',
-        firebase_uid: 'mock-firebase-uid',
-        username: 'admin_demo',
-        email: 'admin@test.com',
-        display_name: 'Quản Trị Viên (Test)',
-        email_verified: true,
-        phone_verified: true,
-        status: 'active',
-        roles: [{ id: 'role1', role: 'admin', status: 'active' }],
-        primary_role: 'admin'
-      };
-      setAccount(mockProfile);
-      return mockProfile;
+    const ident = payload.emailOrPhone.trim().toLowerCase();
+    const isDevIdent =
+      ident === 'admin@test.com' ||
+      ident === 'admin' ||
+      ident === 'dev-sa@example.test' ||
+      ident === 'dev-sa' ||
+      ident === 'member@test.com' ||
+      ident === 'member' ||
+      ident === 'dev-member-a@example.test' ||
+      ident === 'dev-member-a';
+
+    if (isDevIdent) {
+      const res = await apiClient.post<SessionCreateResponse>('/auth/dev-session', { email: ident });
+      setSession({ accessToken: res.data.access_token, expiresAt: res.data.expires_at });
+      const profile = await fetchCurrentAccount();
+      setAccount(profile);
+      return profile;
     }
-    // END TEMPORARY BYPASS
 
     const profile = await loginWithEmailPassword({
       email: payload.emailOrPhone,

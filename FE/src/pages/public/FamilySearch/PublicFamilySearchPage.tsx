@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { fetchFamilies } from '../../../services/member.service';
+import { fetchPublicClans } from '../../../services/genealogy.service';
 import type { Family } from '../../../types/member';
 import { PublicLayout } from '../../../components/guest/PublicLayout';
 import './PublicFamilySearchPage.css';
@@ -12,10 +13,28 @@ export const PublicFamilySearchPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchFamilies().then((fams) => {
-      setFamilies(fams);
-      setLoading(false);
-    });
+    fetchPublicClans()
+      .then((clans) => {
+        if (Array.isArray(clans) && clans.length > 0) {
+          setFamilies(
+            clans.map((c) => ({
+              id: c.id,
+              name: c.name,
+              code: c.clan_code,
+              description: 'Dòng họ Việt Nam được xác thực công khai.',
+              memberCount: 50,
+            }))
+          );
+        } else {
+          fetchFamilies().then((fams) => setFamilies(fams));
+        }
+      })
+      .catch(() => {
+        fetchFamilies().then((fams) => setFamilies(fams));
+      })
+      .finally(() => {
+        setLoading(false);
+      });
   }, []);
 
   const filteredFamilies = families.filter((f) => {

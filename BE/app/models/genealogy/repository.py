@@ -38,7 +38,8 @@ class GenealogyRepository:
     ) -> List[Person]:
         stmt = select(Person).where(Person.family_id == family_id)
         if search:
-            stmt = stmt.where(Person.full_name.ilike(f"%{search}%"))
+            escaped = str(search).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            stmt = stmt.where(Person.full_name.ilike(f"%{escaped}%"))
         if gender:
             stmt = stmt.where(Person.gender == gender)
         if branch_id:
@@ -152,11 +153,11 @@ class GenealogyRepository:
                 INSERT INTO person_closure (ancestor_id, descendant_id, depth)
                 SELECT person_id, person_id, 0
                 FROM persons
-                WHERE person_id = :person_id AND clan_id = :family_id
-                ON CONFLICT DO NOTHING
+                WHERE person_id = :person_id::uuid AND clan_id = :family_id::uuid
+                ON CONFLICT (ancestor_id, descendant_id) DO NOTHING
                 """
             ),
-            {"person_id": person_id, "family_id": family_id},
+            {"person_id": str(person_id), "family_id": str(family_id)},
         )
 
     async def rebuild_closure_for_parent_child(
@@ -171,14 +172,15 @@ class GenealogyRepository:
                 CROSS JOIN person_closure c
                 JOIN persons ancestor ON ancestor.person_id = a.ancestor_id
                 JOIN persons descendant ON descendant.person_id = c.descendant_id
-                WHERE a.descendant_id = :parent_id
-                  AND c.ancestor_id = :child_id
-                  AND ancestor.clan_id = :family_id
-                  AND descendant.clan_id = :family_id
-                ON CONFLICT DO NOTHING
+                WHERE a.descendant_id = :parent_id::uuid
+                  AND c.ancestor_id = :child_id::uuid
+                  AND ancestor.clan_id = :family_id::uuid
+                  AND descendant.clan_id = :family_id::uuid
+                ON CONFLICT (ancestor_id, descendant_id) 
+                DO UPDATE SET depth = LEAST(person_closure.depth, EXCLUDED.depth)
                 """
             ),
-            {"family_id": family_id, "parent_id": parent_id, "child_id": child_id},
+            {"family_id": str(family_id), "parent_id": str(parent_id), "child_id": str(child_id)},
         )
 
     async def delete_closure_for_parent_child(
@@ -192,17 +194,18 @@ class GenealogyRepository:
                     SELECT pc.ancestor_id
                     FROM person_closure pc
                     JOIN persons p ON p.person_id = pc.ancestor_id
-                    WHERE pc.descendant_id = :parent_id AND p.clan_id = :family_id
+                    WHERE pc.descendant_id = :parent_id::uuid AND p.clan_id = :family_id::uuid
                 )
                   AND descendant_id IN (
                     SELECT pc.descendant_id
                     FROM person_closure pc
                     JOIN persons p ON p.person_id = pc.descendant_id
-                    WHERE pc.ancestor_id = :child_id AND p.clan_id = :family_id
+                    WHERE pc.ancestor_id = :child_id::uuid AND p.clan_id = :family_id::uuid
                 )
+                  AND depth > 0
                 """
             ),
-            {"family_id": family_id, "parent_id": parent_id, "child_id": child_id},
+            {"family_id": str(family_id), "parent_id": str(parent_id), "child_id": str(child_id)},
         )
 
     async def get_max_depth_for_descendant(

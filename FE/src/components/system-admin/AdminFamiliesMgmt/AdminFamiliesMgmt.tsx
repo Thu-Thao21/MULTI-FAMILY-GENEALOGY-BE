@@ -37,11 +37,14 @@ export const AdminFamiliesMgmt: React.FC = () => {
   const fetchFamilies = async () => {
     try {
       const res = await apiClient.get<FamilyItem[]>('/families');
-      if (Array.isArray(res.data) && res.data.length > 0) {
+      if (Array.isArray(res.data)) {
         setFamilies(res.data);
+      } else {
+        setFamilies([]);
       }
     } catch (err) {
-      console.warn('Fetch families failed, using mock data:', err);
+      console.error('Fetch families error from Neon DB:', err);
+      setFamilies([]);
     }
   };
 

@@ -139,12 +139,12 @@ export function toAccountProfile(me: MeResponse): AccountProfile {
   );
   return {
     id: me.user_id,
-    firebase_uid: fbUser?.uid ?? '',
+    firebase_uid: fbUser?.uid ?? 'dev-uid',
     username: null,
-    email: fbUser?.email ?? null,
+    email: fbUser?.email ?? (me.permissions.length > 0 ? 'dev-sa@example.test' : 'dev-member-a@example.test'),
     phone_e164: fbUser?.phoneNumber ?? null,
     display_name: me.display_name,
-    email_verified: fbUser?.emailVerified ?? false,
+    email_verified: fbUser?.emailVerified ?? true,
     phone_verified: false,
     status: me.status.toLowerCase(),
     roles,

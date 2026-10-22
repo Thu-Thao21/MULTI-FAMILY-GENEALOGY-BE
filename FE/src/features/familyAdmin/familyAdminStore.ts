@@ -1,4 +1,12 @@
 import { useSyncExternalStore } from 'react';
+import {
+  fetchFamilyPersons,
+  fetchFamilyTreeData,
+  createFamilyPerson,
+  updateFamilyPerson,
+  createFamilyRelationship,
+  deleteFamilyRelationship,
+} from '../../services/genealogy.service';
 
 export type PersonVisibility = 'family' | 'admin' | 'private';
 export type RelationType = 'father' | 'mother' | 'spouse' | 'adoptive_parent' | 'step_parent';
@@ -80,13 +88,38 @@ export interface FamilyAdminState {
 const STORAGE_KEY = 'mfgms.familyAdmin.frontend.v2';
 
 const initialState: FamilyAdminState = {
-  familyName: 'Dòng họ Võ',
-  branches: [],
-  persons: [],
-  relations: [],
+  familyName: 'Gia đình A (Dòng họ Nguyễn)',
+  branches: [
+    { id: 'branch-1', name: 'Chi Trưởng', founderId: 'p-001', description: 'Chi trưởng dòng họ Nguyễn' },
+    { id: 'branch-2', name: 'Chi Thứ', founderId: 'p-003', description: 'Chi thứ hai' },
+  ],
+  persons: [
+    { id: 'p-001', fullName: 'Nguyễn Văn An', gender: 'male', birthDate: '1940-01-01', deathDate: '2010-05-20', branchId: 'branch-1', generation: 1, phone: '', email: '', bio: 'Thế hệ 1 - Tổ phụ', hidden: false, visibility: 'family' },
+    { id: 'p-002', fullName: 'Trần Thị Bình', gender: 'female', birthDate: '1945-03-15', deathDate: '2015-08-10', branchId: 'branch-1', generation: 1, phone: '', email: '', bio: 'Thế hệ 1 - Vợ P001', hidden: false, visibility: 'family' },
+    { id: 'p-003', fullName: 'Nguyễn Văn Cường', gender: 'male', birthDate: '1970-06-20', deathDate: '', branchId: 'branch-1', generation: 2, phone: '', email: '', bio: 'Thế hệ 2 - Con P001 và P002', hidden: false, visibility: 'family' },
+    { id: 'p-004', fullName: 'Nguyễn Thị Dung', gender: 'female', birthDate: '1975-09-12', deathDate: '', branchId: 'branch-1', generation: 2, phone: '', email: '', bio: 'Thế hệ 2 - Con P001 và P002', hidden: false, visibility: 'family' },
+    { id: 'p-005', fullName: 'Lê Thị Hoa', gender: 'female', birthDate: '1973-11-05', deathDate: '', branchId: 'branch-1', generation: 2, phone: '', email: '', bio: 'Thế hệ 2 - Vợ P003', hidden: false, visibility: 'family' },
+    { id: 'p-006', fullName: 'Nguyễn Văn Minh', gender: 'male', birthDate: '2000-02-28', deathDate: '', branchId: 'branch-1', generation: 3, phone: '', email: '', bio: 'Thế hệ 3 - Cháu nội P001', hidden: false, visibility: 'family' },
+    { id: 'p-007', fullName: 'Nguyễn Văn Nam', gender: 'male', birthDate: '1980-04-18', deathDate: '', branchId: 'branch-2', generation: 2, phone: '', email: '', bio: 'Người không có quan hệ với P001–P006', hidden: false, visibility: 'family' },
+    { id: 'p-008', fullName: 'Nguyễn Văn An', gender: 'male', birthDate: '2005-12-01', deathDate: '', branchId: 'branch-1', generation: 3, phone: '', email: '', bio: 'Người trùng tên với P001 nhưng là người khác', hidden: false, visibility: 'family' },
+    { id: 'p-009', fullName: 'Người chưa xác định cha mẹ', gender: 'male', birthDate: '1990-07-07', deathDate: '', branchId: 'branch-2', generation: 2, phone: '', email: '', bio: 'Kiểm tra dữ liệu thiếu', hidden: false, visibility: 'family' },
+    { id: 'p-010', fullName: 'Người quan hệ phức tạp', gender: 'male', birthDate: '1988-08-08', deathDate: '', branchId: 'branch-2', generation: 2, phone: '', email: '', bio: 'Kiểm thử dữ liệu phức tạp', hidden: false, visibility: 'family' },
+  ],
+  relations: [
+    { id: 'rel-1', type: 'spouse', fromId: 'p-001', toId: 'p-002', since: '1968-01-01' },
+    { id: 'rel-2', type: 'father', fromId: 'p-001', toId: 'p-003', since: '' },
+    { id: 'rel-3', type: 'mother', fromId: 'p-002', toId: 'p-003', since: '' },
+    { id: 'rel-4', type: 'father', fromId: 'p-001', toId: 'p-004', since: '' },
+    { id: 'rel-5', type: 'mother', fromId: 'p-002', toId: 'p-004', since: '' },
+    { id: 'rel-6', type: 'spouse', fromId: 'p-003', toId: 'p-005', since: '1998-05-10' },
+    { id: 'rel-7', type: 'father', fromId: 'p-003', toId: 'p-006', since: '' },
+    { id: 'rel-8', type: 'mother', fromId: 'p-005', toId: 'p-006', since: '' },
+  ],
   accounts: [],
   proposals: [],
-  linkRequests: [],
+  linkRequests: [
+    { id: 'lr-1', targetFamily: 'Gia đình B (Dòng họ Trần)', reason: 'Liên kết thông gia thế hệ 2', status: 'pending', createdAt: '2026-10-15' },
+  ],
   audit: [],
 };
 
@@ -299,3 +332,44 @@ export function importPersons(rows: Array<Pick<FamilyPerson, 'fullName' | 'gende
   commit(`Nhập ${validated.length} Person từ CSV`, (draft) => { draft.persons.push(...validated); });
   return validated.length;
 }
+
+export async function syncFamilyAdminFromBackend(clanId: string): Promise<void> {
+  try {
+    const [persons, tree] = await Promise.all([
+      fetchFamilyPersons(clanId).catch(() => []),
+      fetchFamilyTreeData(clanId).catch(() => ({ nodes: [], edges: [] })),
+    ]);
+
+    commit('Đồng bộ dữ liệu từ Backend', (draft) => {
+      if (Array.isArray(persons) && persons.length > 0) {
+        draft.persons = persons.map((p) => ({
+          id: p.id,
+          fullName: p.fullName,
+          gender: (p.gender === 'female' ? 'female' : 'male') as any,
+          birthDate: p.birthDate || '',
+          deathDate: p.deathDate || '',
+          branchId: p.branchId || '',
+          generation: p.generation || 1,
+          phone: '',
+          email: '',
+          bio: '',
+          hidden: !p.isLiving,
+          visibility: 'family',
+        }));
+      }
+
+      if (tree && Array.isArray(tree.edges) && tree.edges.length > 0) {
+        draft.relations = tree.edges.map((e) => ({
+          id: e.id,
+          type: (e.relationshipType === 'SPOUSE' ? 'spouse' : 'father') as any,
+          fromId: e.fromMemberId,
+          toId: e.toMemberId,
+          since: '',
+        }));
+      }
+    });
+  } catch (err) {
+    console.warn('Lỗi khi đồng bộ dữ liệu gia phả từ Backend:', err);
+  }
+}
+

@@ -47,11 +47,14 @@ export const AdminMembersMgmt: React.FC = () => {
     try {
       const res = await apiClient.get<any>('/members');
       const dataList = Array.isArray(res.data) ? res.data : res.data?.items;
-      if (Array.isArray(dataList) && dataList.length > 0) {
+      if (Array.isArray(dataList)) {
         setMembers(dataList);
+      } else {
+        setMembers([]);
       }
     } catch (err) {
-      console.warn('Fetch members failed, using mock data:', err);
+      console.error('Fetch members error from Neon DB:', err);
+      setMembers([]);
     }
   };
 

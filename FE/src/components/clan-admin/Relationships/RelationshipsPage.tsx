@@ -12,11 +12,36 @@ interface Relationship {
   status: 'verified' | 'pending';
 }
 
+import apiClient from '../../../api/axios';
+
 export const RelationshipsPage: React.FC = () => {
   const [search, setSearch] = useState('');
-  
-  // Mock data
-  const data: Relationship[] = [];
+  const [data, setData] = useState<Relationship[]>([]);
+
+  React.useEffect(() => {
+    apiClient.get<any[]>('/families').then((famsRes) => {
+      const fams = Array.isArray(famsRes.data) ? famsRes.data : [];
+      if (fams.length > 0) {
+        const familyId = fams[0].id || fams[0].clan_id;
+        apiClient.get<any>(`/api/v1/families/${familyId}/tree-data`).then((res) => {
+          const edges = Array.isArray(res.data?.edges) ? res.data.edges : [];
+          const nodes = Array.isArray(res.data?.nodes) ? res.data.nodes : [];
+          const nodeMap = new Map<string, string>();
+          nodes.forEach((n: any) => nodeMap.set(n.id, n.fullName || n.full_name || 'Thành viên'));
+
+          const mapped: Relationship[] = edges.map((e: any, idx: number) => ({
+            id: e.id || `rel-${idx}`,
+            person1: nodeMap.get(e.source || e.fromMemberId) || e.source || 'Người A',
+            person2: nodeMap.get(e.target || e.toMemberId) || e.target || 'Người B',
+            type: e.relationshipType || e.relation_type || 'Quan hệ',
+            details: e.notes || 'Quan hệ gia đình',
+            status: 'verified',
+          }));
+          setData(mapped);
+        }).catch(() => setData([]));
+      }
+    }).catch(() => setData([]));
+  }, []);
 
   const columns: Column<Relationship>[] = [
     { key: 'person1', header: 'Người thứ nhất', render: (item) => <strong className="text-blue-700">{item.person1}</strong> },

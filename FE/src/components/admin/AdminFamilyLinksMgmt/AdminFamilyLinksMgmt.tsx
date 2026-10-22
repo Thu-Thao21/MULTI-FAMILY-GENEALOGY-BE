@@ -12,26 +12,35 @@ export interface LinkRequestItem {
   created_at: string;
 }
 
-const MOCK_LINK_REQUESTS: LinkRequestItem[] = [
-  { id: 'LH-260914', requester_family: 'Họ Nguyễn · Chi Hà Nội', target_family: 'Họ Trần · Nam Định', link_type: 'affiliated', status: 'pending', notes: 'Đề nghị xác nhận quan hệ thông gia qua hôn lễ năm 1998.', created_at: '2026-09-14' },
-  { id: 'LH-260910', requester_family: 'Họ Phạm · Hải Dương', target_family: 'Họ Nguyễn · Chi Hải Dương', link_type: 'maternal', status: 'approved', notes: 'Liên kết bên ngoại của bà Nguyễn Thị Lan, đời thứ 4.', created_at: '2026-09-10' },
-  { id: 'LH-260905', requester_family: 'Họ Nguyễn · Chi Ba', target_family: 'Họ Lê · Quảng Trị', link_type: 'in_law', status: 'pending', notes: 'Bổ sung nhánh Dâu & Rể theo gia phả năm 2024.', created_at: '2026-09-05' },
-  { id: 'LH-260828', requester_family: 'Họ Vũ · Thái Bình', target_family: 'Họ Nguyễn · Chi Trưởng', link_type: 'paternal', status: 'rejected', notes: 'Cần bổ sung chứng cứ liên kết trực hệ.', created_at: '2026-08-28' },
-];
+import { fetchPublicClans, type PublicClanItem } from '../../../services/genealogy.service';
+import { sendLinkRequest, reviewLinkRequest } from '../../../services/network.service';
 
 export const AdminFamilyLinksMgmt: React.FC = () => {
-  const [requests, setRequests] = useState<LinkRequestItem[]>(() => MOCK_LINK_REQUESTS.map((item) => ({ ...item })));
+  const [requests, setRequests] = useState<LinkRequestItem[]>([]);
+  const [availableClans, setAvailableClans] = useState<PublicClanItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
 
   const fetchLinkRequests = async () => {
     setLoading(true);
     try {
-      const res = await apiClient.get<LinkRequestItem[]>('/networks/link-requests');
-      if (Array.isArray(res.data) && res.data.length > 0) {
-        setRequests(res.data);
+      const res = await apiClient.get<any[]>('/networks/link-requests');
+      if (Array.isArray(res.data)) {
+        const mapped: LinkRequestItem[] = res.data.map((item) => ({
+          id: item.id,
+          requester_family: item.sourceFamilyName || item.source_family_name || 'Dòng họ nguồn',
+          target_family: item.targetFamilyName || item.target_family_name || 'Dòng họ đối tác',
+          link_type: 'affiliated',
+          status: (item.status || 'pending').toLowerCase(),
+          notes: item.message || '',
+          created_at: (item.createdAt || item.created_at || '').slice(0, 10),
+        }));
+        setRequests(mapped);
+      } else {
+        setRequests([]);
       }
-    } catch {
-      // Keep the local demo dataset when the optional endpoint is unavailable.
+    } catch (err) {
+      console.error('Fetch link requests error from Neon DB:', err);
+      setRequests([]);
     } finally {
       setLoading(false);
     }
@@ -39,6 +48,12 @@ export const AdminFamilyLinksMgmt: React.FC = () => {
 
   React.useEffect(() => {
     fetchLinkRequests();
+    fetchPublicClans().then((clans) => {
+      if (Array.isArray(clans)) {
+        setAvailableClans(clans);
+        if (clans.length > 0) setSendTargetFamily(clans[0].id);
+      }
+    });
   }, []);
 
   const [activeTypeTab, setActiveTypeTab] = useState<string>('');
@@ -51,42 +66,45 @@ export const AdminFamilyLinksMgmt: React.FC = () => {
   const [sendNotes, setSendNotes] = useState<string>('');
   const [msg, setMsg] = useState<string>('');
 
-  const handleReview = (id: string, newStatus: 'approved' | 'rejected') => {
-    setRequests((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, status: newStatus } : item))
-    );
-    setMsg(`Đã ${newStatus === 'approved' ? 'chấp nhận & phê duyệt' : 'từ chối'} liên kết thành công.`);
-    setTimeout(() => setMsg(''), 3000);
+  const handleReview = async (id: string, newStatus: 'approved' | 'rejected') => {
+    try {
+      await reviewLinkRequest(id, newStatus === 'approved' ? 'APPROVE' : 'REJECT');
+      await fetchLinkRequests();
+      setMsg(`Đã ${newStatus === 'approved' ? 'chấp nhận & phê duyệt' : 'từ chối'} liên kết thành công.`);
+    } catch (err: any) {
+      setMsg(err?.response?.data?.detail || 'Thao tác phê duyệt thất bại.');
+    }
+    setTimeout(() => setMsg(''), 4000);
   };
 
-  const handleUnlink = (id: string) => {
+  const handleUnlink = async (id: string) => {
     if (window.confirm('Bạn có chắc chắn muốn hủy liên kết giữa 2 dòng họ này?')) {
-      setRequests((prev) => prev.filter((item) => item.id !== id));
-      setMsg('Đã hủy liên kết dòng họ.');
+      try {
+        await reviewLinkRequest(id, 'REJECT');
+        await fetchLinkRequests();
+        setMsg('Đã hủy liên kết dòng họ trên cơ sở dữ liệu.');
+      } catch {
+        setMsg('Hủy liên kết thất bại.');
+      }
       setTimeout(() => setMsg(''), 3000);
     }
   };
 
-  const handleSendRequest = (e: React.FormEvent) => {
+  const handleSendRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!sendTargetFamily) return;
 
-    const newReq: LinkRequestItem = {
-      id: `req_${Date.now()}`,
-      requester_family: 'Dòng Họ Nguyễn Văn (Gốc)',
-      target_family: sendTargetFamily,
-      link_type: sendLinkType,
-      status: 'pending',
-      notes: sendNotes,
-      created_at: new Date().toISOString().split('T')[0],
-    };
+    try {
+      await sendLinkRequest(sendTargetFamily, sendLinkType, sendNotes);
+      await fetchLinkRequests();
+      setMsg('Đã gửi yêu cầu kết nối dòng họ thành công tới Neon DB!');
+    } catch (err: any) {
+      setMsg(err?.response?.data?.detail || 'Gửi yêu cầu thất bại. Vui lòng thử lại.');
+    }
 
-    setRequests((prev) => [newReq, ...prev]);
     setIsSendModalOpen(false);
-    setSendTargetFamily('');
     setSendNotes('');
-    setMsg(`Đã gửi yêu cầu kết nối tới "${sendTargetFamily}" thành công!`);
-    setTimeout(() => setMsg(''), 3000);
+    setTimeout(() => setMsg(''), 4000);
   };
 
   const filteredRequests = requests.filter((r) => {

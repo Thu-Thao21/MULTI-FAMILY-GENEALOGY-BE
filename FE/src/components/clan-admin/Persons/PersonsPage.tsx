@@ -13,13 +13,28 @@ interface Person {
   status: 'alive' | 'deceased';
 }
 
+import { fetchMembers } from '../../../services/member.service';
+
 export const PersonsPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
   const [detailTab, setDetailTab] = useState<'overview' | 'relationships' | 'account' | 'history'>('overview');
-  
-  // Mock data
-  const data: Person[] = [];
+  const [data, setData] = useState<Person[]>([]);
+
+  React.useEffect(() => {
+    fetchMembers({ search: search || undefined, limit: 100 }).then((res) => {
+      const mapped: Person[] = (res.items || []).map((m: any) => ({
+        id: m.id,
+        name: m.fullName || m.full_name || 'Thành viên',
+        gender: m.gender === 'female' ? 'Nữ' : 'Nam',
+        dob: m.birthDate ? String(m.birthDate).slice(0, 10) : m.birth_year ? String(m.birth_year) : '—',
+        generation: m.generation || 1,
+        branch: m.branch || 'Chi Trưởng',
+        status: m.isAlive === false || m.is_alive === false ? 'deceased' : 'alive',
+      }));
+      setData(mapped);
+    }).catch(() => setData([]));
+  }, [search]);
 
   const columns: Column<Person>[] = [
     { key: 'name', header: 'Họ và tên', render: (item) => <strong className="text-slate-800">{item.name}</strong> },

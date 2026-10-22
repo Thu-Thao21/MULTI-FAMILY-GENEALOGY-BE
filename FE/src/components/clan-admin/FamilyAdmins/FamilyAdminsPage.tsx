@@ -12,12 +12,27 @@ interface FamilyAdmin {
   status: 'active' | 'inactive';
 }
 
+import { fetchAdminUsers } from '../../../services/admin.service';
+
 export const FamilyAdminsPage: React.FC = () => {
   const [search, setSearch] = useState('');
   const [selectedAdmin, setSelectedAdmin] = useState<FamilyAdmin | null>(null);
-  
-  // Mock data
-  const data: FamilyAdmin[] = [];
+  const [data, setData] = useState<FamilyAdmin[]>([]);
+
+  React.useEffect(() => {
+    fetchAdminUsers({ q: search || undefined, page_size: 50 }).then((res) => {
+      const items = res?.items || [];
+      const mapped: FamilyAdmin[] = items.map((u: any) => ({
+        id: u.user_id,
+        name: u.display_name || u.email,
+        email: u.email,
+        phone: u.phone || 'Chưa cập nhật',
+        branch: 'Chi Trưởng',
+        status: u.status === 'ACTIVE' ? 'active' : 'inactive',
+      }));
+      setData(mapped);
+    }).catch(() => setData([]));
+  }, [search]);
 
   const columns: Column<FamilyAdmin>[] = [
     { key: 'name', header: 'Họ và tên', render: (item) => <strong className="text-slate-800">{item.name}</strong> },
