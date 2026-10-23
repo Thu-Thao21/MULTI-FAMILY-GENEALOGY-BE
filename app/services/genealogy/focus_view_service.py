@@ -1,137 +1,157 @@
-from collections import deque
-from typing import List, Dict, Any, Set
+"""Service for Ego-centric / Focus View (3 generations: -1, 0, +1).
+
+Uses generation- and direction-constrained traversal:
+- Đời trên (-1): Cha và mẹ của người được chọn (Ego)
+- Đời trung tâm (0): Người được chọn (Ego) + Vợ/chồng (Spouse)
+- Đời dưới (+1): Các con của Ego
+
+Strictly prohibits expanding to grandparents (-2), grandchildren (+2),
+spouse's parents, or external relatives.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Set, Tuple
+
 
 class FocusViewService:
-    """
-    Service for Ego-centric / Focus View.
-    Uses BFS (Breadth-First Search) with a depth limit to get relatives around an Ego node.
-    """
-
     @staticmethod
-    def get_focus_view(ego_id: str, relationships: List[Dict[str, Any]], max_depth: int = 2) -> Dict[str, Any]:
+    def _extract_rel(rel: Any) -> Tuple[str, str, str, str]:
+        """Extracts (from_id, to_id, rel_type, edge_id) from ORM or dict."""
+        p1 = str(
+            getattr(rel, "from_member_id", None)
+            or (rel.get("from_member_id") if isinstance(rel, dict) else None)
+            or (rel.get("person_1") if isinstance(rel, dict) else None)
+            or ""
+        )
+        p2 = str(
+            getattr(rel, "to_member_id", None)
+            or (rel.get("to_member_id") if isinstance(rel, dict) else None)
+            or (rel.get("person_2") if isinstance(rel, dict) else None)
+            or ""
+        )
+        rtype = str(
+            getattr(rel, "relationship_type", None)
+            or (rel.get("relationship_type") if isinstance(rel, dict) else "")
+        ).upper()
+        edge_id = str(
+            getattr(rel, "id", None)
+            or (rel.get("id") if isinstance(rel, dict) else None)
+            or f"{p1}_{p2}_{rtype}"
+        )
+        return p1, p2, rtype, edge_id
+
+    @classmethod
+    def extract_focus_subgraph(
+        cls,
+        ego_id: str,
+        relationships: List[Any],
+        max_depth: int = 1,
+    ) -> Dict[str, Any]:
+        """Extracts the 3-generation Ego-centric subgraph:
+
+        Level -1: Parents (Father & Mother)
+        Level  0: Ego & Spouse(s)
+        Level +1: Children of Ego
         """
-        Dựng góc nhìn tập trung quanh 1 người (Ego).
-        
-        Args:
-            ego_id: ID của người làm tâm.
-            relationships: Danh sách tất cả các mối quan hệ (Mock data).
-                           Contract: 
-                           {'person_1': parent_id, 'person_2': child_id, 'type': 'PARENT_CHILD'}
-                           {'person_1': p1_id, 'person_2': p2_id, 'type': 'SPOUSE'}
-                           
-            max_depth: Độ sâu tối đa (dựa trên số lượng cạnh).
-                       Depth 0: Ego
-                       Depth 1: Parent, Spouse, Children
-                       Depth 2: Grandparents, Grandchildren, Siblings
-                       Depth 3: Uncle, Aunt, Nephew, Niece, Cousin depending on path
-                       
-        Returns:
-            Dict chứa danh sách 'nodes' (các thành viên) và 'edges' (các mối quan hệ giữa họ).
-        """
-        
-        # LƯU Ý KHI RÁP DATABASE (SPRINT 1-2 HOÀN THÀNH):
-        # Không nên load toàn bộ data từ DB rồi for loop như cách Mock dưới đây.
-        # Thay vào đó, thay đổi luồng BFS:
-        # Ở mỗi vòng lặp `while queue:`, gọi Repository để lấy neighbors của `current_id` trực tiếp từ DB.
-        # Ví dụ: relatives = repository.get_neighbors(current_id)
-        
-        # 1. Biểu diễn đồ thị bằng Adjacency List (Danh sách kề) vô hướng
-        # adj_list[person_id] = [(related_person_id, relation_type)]
-        adj_list: Dict[str, List[Dict[str, Any]]] = {}
-        
+        ego_id = str(ego_id)
+
+        # 1. Index relationships by direction and type
+        parents_of_ego: Set[str] = set()
+        spouses_of_ego: Set[str] = set()
+        children_of_ego: Set[str] = set()
+
+        parent_rel_types = {"PARENT_CHILD", "ADOPTED_CHILD", "CON_RUOT", "CON_NUOI"}
+
         for rel in relationships:
-            p1 = rel.get("person_1")
-            p2 = rel.get("person_2")
-            rel_type = rel.get("type")
-            
-            if p1 not in adj_list:
-                adj_list[p1] = []
-            if p2 not in adj_list:
-                adj_list[p2] = []
-                
-            # Đồ thị vô hướng: A quan hệ với B thì B cũng quan hệ với A
-            adj_list[p1].append({"related_id": p2, "type": rel_type, "direction": "forward"})
-            adj_list[p2].append({"related_id": p1, "type": rel_type, "direction": "backward"})
+            p1, p2, rtype, _ = cls._extract_rel(rel)
+            if not p1 or not p2:
+                continue
 
-        # Nếu Ego không tồn tại trong tập dữ liệu
-        if ego_id not in adj_list and not any(r.get("person_1") == ego_id or r.get("person_2") == ego_id for r in relationships):
-             return {"nodes": [{"id": ego_id, "depth": 0}], "edges": []}
+            # Check Parents of Ego: (Parent -> Ego)
+            if rtype in parent_rel_types and p2 == ego_id:
+                parents_of_ego.add(p1)
 
-        # 2. Thuật toán BFS giới hạn độ sâu (Depth-limited BFS)
-        queue = deque([(ego_id, 0)]) # Lưu tuple (person_id, depth)
-        visited_nodes: Set[str] = {ego_id}
-        
-        # Lưu kết quả
-        result_nodes: List[Dict[str, Any]] = []
-        result_edges: List[Dict[str, Any]] = []
-        
-        # Dùng set để tránh add trùng cạnh (edge) A-B và B-A
-        added_edges = set()
+            # Check Spouses of Ego: (Ego <-> Spouse)
+            elif rtype == "SPOUSE":
+                if p1 == ego_id and p2 != ego_id:
+                    spouses_of_ego.add(p2)
+                elif p2 == ego_id and p1 != ego_id:
+                    spouses_of_ego.add(p1)
 
-        while queue:
-            current_id, depth = queue.popleft()
-            
-            # Lưu node vào kết quả
-            result_nodes.append({
-                "id": current_id,
-                "depth": depth
-            })
-            
-            # Chỉ lan truyền tiếp nếu chưa đạt max_depth
-            if depth < max_depth:
-                # Lấy các họ hàng của current_id
-                relatives = adj_list.get(current_id, [])
-                
-                for rel in relatives:
-                    neighbor_id = rel["related_id"]
-                    
-                    # Ghi nhận Edge (Quan hệ)
-                    # Sắp xếp id và kèm type để tạo signature duy nhất cho cạnh
-                    edge_sig = (*sorted([current_id, neighbor_id]), rel["type"])
-                    
-                    if edge_sig not in added_edges:
-                        added_edges.add(edge_sig)
-                        result_edges.append({
-                            "source": current_id if rel["direction"] == "forward" else neighbor_id,
-                            "target": neighbor_id if rel["direction"] == "forward" else current_id,
-                            "type": rel["type"]
-                        })
+            # Check Children of Ego: (Ego -> Child)
+            elif rtype in parent_rel_types and p1 == ego_id:
+                children_of_ego.add(p2)
 
-                    # Nếu neighbor chưa được duyệt, đưa vào queue với depth + 1
-                    if neighbor_id not in visited_nodes:
-                        visited_nodes.add(neighbor_id)
-                        queue.append((neighbor_id, depth + 1))
+        # 2. Build 3-generation node mappings with roles and depths
+        # Level  0: Ego (depth: 0, role: 'ego')
+        # Level  0: Spouse (depth: 0, role: 'spouse')
+        # Level -1: Parents (depth: -1, role: 'parent')
+        # Level +1: Children (depth: 1, role: 'child')
+        node_depths: Dict[str, int] = {ego_id: 0}
+        node_roles: Dict[str, str] = {ego_id: "ego"}
+
+        for s_id in spouses_of_ego:
+            node_depths[s_id] = 0
+            node_roles[s_id] = "spouse"
+
+        for p_id in parents_of_ego:
+            node_depths[p_id] = -1
+            node_roles[p_id] = "parent"
+
+        for c_id in children_of_ego:
+            node_depths[c_id] = 1
+            node_roles[c_id] = "child"
+
+        # 3. Collect only verified, strictly-permitted intra-subgraph edges:
+        # Rule 1: Parent -> Ego (PARENT_CHILD / ADOPTED_CHILD)
+        # Rule 2: Parent <-> Parent (SPOUSE only - MUST exist in data, never inferred)
+        # Rule 3: Ego <-> Spouse (SPOUSE only)
+        # Rule 4: Ego -> Child (PARENT_CHILD / ADOPTED_CHILD)
+        # Rule 5: Spouse -> Child (PARENT_CHILD / ADOPTED_CHILD - verified actual parentage)
+        subgraph_nodes = set(node_depths.keys())
+        included_edges: List[Any] = []
+        seen_edge_ids: Set[str] = set()
+
+        for rel in relationships:
+            p1, p2, rtype, edge_id = cls._extract_rel(rel)
+            if not p1 or not p2:
+                continue
+
+            if p1 not in subgraph_nodes or p2 not in subgraph_nodes:
+                continue
+
+            is_valid_edge = False
+
+            # Rule 1: Parent -> Ego
+            if p1 in parents_of_ego and p2 == ego_id and rtype in parent_rel_types:
+                is_valid_edge = True
+
+            # Rule 2: Parent <-> Parent (only if verified SPOUSE in data)
+            elif p1 in parents_of_ego and p2 in parents_of_ego and p1 != p2 and rtype == "SPOUSE":
+                is_valid_edge = True
+
+            # Rule 3: Ego <-> Spouse
+            elif (
+                ((p1 == ego_id and p2 in spouses_of_ego) or (p2 == ego_id and p1 in spouses_of_ego))
+                and rtype == "SPOUSE"
+            ):
+                is_valid_edge = True
+
+            # Rule 4: Ego -> Child
+            elif p1 == ego_id and p2 in children_of_ego and rtype in parent_rel_types:
+                is_valid_edge = True
+
+            # Rule 5: Spouse -> Child (Only if that spouse has a real parent-child record with that child)
+            elif p1 in spouses_of_ego and p2 in children_of_ego and rtype in parent_rel_types:
+                is_valid_edge = True
+
+            if is_valid_edge and edge_id not in seen_edge_ids:
+                seen_edge_ids.add(edge_id)
+                included_edges.append(rel)
 
         return {
-            "nodes": result_nodes,
-            "edges": result_edges
+            "node_depths": node_depths,
+            "node_roles": node_roles,
+            "edges": included_edges,
         }
-
-# --- TEST MOCK DATA ---
-if __name__ == "__main__":
-    # Hardcode Mock Data để test trực tiếp
-    # Contract chuẩn: person_1 = Parent, person_2 = Child
-    mock_relationships = [
-        {"person_1": "Ông Nội", "person_2": "Cha", "type": "PARENT_CHILD"},
-        {"person_1": "Bà Nội", "person_2": "Cha", "type": "PARENT_CHILD"},
-        {"person_1": "Cha", "person_2": "Ego", "type": "PARENT_CHILD"},
-        {"person_1": "Mẹ", "person_2": "Ego", "type": "PARENT_CHILD"},
-        {"person_1": "Ego", "person_2": "Vợ", "type": "SPOUSE"},
-        {"person_1": "Ego", "person_2": "Con Trai", "type": "PARENT_CHILD"},
-        {"person_1": "Ông Nội", "person_2": "Chú", "type": "PARENT_CHILD"},
-        {"person_1": "Cha", "person_2": "Anh Trai", "type": "PARENT_CHILD"}, # Anh ruột (Ego -> Cha -> Anh Trai = Depth 2)
-    ]
-    
-    service = FocusViewService()
-    
-    print("--- TEST EGO-CENTRIC VIEW (DEPTH = 1) ---")
-    result_d1 = service.get_focus_view("Ego", mock_relationships, max_depth=1)
-    print(f"Nodes (Depth 1): {[n['id'] for n in result_d1['nodes']]}")
-    # Kỳ vọng: Parent, Spouse, Children
-    # Kết quả: Ego, Cha, Mẹ, Vợ, Con Trai
-    
-    print("\n--- TEST EGO-CENTRIC VIEW (DEPTH = 2) ---")
-    result_d2 = service.get_focus_view("Ego", mock_relationships, max_depth=2)
-    print(f"Nodes (Depth 2): {[n['id'] for n in result_d2['nodes']]}")
-    # Kỳ vọng: Thêm Grandparents, Siblings
-    # Kết quả: Thêm Ông Nội, Bà Nội (từ Cha), Anh Trai (từ Cha)

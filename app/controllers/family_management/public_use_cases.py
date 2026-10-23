@@ -24,10 +24,10 @@ from datetime import datetime, timezone
 from sqlalchemy.exc import IntegrityError
 
 from app.controllers.auth_access.use_cases import ClientInfo, UnitOfWork
-from app.core.db_errors import constraint_name  # noqa: F401  (also used by name in tests)
+from app.core.errors.db_errors import constraint_name  # noqa: F401  (also used by name in tests)
 from app.core.errors import AppError
-from app.core.request_id import get_request_id
-from app.core.tokens import generate_tracking_code, hash_tracking_code
+from app.core.middleware.request_id import get_request_id
+from app.core.security.tokens import generate_tracking_code, hash_tracking_code
 from app.models.family.repository import FamilyRepository
 from app.models.user_access.repository import UserAccessRepository
 from app.schemas.business import (

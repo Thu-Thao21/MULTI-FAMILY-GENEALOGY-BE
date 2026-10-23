@@ -22,7 +22,7 @@ from app.controllers.auth_access.use_cases import (
     build_membership_summaries,
 )
 from app.core.errors import AppError
-from app.core.request_id import get_request_id
+from app.core.middleware.request_id import get_request_id
 from app.dependencies.auth import BLOCKED_STATUSES, Principal
 from app.dependencies.permissions import (
     BUSINESS_OWNER_ROLE,

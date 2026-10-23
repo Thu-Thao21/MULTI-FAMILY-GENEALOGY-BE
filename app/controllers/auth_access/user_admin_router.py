@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.controllers.auth_access import user_admin_use_cases as use_cases
 from app.controllers.auth_access.use_cases import ClientInfo
-from app.core.openapi_responses import AUTHENTICATED, error_responses
+from app.core.utils.openapi_responses import AUTHENTICATED, error_responses
 from app.db.postgres import get_db
 from app.dependencies.auth import Principal, get_user_access_repo
 from app.dependencies.permissions import Action, clan_scope_from_path, get_family_repo, require_action

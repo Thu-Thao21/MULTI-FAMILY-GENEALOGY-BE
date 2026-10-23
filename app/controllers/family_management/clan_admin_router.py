@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.controllers.auth_access.use_cases import ClientInfo
 from app.controllers.family_management import clan_admin_use_cases as use_cases
-from app.core.openapi_responses import AUTHENTICATED, error_responses
+from app.core.utils.openapi_responses import AUTHENTICATED, error_responses
 from app.db.postgres import get_db
 from app.dependencies.auth import Principal, get_user_access_repo
 from app.dependencies.permissions import (
@@ -85,3 +85,32 @@ async def get_clan(
     Owner's user id and the latest Owner job. Never an e-mail, a name, a phone or a Firebase uid."""
     response.headers["Cache-Control"] = NO_STORE
     return await use_cases.get_clan(family=family, jobs=jobs, clan_id=clan_id)
+
+
+@router.get(
+    "/admin/clans",
+    dependencies=[Depends(require_action(Action.CLAN_READ))],
+)
+async def list_clans(
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
+    from sqlalchemy import select
+    from app.models.family.entities import Clan
+
+    response.headers["Cache-Control"] = NO_STORE
+    stmt = select(Clan).order_by(Clan.name)
+    result = await db.execute(stmt)
+    clans = result.scalars().all()
+    return [
+        {
+            "id": str(c.clan_id),
+            "clan_id": str(c.clan_id),
+            "name": c.name,
+            "clan_code": c.clan_code,
+            "status": c.status.lower(),
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+        }
+        for c in clans
+    ]
+

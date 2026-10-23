@@ -48,7 +48,7 @@ async def inspect() -> str:
                     text("SELECT current_database(), current_schema()")
                 )
             ).one()
-            add("MFGMS AI ??? user_access schema inspect (read-only)")
+            add("MFGMS AI — user_access schema inspect (read-only)")
             add(f"database={meta[0]}  schema={meta[1]}")
             add("NOTE: connection string and row data are intentionally omitted.")
             add("")

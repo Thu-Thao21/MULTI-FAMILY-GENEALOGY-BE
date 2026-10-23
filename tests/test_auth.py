@@ -1,12 +1,11 @@
-import pytest
-from app.services.auth_service import calculate_primary_role
-from app.models.postgres import AccountRole
+from types import SimpleNamespace
+from app.services.auth_access.auth_service import calculate_primary_role
 
 
 def test_calculate_primary_role_admin():
     roles = [
-        AccountRole(role="member", status="active"),
-        AccountRole(role="admin", status="active"),
+        SimpleNamespace(role="member", status="active"),
+        SimpleNamespace(role="admin", status="active"),
     ]
     assert calculate_primary_role(roles) == "admin"
 
@@ -14,22 +13,22 @@ def test_calculate_primary_role_admin():
 
 def test_calculate_primary_role_default_member():
     roles = [
-        AccountRole(role="member", status="active"),
+        SimpleNamespace(role="member", status="active"),
     ]
     assert calculate_primary_role(roles) == "member"
 
 
 def test_calculate_primary_role_family_head():
     roles = [
-        AccountRole(role="member", status="active"),
-        AccountRole(role="family_head", status="active"),
+        SimpleNamespace(role="member", status="active"),
+        SimpleNamespace(role="family_head", status="active"),
     ]
     assert calculate_primary_role(roles) == "family_head"
 
 
 def test_calculate_primary_role_ignores_inactive_admin():
     roles = [
-        AccountRole(role="member", status="active"),
-        AccountRole(role="admin", status="locked"),
+        SimpleNamespace(role="member", status="active"),
+        SimpleNamespace(role="admin", status="locked"),
     ]
     assert calculate_primary_role(roles) == "member"

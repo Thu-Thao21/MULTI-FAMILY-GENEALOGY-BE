@@ -21,10 +21,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.controllers.auth_access.use_cases import ClientInfo
 from app.controllers.family_management import owner_password_reset_use_cases as reset_use_cases
 from app.controllers.family_management import owner_provisioning_use_cases as use_cases
-from app.core.email_sender import EmailSender, get_email_sender
-from app.core.firebase import IdentityProvider, get_identity_provider
-from app.core.idempotency import IDEMPOTENCY_REPLAYED_HEADER, idempotency_key_header
-from app.core.openapi_responses import AUTHENTICATED, error_responses
+from app.core.integrations.email_sender import EmailSender, get_email_sender
+from app.core.integrations.firebase import IdentityProvider, get_identity_provider
+from app.core.utils.idempotency import IDEMPOTENCY_REPLAYED_HEADER, idempotency_key_header
+from app.core.utils.openapi_responses import AUTHENTICATED, error_responses
 from app.db.postgres import get_db
 from app.dependencies.auth import Principal, get_user_access_repo
 from app.dependencies.permissions import (

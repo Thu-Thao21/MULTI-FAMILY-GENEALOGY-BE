@@ -18,9 +18,9 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.core.errors import AppError
-from app.core.firebase import IdentityProvider, InvalidIdToken, PasswordRejected, ProviderUnavailable
-from app.core.request_id import get_request_id
-from app.core.tokens import generate_session_token, hash_session_token
+from app.core.integrations.firebase import IdentityProvider, InvalidIdToken, PasswordRejected, ProviderUnavailable
+from app.core.middleware.request_id import get_request_id
+from app.core.security.tokens import generate_session_token, hash_session_token
 from app.dependencies.auth import Principal, evaluate_account
 from app.dependencies.permissions import is_active_owner, owner_actions, system_admin_actions
 from app.models.family.repository import FamilyRepository

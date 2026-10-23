@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from app.controllers.auth_access.user_admin_router import router
 from app.controllers.auth_access.user_admin_use_cases import STATUS_TRANSITIONS
 from app.core.errors import register_exception_handlers
-from app.core.request_id import RequestIdMiddleware
+from app.core.middleware.request_id import RequestIdMiddleware
 from app.db.postgres import get_db
 from app.dependencies.auth import get_user_access_repo
 from app.dependencies.permissions import get_family_repo

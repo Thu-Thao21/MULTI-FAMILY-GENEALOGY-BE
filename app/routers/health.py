@@ -1,7 +1,3 @@
-from fastapi import APIRouter
+from app.controllers.health import router, health
 
-router = APIRouter()
-
-@router.get("/health")
-async def health():
-    return {"status": "ok"}
+__all__ = ["router", "health"]

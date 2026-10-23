@@ -33,11 +33,11 @@ from typing import Callable
 from sqlalchemy.exc import IntegrityError
 
 from app.controllers.auth_access.use_cases import ClientInfo, UnitOfWork
-from app.core.clan_code import generate_clan_code
-from app.core.dates import add_months
-from app.core.db_errors import constraint_name
+from app.core.utils.clan_code import generate_clan_code
+from app.core.utils.dates import add_months
+from app.core.errors.db_errors import constraint_name
 from app.core.errors import AppError
-from app.core.idempotency import (
+from app.core.utils.idempotency import (
     IdempotencyStore,
     IdempotentOutcome,
     IdempotentResult,
@@ -45,7 +45,7 @@ from app.core.idempotency import (
     run_idempotent,
     utcnow,
 )
-from app.core.request_id import get_request_id
+from app.core.middleware.request_id import get_request_id
 from app.dependencies.auth import Principal
 from app.models.family.repository import FamilyRepository
 from app.models.user_access.repository import UserAccessRepository

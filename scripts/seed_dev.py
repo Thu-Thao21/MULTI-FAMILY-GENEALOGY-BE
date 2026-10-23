@@ -1,4 +1,4 @@
-"""M???c C3 - dev seed for the real PostgreSQL branch.
+"""Mốc C3 - dev seed for the real PostgreSQL branch.
 
 Usage (from BE/, Windows):
     $env:ALLOW_DEV_SEED = "1"
@@ -16,7 +16,7 @@ Rules:
     firebase_uid dev-*. --cleanup deletes only clans DEV-* and users dev-*@example.test
     (example.test is a reserved domain, so no real account can match).
   - Optional DEV_SA_FIREBASE_UID: if set, dev-sa gets that firebase_uid so a real
-    Firebase account can sign in as the dev System Admin (M???c D). The value is never
+    Firebase account can sign in as the dev System Admin (Mốc D). The value is never
     printed and must never be written into code, docs or tests. If unset, dev-sa keeps
     its current UID (the fake dev-sa for a new row).
   - No password hash, no session, no token. Prints counts and e-mails, never secrets
@@ -68,26 +68,26 @@ EXTRA_MEMBERS: list[tuple[str, str, str]] = [
 ]
 
 
-# Service plans for dev (M???c E, step E3). The public catalog needs plans to show and to register
+# Service plans for dev (Mốc E, step E3). The public catalog needs plans to show and to register
 # against. They are DEV data: production plans are decided by the team and entered through a
 # separate channel, never by this script or a migration (docs/known_issues.md KI-19).
 PLAN_PREFIX = "DEV-"
 PLANS: list[dict] = [
     dict(
         code="DEV-TRIAL", name="DEV Trial", status="ACTIVE", price="0.00", billing_period_months=1,
-        description="G??i d??ng th??? cho dev (kh??ng ph???i g??i th???t).",
+        description="Gói dùng thử cho dev (không phải gói thật).",
         max_members=20, max_family_admins=1, storage_mb=256,
         features=[("MAX_PERSONS", True, 500), ("TREE_VIEW_3D", False, None)],
     ),
     dict(
         code="DEV-STANDARD", name="DEV Standard", status="ACTIVE", price="199000.00", billing_period_months=12,
-        description="G??i ti??u chu???n cho dev (kh??ng ph???i g??i th???t).",
+        description="Gói tiêu chuẩn cho dev (không phải gói thật).",
         max_members=200, max_family_admins=5, storage_mb=2048,
         features=[("MAX_PERSONS", True, 5000), ("TREE_VIEW_3D", True, None), ("DATA_EXPORT", True, None)],
     ),
     dict(
-        code="DEV-LEGACY", name="DEV Legacy (ng???ng b??n)", status="INACTIVE", price="99000.00", billing_period_months=12,
-        description="G??i ???? ng???ng b??n: ????? th??? nh??nh 'g??i kh??ng h???p l???' b???ng tay.",
+        code="DEV-LEGACY", name="DEV Legacy (ngừng bán)", status="INACTIVE", price="99000.00", billing_period_months=12,
+        description="Gói đã ngừng bán: để thử nhánh 'gói không hợp lệ' bằng tay.",
         max_members=100, max_family_admins=2, storage_mb=1024,
         features=[("TREE_VIEW_3D", False, None)],
     ),
@@ -104,7 +104,7 @@ def dev_sa_uid() -> str | None:
     if not value:
         return None
     if len(value) > 128 or any(ch.isspace() for ch in value):
-        raise SeedError(f"{SA_UID_ENV} kh??ng h???p l??? (t???i ??a 128 k?? t???, kh??ng c?? kho???ng tr???ng).")
+        raise SeedError(f"{SA_UID_ENV} không hợp lệ (tối đa 128 ký tự, không có khoảng trắng).")
     return value
 
 
@@ -195,7 +195,7 @@ async def cleanup_plans(session, prefix: str = PLAN_PREFIX) -> tuple[int, int]:
 def print_counts(title: str, made: Counter, had: Counter) -> None:
     print(title)
     for kind in sorted(set(made) | set(had)):
-        print(f"  {kind:<34} t???o m???i: {made[kind]:>2}   ???? c??: {had[kind]:>2}")
+        print(f"  {kind:<34} tạo mới: {made[kind]:>2}   đã có: {had[kind]:>2}")
 
 
 async def seed(session) -> Counter:
@@ -221,11 +221,11 @@ async def seed(session) -> Counter:
     for code in ("SYSTEM_ADMIN", "BUSINESS_OWNER", "FAMILY_ADMIN", "FAMILY_MEMBER"):
         role = await ua.get_role_by_code(code)
         if role is None:
-            raise SeedError(f"Thi???u role {code} trong b???ng roles. Seed kh??ng t??? t???o role; d???ng.")
+            raise SeedError(f"Thiếu role {code} trong bảng roles. Seed không tự tạo role; dừng.")
         roles[code] = role
     if await ua.get_permission_by_code(FA_PERMISSION) is None:
         raise SeedError(
-            f"Thi???u permission {FA_PERMISSION} trong b???ng permissions. Seed kh??ng t??? t???o; d???ng."
+            f"Thiếu permission {FA_PERMISSION} trong bảng permissions. Seed không tự tạo; dừng."
         )
 
     real_sa_uid = dev_sa_uid()
@@ -233,7 +233,7 @@ async def seed(session) -> Counter:
     async def ensure_uid_free(uid: str, owner_id: uuid.UUID | None) -> None:
         other = await ua.get_user_by_firebase_uid(uid)
         if other is not None and other.user_id != owner_id:
-            raise SeedError(f"UID trong {SA_UID_ENV} ???? g???n v???i m???t user kh??c. D???ng.")
+            raise SeedError(f"UID trong {SA_UID_ENV} đã gắn với một user khác. Dừng.")
 
     users: dict[str, User] = {}
     for key, status, display_name in USERS:
@@ -244,14 +244,14 @@ async def seed(session) -> Counter:
             # dev-sa may legitimately hold a real UID linked by an earlier run.
             if not current.startswith(UID_PREFIX) and key != "sa":
                 raise SeedError(
-                    f"E-mail {email} ???? t???n t???i nh??ng kh??ng ph???i d??? li???u seed (firebase_uid "
-                    f"kh??ng c?? ti???n t??? {UID_PREFIX}). D???ng ????? kh??ng chi???m t??i kho???n th???t."
+                    f"E-mail {email} đã tồn tại nhưng không phải dữ liệu seed (firebase_uid "
+                    f"không có tiền tố {UID_PREFIX}). Dừng để không chiếm tài khoản thật."
                 )
             if key == "sa" and real_sa_uid and current != real_sa_uid:
                 await ensure_uid_free(real_sa_uid, user.user_id)
                 user.firebase_uid = real_sa_uid
                 await session.flush()
-                mark("users (?????i firebase_uid dev-sa)", True)
+                mark("users (đổi firebase_uid dev-sa)", True)
             mark("users", False)
         else:
             if key == "sa" and real_sa_uid:
@@ -355,7 +355,7 @@ async def seed(session) -> Counter:
             await session.flush()
             mark("clan_ownership_history", True)
         elif active_owner.user_id != owner.user_id:
-            raise SeedError(f"Clan {code} ???? c?? Owner hi???u l???c kh??c d??? li???u seed. D???ng.")
+            raise SeedError(f"Clan {code} đã có Owner hiệu lực khác dữ liệu seed. Dừng.")
         else:
             mark("clan_ownership_history", False)
         await ensure_membership(clan, owner)
@@ -400,16 +400,16 @@ async def seed(session) -> Counter:
     had.update(plans_had)
 
     kinds = sorted(set(made) | set(had))
-    print("Seed dev (m???t transaction):")
+    print("Seed dev (một transaction):")
     for kind in kinds:
-        print(f"  {kind:<34} t???o m???i: {made[kind]:>2}   ???? c??: {had[kind]:>2}")
+        print(f"  {kind:<34} tạo mới: {made[kind]:>2}   đã có: {had[kind]:>2}")
     sa_uid = users["sa"].firebase_uid or ""
     source = (
-        f"l???y t??? {SA_UID_ENV}" if real_sa_uid
-        else "gi?? tr??? gi??? dev-sa" if sa_uid.startswith(UID_PREFIX)
-        else f"UID th???t ???? g???n t??? tr?????c (gi??? nguy??n; kh??ng ?????t {SA_UID_ENV})"
+        f"lấy từ {SA_UID_ENV}" if real_sa_uid
+        else "giá trị giả dev-sa" if sa_uid.startswith(UID_PREFIX)
+        else f"UID thật đã gắn từ trước (giữ nguyên; không đặt {SA_UID_ENV})"
     )
-    print(f"  firebase_uid c???a dev-sa: {source} (kh??ng in gi?? tr???)")
+    print(f"  firebase_uid của dev-sa: {source} (không in giá trị)")
     return made
 
 
@@ -431,9 +431,9 @@ async def cleanup(session) -> None:
         )
     )
     plans_deleted, plans_kept = await cleanup_plans(session)
-    print("Cleanup dev (m???t transaction):")
-    print(f"  clans ???? x??a: {clans.rowcount}   users ???? x??a: {users.rowcount}")
-    print(f"  g??i {PLAN_PREFIX}* ???? x??a: {plans_deleted}   g??i gi??? l???i v?? c??n ???????c tham chi???u: {plans_kept}")
+    print("Cleanup dev (một transaction):")
+    print(f"  clans đã xóa: {clans.rowcount}   users đã xóa: {users.rowcount}")
+    print(f"  gói {PLAN_PREFIX}* đã xóa: {plans_deleted}   gói giữ lại vì còn được tham chiếu: {plans_kept}")
 
 
 async def run(do_cleanup: bool, plans_only: bool = False) -> None:
@@ -444,11 +444,11 @@ async def run(do_cleanup: bool, plans_only: bool = False) -> None:
             async with session.begin():
                 if plans_only and do_cleanup:
                     deleted, kept = await cleanup_plans(session)
-                    print("Cleanup g??i dev (m???t transaction):")
-                    print(f"  g??i {PLAN_PREFIX}* ???? x??a: {deleted}   g??i gi??? l???i v?? c??n ???????c tham chi???u: {kept}")
+                    print("Cleanup gói dev (một transaction):")
+                    print(f"  gói {PLAN_PREFIX}* đã xóa: {deleted}   gói giữ lại vì còn được tham chiếu: {kept}")
                 elif plans_only:
                     made, had = await seed_plans(session)
-                    print_counts("Seed g??i dev (m???t transaction):", made, had)
+                    print_counts("Seed gói dev (một transaction):", made, had)
                 elif do_cleanup:
                     await cleanup(session)
                 else:
@@ -474,7 +474,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if os.environ.get(ENV_FLAG) != "1":
-        print(f"T??? ch???i ch???y: c???n ?????t {ENV_FLAG}=1 (script ghi v??o database th???t).")
+        print(f"Từ chối chạy: cần đặt {ENV_FLAG}=1 (script ghi vào database thật).")
         return 2
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -484,10 +484,10 @@ def main(argv: list[str] | None = None) -> int:
 
         asyncio.run(run(args.cleanup, args.plans_only))
     except SeedError as exc:
-        print(f"L???i seed: {exc}")
+        print(f"Lỗi seed: {exc}")
         return 1
     except Exception as exc:  # noqa: BLE001 - never print exception text (may embed DATABASE_URL)
-        print(f"L???i kh??ng l?????ng tr?????c ({type(exc).__name__}); transaction ???? rollback.")
+        print(f"Lỗi không lường trước ({type(exc).__name__}); transaction đã rollback.")
         return 1
     return 0
 

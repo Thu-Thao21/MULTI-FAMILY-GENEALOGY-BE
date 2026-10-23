@@ -12,12 +12,19 @@ from fastapi.testclient import TestClient
 
 from app.controllers.auth_access.router import router
 from app.core.errors import register_exception_handlers
-from app.core.firebase import PasswordRejected, ProviderUnavailable, get_identity_provider
-from app.core.request_id import RequestIdMiddleware
+from app.core.integrations.firebase import PasswordRejected, ProviderUnavailable, get_identity_provider
+from app.core.middleware.request_id import RequestIdMiddleware
 from app.db.postgres import get_db
 from app.dependencies.auth import get_user_access_repo
 from app.dependencies.permissions import get_family_repo, owner_actions, system_admin_actions
-from tests.fakes import FakeDb, FakeFamilyRepo, FakeIdentityProvider, FakeUserAccessRepo, make_user
+from tests.fakes import (
+    FakeDb,
+    FakeFamilyRepo,
+    FakeIdentityProvider,
+    FakeUserAccessRepo,
+    disabled_rate_limiters,
+    make_user,
+)
 
 
 def utcnow() -> datetime:
@@ -34,6 +41,7 @@ class World:
         app.add_middleware(RequestIdMiddleware)
         register_exception_handlers(app)
         app.include_router(router, prefix="/api/v1")
+        app.state.rate_limiters = disabled_rate_limiters()
         app.dependency_overrides[get_db] = lambda: self.db
         app.dependency_overrides[get_user_access_repo] = lambda: self.repo
         app.dependency_overrides[get_family_repo] = lambda: self.family
@@ -270,7 +278,7 @@ def test_logout_without_token_is_401(w):
 # ----- POST /auth/change-password -----
 
 
-def change(w, access, recent, password="new-password-123"):
+def change(w, access, recent, password="New-password-123"):
     return w.client.post(
         "/api/v1/auth/change-password",
         headers=bearer(access),
@@ -366,3 +374,48 @@ def test_restricted_session_still_blocked_on_business_routes_by_dependency():
     assert RESTRICTED_ALLOWED_PATHS == {
         "/api/v1/auth/me", "/api/v1/auth/change-password", "/api/v1/auth/logout"
     }
+
+
+def test_register_send_otp_rejects_non_gmail(w):
+    r = w.client.post("/api/v1/auth/register-send-otp", json={"email": "user@yahoo.com"})
+    assert r.status_code == 422
+
+
+def test_register_send_otp_and_verify(w):
+    from app.core.utils.otp_service import _otp_cache
+    email = "testuser123@gmail.com"
+    r = w.client.post("/api/v1/auth/register-send-otp", json={"email": email})
+    assert r.status_code == 200
+    otp = _otp_cache[email]["code"]
+
+    # Verify wrong OTP
+    r_bad = w.client.post("/api/v1/auth/register-verify-otp", json={"email": email, "otp": "999999"})
+    assert r_bad.status_code == 400
+
+    # Verify correct OTP
+    r_ok = w.client.post("/api/v1/auth/register-verify-otp", json={"email": email, "otp": otp})
+    assert r_ok.status_code == 200
+
+
+def test_register_public_success(w):
+    from app.core.utils.otp_service import _otp_cache
+    email = "newmember@gmail.com"
+    w.client.post("/api/v1/auth/register-send-otp", json={"email": email})
+    otp = _otp_cache[email]["code"]
+    w.client.post("/api/v1/auth/register-verify-otp", json={"email": email, "otp": otp})
+
+    r = w.client.post(
+        "/api/v1/auth/register-public",
+        json={
+            "email": email,
+            "password": "Password123!",
+            "display_name": "Thành viên Mới",
+            "username": "newmember",
+            "otp": otp,
+        },
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert "access_token" in body
+    assert body["user"]["email"] == email
+

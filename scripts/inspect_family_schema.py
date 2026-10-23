@@ -113,7 +113,7 @@ async def inspect() -> str:
     try:
         async with engine.connect() as conn:
             meta = (await conn.execute(text("SELECT current_database(), current_schema()"))).one()
-            add("MFGMS AI ??? family schema inspect (read-only)")
+            add("MFGMS AI — family schema inspect (read-only)")
             add(f"database={meta[0]}  schema={meta[1]}")
             add("NOTE: connection string, row data and non-trivial defaults are omitted.")
             add("")

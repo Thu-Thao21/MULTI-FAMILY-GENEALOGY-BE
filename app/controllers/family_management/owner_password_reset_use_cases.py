@@ -36,9 +36,9 @@ from typing import Callable
 from app.controllers.auth_access.use_cases import ClientInfo, UnitOfWork
 from app.controllers.family_management import owner_provisioning_use_cases as base
 from app.core.config import settings
-from app.core.email_sender import EmailSender
+from app.core.integrations.email_sender import EmailSender
 from app.core.errors import AppError
-from app.core.firebase import (
+from app.core.integrations.firebase import (
     IdentityProvider,
     PasswordRejected,
     ProviderUnavailable,
@@ -46,8 +46,8 @@ from app.core.firebase import (
     UnsafeUid,
     is_own_uid,
 )
-from app.core.idempotency import LOCK_TIMEOUT_SECONDS, IdempotencyStore, rollback_on_error, rollback_quietly
-from app.core.request_id import get_request_id
+from app.core.utils.idempotency import LOCK_TIMEOUT_SECONDS, IdempotencyStore, rollback_on_error, rollback_quietly
+from app.core.middleware.request_id import get_request_id
 from app.dependencies.auth import Principal
 from app.models.family.repository import FamilyRepository
 from app.models.user_access.repository import UserAccessRepository
@@ -226,7 +226,7 @@ async def _write(*, db, users, family, idempotency, principal, clan_id, seen: _S
 
 async def _send(sender: EmailSender, seen: _Seen, password: str, expires_at: datetime):
     """After the commit. A failure to send never undoes the reset."""
-    from app.core.email_sender import EmailDeliveryResult
+    from app.core.integrations.email_sender import EmailDeliveryResult
 
     try:
         return await sender.send_owner_temporary_password(

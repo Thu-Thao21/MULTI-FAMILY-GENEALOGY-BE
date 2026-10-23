@@ -1,4 +1,4 @@
-MFGMS AI ??? family schema inspect (read-only)
+MFGMS AI — family schema inspect (read-only)
 database=mfgms_ai  schema=public
 NOTE: connection string, row data and non-trivial defaults are omitted.
 

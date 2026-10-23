@@ -264,6 +264,23 @@ class OwnerProvisionResponse(ResponseModel):
     )
 
 
+class BusinessApproveAndProvisionResponse(ResponseModel):
+    registration_id: uuid.UUID
+    clan_id: uuid.UUID
+    clan_name: str
+    status: str
+    clan_status: str
+    owner_email: str
+    owner_display_name: str
+    temporary_password: Optional[str] = Field(
+        default=None, repr=False, description="Mật khẩu tạm thời cho Trưởng tộc, hiển thị một lần."
+    )
+    temporary_password_expires_at: Optional[UtcDatetime] = None
+    email_sent: bool
+    email_delivery_status: Optional[str] = None
+    message: str
+
+
 # ----- POST /admin/clans/{id}/owner/temporary-password (SA) -> 200 -----
 
 

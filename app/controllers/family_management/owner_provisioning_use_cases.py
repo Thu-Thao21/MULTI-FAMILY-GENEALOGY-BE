@@ -57,10 +57,10 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from app.controllers.auth_access.use_cases import ClientInfo, UnitOfWork
 from app.controllers.family_management import provisioning_state as state
 from app.core.config import settings
-from app.core.db_errors import constraint_name
-from app.core.email_sender import EmailDeliveryResult, EmailSender
+from app.core.errors.db_errors import constraint_name
+from app.core.integrations.email_sender import EmailDeliveryResult, EmailSender
 from app.core.errors import AppError
-from app.core.firebase import (
+from app.core.integrations.firebase import (
     IdentityProvider,
     PasswordRejected,
     ProviderEmailTaken,
@@ -71,7 +71,7 @@ from app.core.firebase import (
     UnsafeUid,
     own_uid,
 )
-from app.core.idempotency import (
+from app.core.utils.idempotency import (
     LOCK_TIMEOUT_SECONDS,
     REPLAY,
     IN_PROGRESS,
@@ -83,8 +83,8 @@ from app.core.idempotency import (
     rollback_quietly,
     utcnow,
 )
-from app.core.passwords import generate_temporary_password
-from app.core.request_id import get_request_id
+from app.core.security.passwords import generate_temporary_password
+from app.core.middleware.request_id import get_request_id
 from app.dependencies.auth import Principal
 from app.models.family.provisioning_repository import ProvisioningRepository
 from app.models.family.repository import FamilyRepository

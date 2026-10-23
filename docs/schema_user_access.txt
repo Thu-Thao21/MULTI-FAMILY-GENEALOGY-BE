@@ -1,4 +1,4 @@
-MFGMS AI ??? user_access schema inspect (read-only)
+MFGMS AI — user_access schema inspect (read-only)
 database=mfgms_ai  schema=public
 NOTE: connection string and row data are intentionally omitted.
 

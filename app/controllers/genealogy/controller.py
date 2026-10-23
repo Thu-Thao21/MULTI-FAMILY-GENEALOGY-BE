@@ -76,5 +76,32 @@ class GenealogyController:
     async def get_descendants(self, family_id: str, person_id: str):
         return await self.service.get_descendants(family_id, person_id, self.account)
 
-    async def get_tree_data(self, family_id: str):
-        return await self.service.get_tree_data(family_id, self.account)
+    async def get_tree_data(
+        self,
+        family_id: str,
+        branch_id: Optional[str] = None,
+        generation: Optional[int] = None,
+        max_generation: Optional[int] = None,
+    ):
+        return await self.service.get_tree_data(
+            family_id,
+            self.account,
+            branch_id=branch_id,
+            generation=generation,
+            max_generation=max_generation,
+        )
+
+    async def get_focus_view(self, family_id: str, person_id: str, depth: int = 2):
+        return await self.service.get_focus_view(
+            family_id, person_id, depth, self.account
+        )
+
+    async def calculate_relationship(
+        self, family_id: str, from_person_id: str, to_person_id: str
+    ):
+        return await self.service.calculate_relationship(
+            family_id, from_person_id, to_person_id, self.account
+        )
+
+    async def get_public_tree(self, family_id: str):
+        return await self.service.get_public_tree(family_id)

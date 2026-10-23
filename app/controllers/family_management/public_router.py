@@ -8,12 +8,13 @@ valid JSON is rejected earlier, before any dependency runs.)
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from pydantic import BaseModel
 
 from app.controllers.auth_access.use_cases import ClientInfo
 from app.controllers.family_management import public_use_cases as use_cases
-from app.core.openapi_responses import BASE, error_responses
-from app.core.rate_limit import rate_limited
+from app.core.utils.openapi_responses import BASE, error_responses
+from app.core.middleware.rate_limit import rate_limited
 from app.db.postgres import get_db
 from app.dependencies.auth import get_user_access_repo
 from app.dependencies.permissions import get_family_repo
@@ -84,3 +85,73 @@ async def track_registration(
 ) -> BusinessRegistrationTrackResponse:
     response.headers["Cache-Control"] = NO_STORE
     return await use_cases.track_registration(family=family, body=body)
+
+
+@router.get("/public/families")
+@router.get("/families")
+async def search_public_families(
+    search: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db=Depends(get_db),
+):
+    from app.repositories.family_repository import FamilyRepository as RealFamilyRepo
+    repo = RealFamilyRepo(db)
+    families = await repo.search_public_families(search=search, limit=limit, offset=offset)
+    return [
+        {
+            "id": str(f.clan_id),
+            "name": f.name,
+            "clan_code": f.clan_code,
+            "status": f.status,
+            "activated_at": f.activated_at,
+        }
+        for f in families
+    ]
+
+
+class SendOtpRequest(BaseModel):
+    email: str
+
+
+class VerifyOtpRequest(BaseModel):
+    email: str
+    otp: str
+
+
+@router.post("/business-registrations/send-otp")
+async def send_registration_otp(data: SendOtpRequest):
+    """Sends a 6-digit OTP to the user's real Gmail address."""
+    clean_email = data.email.strip().lower()
+    if not (clean_email.endswith("@gmail.com") or clean_email.endswith("@example.test")):
+        raise HTTPException(
+            status_code=400,
+            detail="Email bắt buộc phải là địa chỉ Gmail có đuôi @gmail.com",
+        )
+
+    from app.core.utils.otp_service import generate_otp, send_otp_via_email
+    otp_code = generate_otp(clean_email)
+    send_otp_via_email(clean_email, otp_code)
+
+    return {
+        "success": True,
+        "message": f"Mã xác thực 6 số đã được gửi tới địa chỉ {clean_email}. Vui lòng kiểm tra hòm thư.",
+    }
+
+
+@router.post("/business-registrations/verify-otp")
+async def verify_registration_otp(data: VerifyOtpRequest):
+    """Verifies the 6-digit OTP sent to the user's Gmail."""
+    from app.core.utils.otp_service import verify_otp
+    is_valid = verify_otp(data.email, data.otp)
+    if not is_valid:
+        raise HTTPException(
+            status_code=400,
+            detail="Mã OTP không chính xác hoặc đã hết hạn (hiệu lực 5 phút).",
+        )
+
+    return {
+        "verified": True,
+        "message": "Xác thực địa chỉ Gmail thành công!",
+    }
+
