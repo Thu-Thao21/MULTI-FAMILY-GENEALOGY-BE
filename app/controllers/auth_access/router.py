@@ -67,7 +67,11 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from app.core.config import settings
 from app.core.errors import AppError
+<<<<<<< HEAD
 from app.core.security.tokens import generate_session_token, hash_session_token
+=======
+from app.core.tokens import generate_session_token, hash_session_token
+>>>>>>> origin/FE-fixed
 from app.models.user_access.entities import User
 from app.schemas.auth import SessionUser
 
