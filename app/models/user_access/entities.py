@@ -77,6 +77,11 @@ class User(Base):
         server_default=text("CURRENT_TIMESTAMP"),
     )
 
+    @property
+    def id(self) -> "uuid.UUID":
+        """Alias for user_id – used by Sprint 2 genealogy / access service code."""
+        return self.user_id
+
 
 class CredentialMetadata(Base):
     """Maps public.credential_metadata (Neon inspect)."""

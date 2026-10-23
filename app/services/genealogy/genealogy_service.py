@@ -9,19 +9,25 @@ from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.genealogy import GenealogyRepository
 from app.models.postgres import Account, Person, Relationship
 from app.repositories.family_repository import FamilyRepository
-from app.models.genealogy import GenealogyRepository
 from app.schemas.genealogy import (
+    FocusViewNode,
+    FocusViewResponse,
     PersonCreate,
     PersonResponse,
     PersonUpdate,
+    RelationshipCalculationResponse,
     RelationshipCreate,
     RelationshipResponse,
     TreeDataResponse,
     TreeNode,
 )
-from app.services.access_service import AccessService
+from app.services.auth_access.access_service import AccessService
+from app.services.genealogy.focus_view_service import FocusViewService
+from app.services.genealogy.kinship_service import KinshipService
+from app.services.genealogy.relationship_path_service import RelationshipPathService
 
 
 PARENT_RELATIONSHIP_TYPES = {
@@ -362,21 +368,40 @@ class GenealogyService:
             for item in descendants
         ]
 
-    async def get_tree_data(self, family_id: str, account: Account) -> TreeDataResponse:
+    async def get_tree_data(
+        self,
+        family_id: str,
+        account: Account,
+        branch_id: Optional[str] = None,
+        generation: Optional[int] = None,
+        max_generation: Optional[int] = None,
+    ) -> TreeDataResponse:
         await self.access.require_family_permission(account, family_id, "tree.view")
         if not await self.family_repo.get_family_by_id(family_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Family not found")
 
         persons = await self.repo.get_persons_by_family(family_id)
+
+        # Apply filtering by branch and generation if specified
+        if branch_id:
+            persons = [p for p in persons if str(p.branch_id) == str(branch_id)]
+        if generation is not None:
+            persons = [p for p in persons if (p.generation or 1) == generation]
+        elif max_generation is not None:
+            persons = [p for p in persons if (p.generation or 1) <= max_generation]
+
+        allowed_person_ids = {str(p.id) for p in persons}
+
         relationships = await self.repo.get_relationships_by_family(family_id)
         nodes = [
             TreeNode(
-                id=person.id,
+                id=str(person.id),
                 fullName=person.full_name,
                 gender=person.gender or "unknown",
                 generation=person.generation or 1,
-                branchId=person.branch_id,
+                branchId=str(person.branch_id) if person.branch_id else None,
                 avatarUrl=person.avatar_url,
+                isLiving=True if person.is_alive is None else person.is_alive,
                 status=person.status,
             )
             for person in persons
@@ -385,8 +410,13 @@ class GenealogyService:
         edges: list[RelationshipResponse] = []
         spouse_pairs: set[tuple[str, str]] = set()
         for relationship in relationships:
-            from_id = relationship.from_member_id
-            to_id = relationship.to_member_id
+            from_id = str(relationship.from_member_id)
+            to_id = str(relationship.to_member_id)
+
+            # Only include edges if both endpoints are in the filtered person set
+            if from_id not in allowed_person_ids or to_id not in allowed_person_ids:
+                continue
+
             if relationship.relationship_type == "SPOUSE":
                 pair = tuple(sorted((from_id, to_id)))
                 if pair in spouse_pairs:
@@ -395,10 +425,225 @@ class GenealogyService:
                 from_id, to_id = pair
             edges.append(
                 RelationshipResponse(
-                    id=relationship.id,
+                    id=str(relationship.id),
                     fromMemberId=from_id,
                     toMemberId=to_id,
                     relationshipType=_relationship_type_for_api(relationship),
+                    notes=None,
+                )
+            )
+
+        return TreeDataResponse(nodes=nodes, edges=edges)
+
+    async def get_focus_view(
+        self,
+        family_id: str,
+        person_id: str,
+        depth: int = 2,
+        account: Account = None,
+    ) -> FocusViewResponse:
+        if account:
+            await self.access.require_family_permission(account, family_id, "tree.view")
+
+        ego_person = await self._get_person_for_family(family_id, person_id)
+        relationships = await self.repo.get_relationships_by_family(family_id)
+
+        subgraph = FocusViewService.extract_focus_subgraph(
+            ego_id=str(ego_person.id),
+            relationships=relationships,
+            max_depth=depth,
+        )
+        node_depths = subgraph["node_depths"]
+        included_edge_objs = subgraph["edges"]
+
+        all_persons = await self.repo.get_persons_by_family(family_id)
+        person_map = {str(p.id): p for p in all_persons}
+
+        nodes: list[FocusViewNode] = []
+        for pid, d in node_depths.items():
+            p = person_map.get(pid)
+            if p:
+                nodes.append(
+                    FocusViewNode(
+                        id=str(p.id),
+                        fullName=p.full_name,
+                        gender=p.gender or "unknown",
+                        generation=p.generation or 1,
+                        branchId=str(p.branch_id) if p.branch_id else None,
+                        avatarUrl=p.avatar_url,
+                        depth=d,
+                        isEgo=(str(p.id) == str(ego_person.id)),
+                        status=p.status,
+                    )
+                )
+
+        edges: list[RelationshipResponse] = []
+        spouse_pairs: set[tuple[str, str]] = set()
+        for rel in included_edge_objs:
+            from_id = str(rel.from_member_id)
+            to_id = str(rel.to_member_id)
+            if rel.relationship_type == "SPOUSE":
+                pair = tuple(sorted((from_id, to_id)))
+                if pair in spouse_pairs:
+                    continue
+                spouse_pairs.add(pair)
+                from_id, to_id = pair
+            edges.append(
+                RelationshipResponse(
+                    id=str(rel.id),
+                    fromMemberId=from_id,
+                    toMemberId=to_id,
+                    relationshipType=_relationship_type_for_api(rel),
+                    notes=None,
+                )
+            )
+
+        return FocusViewResponse(
+            ego=self._to_person_response(ego_person),
+            nodes=nodes,
+            edges=edges,
+            maxDepth=depth,
+        )
+
+    async def calculate_relationship(
+        self,
+        family_id: str,
+        from_person_id: str,
+        to_person_id: str,
+        account: Account,
+    ) -> RelationshipCalculationResponse:
+        await self.access.require_family_permission(account, family_id, "relationship.view")
+        from_person = await self._get_person_for_family(family_id, from_person_id)
+        to_person = await self._get_person_for_family(family_id, to_person_id)
+
+        from_resp = self._to_person_response(from_person)
+        to_resp = self._to_person_response(to_person)
+        gen_diff = (to_person.generation or 1) - (from_person.generation or 1)
+
+        if str(from_person.id) == str(to_person.id):
+            return RelationshipCalculationResponse(
+                found=True,
+                fromPerson=from_resp,
+                toPerson=from_resp,
+                path=[from_resp],
+                edges=[],
+                kinshipName="Chính mình",
+                addressTitle="Tôi",
+                generationDiff=0,
+                description="Hai đối tượng được chọn là cùng một người.",
+            )
+
+        relationships = await self.repo.get_relationships_by_family(family_id)
+        path_result = RelationshipPathService.find_path(
+            start_id=str(from_person.id),
+            target_id=str(to_person.id),
+            relationships=relationships,
+        )
+
+        if not path_result:
+            return RelationshipCalculationResponse(
+                found=False,
+                fromPerson=from_resp,
+                toPerson=to_resp,
+                path=[],
+                edges=[],
+                kinshipName="Không xác định",
+                addressTitle="N/A",
+                generationDiff=gen_diff,
+                description="Không tìm thấy đường quan hệ kết nối giữa hai thành viên trong dữ liệu gia phả.",
+            )
+
+        path_node_ids, path_edge_objs = path_result
+        all_persons = await self.repo.get_persons_by_family(family_id)
+        person_map = {str(p.id): p for p in all_persons}
+
+        path_persons = [person_map[pid] for pid in path_node_ids if pid in person_map]
+        path_person_responses = [self._to_person_response(p) for p in path_persons]
+
+        edge_responses = [
+            RelationshipResponse(
+                id=str(rel.id),
+                fromMemberId=str(rel.from_member_id),
+                toMemberId=str(rel.to_member_id),
+                relationshipType=_relationship_type_for_api(rel),
+                notes=None,
+            )
+            for rel in path_edge_objs
+        ]
+
+        kinship_info = KinshipService.calculate_kinship(
+            from_person=from_person,
+            to_person=to_person,
+            path=path_persons,
+            edges=path_edge_objs,
+        )
+
+        return RelationshipCalculationResponse(
+            found=True,
+            fromPerson=from_resp,
+            toPerson=to_resp,
+            path=path_person_responses,
+            edges=edge_responses,
+            kinshipName=kinship_info["kinship_name"],
+            addressTitle=kinship_info["address_title"],
+            generationDiff=gen_diff,
+            description=kinship_info["description"],
+        )
+
+    async def get_public_tree(self, family_id: str) -> TreeDataResponse:
+        family = await self.family_repo.get_family_by_id(family_id)
+        if not family or family.status != "ACTIVE":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Family not found or not active")
+
+        persons = await self.repo.get_persons_by_family(family_id)
+        relationships = await self.repo.get_relationships_by_family(family_id)
+
+        nodes = []
+        for p in persons:
+            if p.is_alive:
+                nodes.append(
+                    TreeNode(
+                        id=str(p.id),
+                        fullName="Thành viên gia tộc (Bảo mật)",
+                        gender="unknown",
+                        generation=p.generation or 1,
+                        branchId=str(p.branch_id) if p.branch_id else None,
+                        avatarUrl=None,
+                        isLiving=True,
+                        status=p.status,
+                    )
+                )
+            else:
+                nodes.append(
+                    TreeNode(
+                        id=str(p.id),
+                        fullName=p.full_name,
+                        gender=p.gender or "unknown",
+                        generation=p.generation or 1,
+                        branchId=str(p.branch_id) if p.branch_id else None,
+                        avatarUrl=p.avatar_url,
+                        isLiving=False,
+                        status=p.status,
+                    )
+                )
+
+        edges: list[RelationshipResponse] = []
+        spouse_pairs: set[tuple[str, str]] = set()
+        for rel in relationships:
+            from_id = str(rel.from_member_id)
+            to_id = str(rel.to_member_id)
+            if rel.relationship_type == "SPOUSE":
+                pair = tuple(sorted((from_id, to_id)))
+                if pair in spouse_pairs:
+                    continue
+                spouse_pairs.add(pair)
+                from_id, to_id = pair
+            edges.append(
+                RelationshipResponse(
+                    id=str(rel.id),
+                    fromMemberId=from_id,
+                    toMemberId=to_id,
+                    relationshipType=_relationship_type_for_api(rel),
                     notes=None,
                 )
             )

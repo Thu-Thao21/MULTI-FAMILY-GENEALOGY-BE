@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.controllers.auth_access.use_cases import ClientInfo
 from app.controllers.family_management import business_admin_use_cases
 from app.controllers.family_management import registration_admin_use_cases as use_cases
+from app.core.email_sender import EmailSender, get_email_sender
+from app.core.firebase import IdentityProvider, get_identity_provider
 from app.core.idempotency import (
     IDEMPOTENCY_REPLAYED_HEADER,
     idempotency_key_header,
@@ -24,11 +26,19 @@ from app.core.idempotency import (
 from app.core.openapi_responses import AUTHENTICATED, error_responses
 from app.db.postgres import get_db
 from app.dependencies.auth import Principal, get_user_access_repo
-from app.dependencies.permissions import Action, get_family_repo, get_idempotency_repo, require_action
+from app.dependencies.permissions import (
+    Action,
+    get_family_repo,
+    get_idempotency_repo,
+    get_provisioning_repo,
+    require_action,
+)
 from app.models.family.idempotency_repository import IdempotencyRepository
+from app.models.family.provisioning_repository import ProvisioningRepository
 from app.models.family.repository import FamilyRepository
 from app.models.user_access.repository import UserAccessRepository
 from app.schemas.business import (
+    BusinessApproveAndProvisionResponse,
     BusinessCreateRequest,
     BusinessCreateResponse,
     BusinessRegistrationDetail,
@@ -161,3 +171,48 @@ async def create_business(
     if result.replayed:
         headers[IDEMPOTENCY_REPLAYED_HEADER] = "true"
     return JSONResponse(status_code=result.status, content=result.body, headers=headers)
+
+
+@router.post(
+    "/admin/business-registrations/{registration_id}/approve-and-provision",
+    response_model=BusinessApproveAndProvisionResponse,
+    responses=error_responses(
+        *AUTHENTICATED,
+        ErrorCode.FORBIDDEN,
+        ErrorCode.NOT_FOUND,
+        ErrorCode.STATE_CONFLICT,
+        ErrorCode.VALIDATION_ERROR,
+    ),
+)
+async def approve_and_provision(
+    registration_id: uuid.UUID,
+    request: Request,
+    response: Response,
+    body: Optional[BusinessCreateRequest] = None,
+    principal: Principal = Depends(require_action(Action.REGISTRATION_REVIEW)),
+    db: AsyncSession = Depends(get_db),
+    users: UserAccessRepository = Depends(get_user_access_repo),
+    family: FamilyRepository = Depends(get_family_repo),
+    jobs: ProvisioningRepository = Depends(get_provisioning_repo),
+    idempotency: IdempotencyRepository = Depends(get_idempotency_repo),
+    provider: IdentityProvider = Depends(get_identity_provider),
+    sender: EmailSender = Depends(get_email_sender),
+) -> BusinessApproveAndProvisionResponse:
+    """Approve a PENDING registration, create Clan, provision Owner, send credentials email,
+    and activate clan in one streamlined call.
+    """
+    response.headers["Cache-Control"] = NO_STORE
+    return await use_cases.approve_and_provision_registration(
+        db=db,
+        users=users,
+        family=family,
+        jobs=jobs,
+        idempotency=idempotency,
+        provider=provider,
+        sender=sender,
+        principal=principal,
+        registration_id=registration_id,
+        client=ClientInfo.from_request(request),
+        clan_code=body.clan_code if body else None,
+    )
+

@@ -11,9 +11,11 @@ from app.dependencies.auth import get_current_account
 from app.models.postgres import Account
 from app.schemas.genealogy import (
     AncestorDescendantResponse,
+    FocusViewResponse,
     PersonCreate,
     PersonResponse,
     PersonUpdate,
+    RelationshipCalculationResponse,
     RelationshipCreate,
     RelationshipResponse,
     TreeDataResponse,
@@ -129,7 +131,55 @@ async def get_descendants(
 @router.get("/tree-data", response_model=TreeDataResponse)
 async def get_tree_data(
     family_id: str,
+    branch_id: Optional[str] = Query(None, alias="branchId"),
+    generation: Optional[int] = Query(None),
+    max_generation: Optional[int] = Query(None, alias="maxGeneration"),
     db: AsyncSession = Depends(get_db),
     account: Account = Depends(get_current_account),
 ):
-    return await controller(db, account).get_tree_data(family_id)
+    return await controller(db, account).get_tree_data(
+        family_id,
+        branch_id=branch_id,
+        generation=generation,
+        max_generation=max_generation,
+    )
+
+
+@router.get(
+    "/persons/{person_id}/focus-view",
+    response_model=FocusViewResponse,
+)
+async def get_focus_view(
+    family_id: str,
+    person_id: str,
+    depth: int = Query(2, ge=1, le=5),
+    db: AsyncSession = Depends(get_db),
+    account: Account = Depends(get_current_account),
+):
+    return await controller(db, account).get_focus_view(family_id, person_id, depth)
+
+
+@router.get(
+    "/relationship-path",
+    response_model=RelationshipCalculationResponse,
+)
+async def calculate_relationship(
+    family_id: str,
+    from_person_id: str = Query(..., alias="fromPersonId"),
+    to_person_id: str = Query(..., alias="toPersonId"),
+    db: AsyncSession = Depends(get_db),
+    account: Account = Depends(get_current_account),
+):
+    return await controller(db, account).calculate_relationship(
+        family_id, from_person_id, to_person_id
+    )
+
+
+@router.get("/public-tree", response_model=TreeDataResponse)
+async def get_public_tree(
+    family_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Public endpoint for guest tree view with privacy masking (FR-GU-04, FR-GU-10)."""
+    from app.services.genealogy import GenealogyService
+    return await GenealogyService(db).get_public_tree(family_id)
