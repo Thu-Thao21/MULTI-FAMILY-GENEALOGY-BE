@@ -16,7 +16,7 @@ import pytest
 from fastapi import Response
 from fastapi.testclient import TestClient
 
-from app.routers import health
+from app.controllers import health
 from app.controllers.auth_access.router import router as auth_router
 from app.controllers.family_management.public_router import router as public_router
 from app.core.integrations.firebase import get_identity_provider
