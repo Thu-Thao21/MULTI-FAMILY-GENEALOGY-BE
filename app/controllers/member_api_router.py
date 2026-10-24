@@ -71,7 +71,7 @@ async def list_members(
             f_uuid = uuid.UUID(family_id)
             stmt = stmt.where(Person.family_id == f_uuid)
         except ValueError:
-            pass
+            return {"items": [], "total": 0, "page": page, "limit": limit, "totalPages": 0}
 
     if search:
         s = f"%{search.strip()}%"
@@ -468,13 +468,20 @@ async def export_persons(
     db: AsyncSession = Depends(get_db),
 ):
     """Export person list as CSV (BUG-025)."""
-    stmt = select(Person)
-    if family_id:
-        try:
-            f_uuid = uuid.UUID(family_id)
-            stmt = stmt.where(Person.family_id == f_uuid)
-        except ValueError:
-            pass
+    if not family_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="family_id is required to export persons for a clan"
+        )
+    try:
+        f_uuid = uuid.UUID(family_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid family_id format"
+        )
+
+    stmt = select(Person).where(Person.family_id == f_uuid)
 
     stmt = stmt.order_by(Person.generation, Person.full_name)
     res = await db.execute(stmt)
