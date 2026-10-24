@@ -91,17 +91,18 @@ async def dev_session(
         raise AppError(ErrorCode.FORBIDDEN)
 
     target_email = body.email.strip().lower()
-    if target_email in ("admin@test.com", "admin", "dev-sa"):
-        target_email = "dev-sa@example.test"
-    elif target_email in ("member@test.com", "member", "dev-member-a"):
-        target_email = "dev-member-a@example.test"
+    user_map = {
+        "thangvo": "thangvo250904@gmail.com",
+        "phuchau": "maiphuchau144@gmail.com",
+        "giahuy": "huy13052005@gmail.com",
+        "minhquan": "quankophaiwibu@gmail.com",
+    }
+    if target_email in user_map:
+        target_email = user_map[target_email]
 
-    stmt = select(User).where(User.email == target_email)
+    stmt = select(User).where((User.email == target_email) | (User.username == target_email))
     res = await db.execute(stmt)
     user = res.scalar_one_or_none()
-    if not user:
-        stmt_fallback = select(User).where(User.email == "dev-sa@example.test")
-        user = (await db.execute(stmt_fallback)).scalar_one_or_none()
     if not user:
         raise AppError(ErrorCode.ACCOUNT_BLOCKED)
 
