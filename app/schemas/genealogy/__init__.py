@@ -82,9 +82,9 @@ class RelationshipCreate(BaseModel):
 
 
 class RelationshipResponse(BaseModel):
-    id: str
-    from_member_id: str = Field(alias="fromMemberId")
-    to_member_id: str = Field(alias="toMemberId")
+    id: uuid.UUID | str
+    from_member_id: uuid.UUID | str = Field(alias="fromMemberId")
+    to_member_id: uuid.UUID | str = Field(alias="toMemberId")
     relationship_type: str = Field(alias="relationshipType")
     notes: Optional[str] = None
 

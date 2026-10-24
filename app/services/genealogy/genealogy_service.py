@@ -353,9 +353,9 @@ class GenealogyService:
 
             await self.db.commit()
             return RelationshipResponse(
-                id=created.id,
-                fromMemberId=created.from_member_id,
-                toMemberId=created.to_member_id,
+                id=str(created.id),
+                fromMemberId=str(created.from_member_id),
+                toMemberId=str(created.to_member_id),
                 relationshipType=api_relationship_type,
                 notes=None,
             )

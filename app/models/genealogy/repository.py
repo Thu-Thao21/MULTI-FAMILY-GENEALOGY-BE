@@ -153,7 +153,7 @@ class GenealogyRepository:
                 INSERT INTO person_closure (ancestor_id, descendant_id, depth)
                 SELECT person_id, person_id, 0
                 FROM persons
-                WHERE person_id = :person_id::uuid AND clan_id = :family_id::uuid
+                WHERE person_id = CAST(:person_id AS UUID) AND clan_id = CAST(:family_id AS UUID)
                 ON CONFLICT (ancestor_id, descendant_id) DO NOTHING
                 """
             ),
@@ -172,10 +172,10 @@ class GenealogyRepository:
                 CROSS JOIN person_closure c
                 JOIN persons ancestor ON ancestor.person_id = a.ancestor_id
                 JOIN persons descendant ON descendant.person_id = c.descendant_id
-                WHERE a.descendant_id = :parent_id::uuid
-                  AND c.ancestor_id = :child_id::uuid
-                  AND ancestor.clan_id = :family_id::uuid
-                  AND descendant.clan_id = :family_id::uuid
+                WHERE a.descendant_id = CAST(:parent_id AS UUID)
+                  AND c.ancestor_id = CAST(:child_id AS UUID)
+                  AND ancestor.clan_id = CAST(:family_id AS UUID)
+                  AND descendant.clan_id = CAST(:family_id AS UUID)
                 ON CONFLICT (ancestor_id, descendant_id) 
                 DO UPDATE SET depth = LEAST(person_closure.depth, EXCLUDED.depth)
                 """
@@ -194,13 +194,13 @@ class GenealogyRepository:
                     SELECT pc.ancestor_id
                     FROM person_closure pc
                     JOIN persons p ON p.person_id = pc.ancestor_id
-                    WHERE pc.descendant_id = :parent_id::uuid AND p.clan_id = :family_id::uuid
+                    WHERE pc.descendant_id = CAST(:parent_id AS UUID) AND p.clan_id = CAST(:family_id AS UUID)
                 )
                   AND descendant_id IN (
                     SELECT pc.descendant_id
                     FROM person_closure pc
                     JOIN persons p ON p.person_id = pc.descendant_id
-                    WHERE pc.ancestor_id = :child_id::uuid AND p.clan_id = :family_id::uuid
+                    WHERE pc.ancestor_id = CAST(:child_id AS UUID) AND p.clan_id = CAST(:family_id AS UUID)
                 )
                   AND depth > 0
                 """

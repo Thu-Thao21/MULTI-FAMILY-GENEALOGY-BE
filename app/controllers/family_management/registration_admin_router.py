@@ -216,3 +216,209 @@ async def approve_and_provision(
         clan_code=body.clan_code if body else None,
     )
 
+
+# ----- Admin Service Plans (Packages) Management -----
+
+from decimal import Decimal
+from pydantic import BaseModel, Field
+from sqlalchemy import select, delete
+from app.models.family.entities import SubscriptionPlan, PlanFeatureLimit
+
+
+class PlanAdminCreateRequest(BaseModel):
+    code: str
+    name: str
+    description: Optional[str] = None
+    price: float = 0.0
+    billing_period_months: int = 12
+    max_members: Optional[int] = 500
+    max_family_admins: Optional[int] = 5
+    storage_mb: Optional[int] = 20480
+    features: list[str] = Field(default_factory=list)
+    status: str = "ACTIVE"
+
+
+class PlanAdminUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    price: Optional[float] = None
+    billing_period_months: Optional[int] = None
+    max_members: Optional[int] = None
+    max_family_admins: Optional[int] = None
+    storage_mb: Optional[int] = None
+    features: Optional[list[str]] = None
+    status: Optional[str] = None
+
+
+class PlanStatusUpdateRequest(BaseModel):
+    status: str
+
+
+@router.get(
+    "/admin/service-plans",
+    dependencies=[Depends(require_action(Action.REGISTRATION_LIST))],
+)
+async def list_admin_service_plans(
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(SubscriptionPlan).order_by(SubscriptionPlan.price.asc(), SubscriptionPlan.created_at.desc())
+    res = await db.execute(stmt)
+    plans = res.scalars().all()
+
+    plan_ids = [p.plan_id for p in plans]
+    feat_map: dict[uuid.UUID, list[str]] = {}
+    if plan_ids:
+        feat_res = await db.execute(select(PlanFeatureLimit).where(PlanFeatureLimit.plan_id.in_(plan_ids)))
+        for f in feat_res.scalars().all():
+            if f.enabled:
+                feat_map.setdefault(f.plan_id, []).append(f.feature_code)
+
+    items = []
+    for p in plans:
+        items.append({
+            "id": str(p.plan_id),
+            "plan_id": str(p.plan_id),
+            "code": p.code,
+            "name": p.name,
+            "description": p.description,
+            "price": float(p.price),
+            "monthly_price": float(p.price) / (p.billing_period_months or 12),
+            "billing_period_months": p.billing_period_months,
+            "duration_months": p.billing_period_months,
+            "member_limit": p.max_members,
+            "storage_gb": int((p.storage_mb or 1024) / 1024),
+            "status": p.status.lower(),
+            "features": feat_map.get(p.plan_id, []),
+            "updated_at": p.updated_at.isoformat() if p.updated_at else p.created_at.isoformat(),
+        })
+    return {"items": items, "total": len(items)}
+
+
+@router.post(
+    "/admin/service-plans",
+    status_code=201,
+    dependencies=[Depends(require_action(Action.REGISTRATION_REVIEW))],
+)
+async def create_admin_service_plan(
+    body: PlanAdminCreateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    existing = await db.execute(select(SubscriptionPlan).where(SubscriptionPlan.code == body.code))
+    if existing.scalar_one_or_none():
+        raise AppError(ErrorCode.DUPLICATE_RESOURCE, f"Mã gói '{body.code}' đã tồn tại.")
+
+    plan = SubscriptionPlan(
+        code=body.code.strip().upper(),
+        name=body.name.strip(),
+        description=body.description,
+        price=Decimal(str(body.price)),
+        billing_period_months=body.billing_period_months,
+        max_members=body.max_members,
+        max_family_admins=body.max_family_admins,
+        storage_mb=body.storage_mb,
+        status=body.status.upper(),
+    )
+    db.add(plan)
+    await db.flush()
+
+    for feat in body.features:
+        if feat.strip():
+            db.add(PlanFeatureLimit(
+                plan_id=plan.plan_id,
+                feature_code=feat.strip().upper(),
+                enabled=True,
+            ))
+    await db.commit()
+    await db.refresh(plan)
+
+    return {
+        "id": str(plan.plan_id),
+        "plan_id": str(plan.plan_id),
+        "code": plan.code,
+        "name": plan.name,
+        "status": plan.status.lower(),
+        "message": "Tạo gói dịch vụ thành công."
+    }
+
+
+@router.put(
+    "/admin/service-plans/{plan_id}",
+    dependencies=[Depends(require_action(Action.REGISTRATION_REVIEW))],
+)
+async def update_admin_service_plan(
+    plan_id: uuid.UUID,
+    body: PlanAdminUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    plan_res = await db.execute(select(SubscriptionPlan).where(SubscriptionPlan.plan_id == plan_id))
+    plan = plan_res.scalar_one_or_none()
+    if not plan:
+        raise AppError(ErrorCode.NOT_FOUND, "Không tìm thấy gói dịch vụ.")
+
+    if body.name is not None:
+        plan.name = body.name.strip()
+    if body.description is not None:
+        plan.description = body.description
+    if body.price is not None:
+        plan.price = Decimal(str(body.price))
+    if body.billing_period_months is not None:
+        plan.billing_period_months = body.billing_period_months
+    if body.max_members is not None:
+        plan.max_members = body.max_members
+    if body.max_family_admins is not None:
+        plan.max_family_admins = body.max_family_admins
+    if body.storage_mb is not None:
+        plan.storage_mb = body.storage_mb
+    if body.status is not None:
+        plan.status = body.status.upper()
+
+    if body.features is not None:
+        await db.execute(delete(PlanFeatureLimit).where(PlanFeatureLimit.plan_id == plan_id))
+        for feat in body.features:
+            if feat.strip():
+                db.add(PlanFeatureLimit(
+                    plan_id=plan.plan_id,
+                    feature_code=feat.strip().upper(),
+                    enabled=True,
+                ))
+
+    await db.commit()
+    return {"id": str(plan.plan_id), "status": plan.status.lower(), "message": "Cập nhật gói thành công."}
+
+
+@router.patch(
+    "/admin/service-plans/{plan_id}/status",
+    dependencies=[Depends(require_action(Action.REGISTRATION_REVIEW))],
+)
+async def toggle_admin_service_plan_status(
+    plan_id: uuid.UUID,
+    body: PlanStatusUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    plan_res = await db.execute(select(SubscriptionPlan).where(SubscriptionPlan.plan_id == plan_id))
+    plan = plan_res.scalar_one_or_none()
+    if not plan:
+        raise AppError(ErrorCode.NOT_FOUND, "Không tìm thấy gói dịch vụ.")
+
+    plan.status = body.status.upper()
+    await db.commit()
+    return {"id": str(plan.plan_id), "status": plan.status.lower(), "message": "Đã đổi trạng thái gói."}
+
+
+@router.delete(
+    "/admin/service-plans/{plan_id}",
+    dependencies=[Depends(require_action(Action.REGISTRATION_REVIEW))],
+)
+async def delete_admin_service_plan(
+    plan_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    plan_res = await db.execute(select(SubscriptionPlan).where(SubscriptionPlan.plan_id == plan_id))
+    plan = plan_res.scalar_one_or_none()
+    if not plan:
+        raise AppError(ErrorCode.NOT_FOUND, "Không tìm thấy gói dịch vụ.")
+
+    plan.status = "RETIRED"
+    await db.commit()
+    return {"id": str(plan.plan_id), "status": "retired", "message": "Đã hủy kích hoạt gói dịch vụ."}
+
