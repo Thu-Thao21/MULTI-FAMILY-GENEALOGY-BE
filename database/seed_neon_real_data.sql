@@ -2,10 +2,13 @@
 -- KỊCH BẢN DỮ LIỆU MẪU THỰC TẾ CHO NEON POSTGRESQL (MFGMS - HỆ THỐNG GIA PHẢ LIÊN HỌ)
 -- Ngày tạo: 2026-10-23
 -- 4 Email thật của người dùng được phân quyền:
---   1. thangvo250904@gmail.com   -> Võ Trí Thắng (System Admin & Trưởng Tộc Dòng Họ Võ)
---   2. maiphuchau144@gmail.com   -> Mai Phúc Hậu (Trưởng Tộc Dòng Họ Mai)
+--   1. thangvo250904@gmail.com   -> Võ Trí Thắng (System Admin toàn hệ thống & Người đăng ký Họ Võ)
+--   2. maiphuchau144@gmail.com   -> Mai Phúc Hậu (Người đăng ký Họ Mai & Thành viên dòng tộc)
 --   3. huy13052005@gmail.com     -> Nguyễn Gia Huy (Family Admin Chi 1 Dòng Họ Võ)
 --   4. quankophaiwibu@gmail.com  -> Trần Minh Quân (Thành viên Dòng họ & Cầu nối liên họ)
+-- 2 Tài khoản Trưởng tộc do hệ thống cấp riêng (tên miền @giapha.com):
+--   5. vo.danang@giapha.com      -> Trưởng tộc Dòng Họ Võ (Business Owner Họ Võ)
+--   6. mai.phongdien@giapha.com  -> Trưởng tộc Dòng Họ Mai (Business Owner Họ Mai)
 --
 -- Đặc điểm:
 --   - Dùng cú pháp chuẩn PostgreSQL (idempotent: ON CONFLICT DO NOTHING / UPDATE).
@@ -27,9 +30,9 @@ VALUES
 ON CONFLICT (code) DO NOTHING;
 
 -- -----------------------------------------------------------------------------
--- 2. TẠO 4 TÀI KHOẢN NGƯỜI DÙNG THẬT (USERS & CREDENTIAL METADATA)
+-- 2. TẠO CÁC TÀI KHOẢN NGƯỜI DÙNG (USERS & CREDENTIAL METADATA)
 -- -----------------------------------------------------------------------------
--- User 1: thangvo250904@gmail.com (Võ Trí Thắng - System Admin & Trưởng tộc Họ Võ)
+-- User 1: thangvo250904@gmail.com (Võ Trí Thắng - System Admin toàn hệ thống)
 INSERT INTO users (
   user_id, firebase_uid, username, email, phone, display_name, status, email_verified, phone_verified, first_login_required, created_at, updated_at
 ) VALUES (
@@ -50,7 +53,7 @@ INSERT INTO users (
   status = 'ACTIVE',
   email_verified = true;
 
--- User 2: maiphuchau144@gmail.com (Mai Phúc Hậu - Trưởng tộc Họ Mai)
+-- User 2: maiphuchau144@gmail.com (Mai Phúc Hậu - Người đăng ký Họ Mai / Thành viên)
 INSERT INTO users (
   user_id, firebase_uid, username, email, phone, display_name, status, email_verified, phone_verified, first_login_required, created_at, updated_at
 ) VALUES (
@@ -113,11 +116,56 @@ INSERT INTO users (
   status = 'ACTIVE',
   email_verified = true;
 
--- Tạo credential_metadata cho 4 tài khoản
+-- User 5: vo.danang@giapha.com (Trưởng Tộc Họ Võ - Tài khoản cấp bởi hệ thống)
+INSERT INTO users (
+  user_id, firebase_uid, username, email, phone, display_name, status, email_verified, phone_verified, first_login_required, created_at, updated_at
+) VALUES (
+  'a0000000-0000-0000-0000-000000000010',
+  'usr_truongtoc_vo',
+  'truongtoc_vo',
+  'vo.danang@giapha.com',
+  '0905123999',
+  'Trưởng Tộc Võ Đại Tộc',
+  'ACTIVE',
+  true,
+  true,
+  false,
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP
+) ON CONFLICT (email) DO UPDATE SET 
+  display_name = EXCLUDED.display_name,
+  status = 'ACTIVE',
+  email_verified = true;
+
+-- User 6: mai.phongdien@giapha.com (Trưởng Tộc Họ Mai - Tài khoản cấp bởi hệ thống)
+INSERT INTO users (
+  user_id, firebase_uid, username, email, phone, display_name, status, email_verified, phone_verified, first_login_required, created_at, updated_at
+) VALUES (
+  'a0000000-0000-0000-0000-000000000020',
+  'usr_truongtoc_mai',
+  'truongtoc_mai',
+  'mai.phongdien@giapha.com',
+  '0914234999',
+  'Trưởng Tộc Mai Thế Tộc',
+  'ACTIVE',
+  true,
+  true,
+  false,
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP
+) ON CONFLICT (email) DO UPDATE SET 
+  display_name = EXCLUDED.display_name,
+  status = 'ACTIVE',
+  email_verified = true;
+
+-- Tạo credential_metadata cho các tài khoản
 INSERT INTO credential_metadata (user_id, auth_provider, must_change_password, failed_login_count, updated_at)
 SELECT u.user_id, 'FIREBASE', false, 0, CURRENT_TIMESTAMP
 FROM users u
-WHERE u.email IN ('thangvo250904@gmail.com', 'maiphuchau144@gmail.com', 'huy13052005@gmail.com', 'quankophaiwibu@gmail.com')
+WHERE u.email IN (
+  'thangvo250904@gmail.com', 'maiphuchau144@gmail.com', 'huy13052005@gmail.com', 'quankophaiwibu@gmail.com',
+  'vo.danang@giapha.com', 'mai.phongdien@giapha.com'
+)
 ON CONFLICT (user_id) DO NOTHING;
 
 -- -----------------------------------------------------------------------------
@@ -172,7 +220,7 @@ VALUES (
 -- -----------------------------------------------------------------------------
 -- 4. PHÂN QUYỀN VAI TRÒ (USER ROLES & CLAN MEMBERSHIPS)
 -- -----------------------------------------------------------------------------
--- Võ Trí Thắng: System Admin toàn hệ thống
+-- Võ Trí Thắng: System Admin toàn hệ thống (tài khoản cá nhân)
 INSERT INTO user_roles (user_role_id, user_id, role_id, clan_id, granted_by)
 SELECT 
   gen_random_uuid(),
@@ -184,19 +232,19 @@ FROM users u, roles r
 WHERE u.email = 'thangvo250904@gmail.com' AND r.code = 'SYSTEM_ADMIN'
 ON CONFLICT DO NOTHING;
 
--- Võ Trí Thắng: Trưởng Tộc Họ Võ
+-- Trưởng Tộc Họ Võ: Tài khoản cấp riêng vo.danang@giapha.com giữ quyền BUSINESS_OWNER
 INSERT INTO user_roles (user_role_id, user_id, role_id, clan_id, granted_by)
 SELECT 
   gen_random_uuid(),
   u.user_id,
   r.role_id,
   'c0000000-0000-0000-0000-000000000001',
-  u.user_id
+  (SELECT user_id FROM users WHERE email = 'thangvo250904@gmail.com')
 FROM users u, roles r
-WHERE u.email = 'thangvo250904@gmail.com' AND r.code = 'BUSINESS_OWNER'
+WHERE u.email = 'vo.danang@giapha.com' AND r.code = 'BUSINESS_OWNER'
 ON CONFLICT DO NOTHING;
 
--- Mai Phúc Hậu: Trưởng Tộc Họ Mai
+-- Trưởng Tộc Họ Mai: Tài khoản cấp riêng mai.phongdien@giapha.com giữ quyền BUSINESS_OWNER
 INSERT INTO user_roles (user_role_id, user_id, role_id, clan_id, granted_by)
 SELECT 
   gen_random_uuid(),
@@ -205,10 +253,22 @@ SELECT
   'c0000000-0000-0000-0000-000000000002',
   (SELECT user_id FROM users WHERE email = 'thangvo250904@gmail.com')
 FROM users u, roles r
-WHERE u.email = 'maiphuchau144@gmail.com' AND r.code = 'BUSINESS_OWNER'
+WHERE u.email = 'mai.phongdien@giapha.com' AND r.code = 'BUSINESS_OWNER'
 ON CONFLICT DO NOTHING;
 
--- Nguyễn Gia Huy: Family Admin Họ Võ
+-- Mai Phúc Hậu: Thành viên Dòng họ Mai (Người đại diện nộp đơn đăng ký)
+INSERT INTO user_roles (user_role_id, user_id, role_id, clan_id, granted_by)
+SELECT 
+  gen_random_uuid(),
+  u.user_id,
+  r.role_id,
+  'c0000000-0000-0000-0000-000000000002',
+  (SELECT user_id FROM users WHERE email = 'thangvo250904@gmail.com')
+FROM users u, roles r
+WHERE u.email = 'maiphuchau144@gmail.com' AND r.code = 'FAMILY_MEMBER'
+ON CONFLICT DO NOTHING;
+
+-- Nguyễn Gia Huy: Family Admin Chi 1 Họ Võ
 INSERT INTO user_roles (user_role_id, user_id, role_id, clan_id, granted_by)
 SELECT 
   gen_random_uuid(),
@@ -232,19 +292,21 @@ FROM users u, roles r
 WHERE u.email = 'quankophaiwibu@gmail.com' AND r.code = 'FAMILY_MEMBER'
 ON CONFLICT DO NOTHING;
 
--- Chủ quyền dòng họ (Clan Ownership History)
+-- Chủ quyền dòng họ (Clan Ownership History) - Cấp cho tài khoản Trưởng tộc chính thức
 INSERT INTO clan_ownership_history (ownership_id, clan_id, user_id, started_at)
 VALUES 
-  ('e0000000-0000-0000-0000-000000000001', 'c0000000-0000-0000-0000-000000000001', (SELECT user_id FROM users WHERE email = 'thangvo250904@gmail.com'), CURRENT_TIMESTAMP),
-  ('e0000000-0000-0000-0000-000000000002', 'c0000000-0000-0000-0000-000000000002', (SELECT user_id FROM users WHERE email = 'maiphuchau144@gmail.com'), CURRENT_TIMESTAMP)
+  ('e0000000-0000-0000-0000-000000000001', 'c0000000-0000-0000-0000-000000000001', (SELECT user_id FROM users WHERE email = 'vo.danang@giapha.com'), CURRENT_TIMESTAMP),
+  ('e0000000-0000-0000-0000-000000000002', 'c0000000-0000-0000-0000-000000000002', (SELECT user_id FROM users WHERE email = 'mai.phongdien@giapha.com'), CURRENT_TIMESTAMP)
 ON CONFLICT DO NOTHING;
 
 -- Thành viên gia nhập dòng họ (Clan Memberships)
 INSERT INTO clan_memberships (membership_id, clan_id, user_id, status, joined_at)
 VALUES 
+  (gen_random_uuid(), 'c0000000-0000-0000-0000-000000000001', (SELECT user_id FROM users WHERE email = 'vo.danang@giapha.com'), 'ACTIVE', CURRENT_TIMESTAMP),
   (gen_random_uuid(), 'c0000000-0000-0000-0000-000000000001', (SELECT user_id FROM users WHERE email = 'thangvo250904@gmail.com'), 'ACTIVE', CURRENT_TIMESTAMP),
   (gen_random_uuid(), 'c0000000-0000-0000-0000-000000000001', (SELECT user_id FROM users WHERE email = 'huy13052005@gmail.com'), 'ACTIVE', CURRENT_TIMESTAMP),
   (gen_random_uuid(), 'c0000000-0000-0000-0000-000000000001', (SELECT user_id FROM users WHERE email = 'quankophaiwibu@gmail.com'), 'ACTIVE', CURRENT_TIMESTAMP),
+  (gen_random_uuid(), 'c0000000-0000-0000-0000-000000000002', (SELECT user_id FROM users WHERE email = 'mai.phongdien@giapha.com'), 'ACTIVE', CURRENT_TIMESTAMP),
   (gen_random_uuid(), 'c0000000-0000-0000-0000-000000000002', (SELECT user_id FROM users WHERE email = 'maiphuchau144@gmail.com'), 'ACTIVE', CURRENT_TIMESTAMP)
 ON CONFLICT DO NOTHING;
 

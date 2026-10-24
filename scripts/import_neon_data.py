@@ -71,12 +71,12 @@ async def main():
 
         # In thông tin thống kê kiểm tra
         async with engine.connect() as conn:
-            u_count = (await conn.execute(text("SELECT count(*) FROM users WHERE email IN ('thangvo250904@gmail.com', 'maiphuchau144@gmail.com', 'huy13052005@gmail.com', 'quankophaiwibu@gmail.com');"))).scalar()
+            u_count = (await conn.execute(text("SELECT count(*) FROM users WHERE email IN ('thangvo250904@gmail.com', 'maiphuchau144@gmail.com', 'huy13052005@gmail.com', 'quankophaiwibu@gmail.com', 'vo.danang@giapha.com', 'mai.phongdien@giapha.com');"))).scalar()
             c_count = (await conn.execute(text("SELECT count(*) FROM clans WHERE clan_code IN ('CLAN-VO-01', 'CLAN-MAI-02');"))).scalar()
             p_count = (await conn.execute(text("SELECT count(*) FROM persons;"))).scalar()
             r_count = (await conn.execute(text("SELECT count(*) FROM relationships;"))).scalar()
             print("==================================================")
-            print(f"[+] Số tài khoản thật đã nạp/cập nhật: {u_count} / 4")
+            print(f"[+] Số tài khoản thật & Trưởng tộc đã nạp/cập nhật: {u_count} / 6")
             print(f"[+] Số dòng họ thực tế: {c_count} (Họ Võ Đại Tộc & Họ Mai Thế Tộc)")
             print(f"[+] Tổng số thành viên gia phả (Persons): {p_count}")
             print(f"[+] Tổng số mối quan hệ gia tộc (Relationships): {r_count}")

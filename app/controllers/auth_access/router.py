@@ -96,6 +96,8 @@ async def dev_session(
         "phuchau": "maiphuchau144@gmail.com",
         "giahuy": "huy13052005@gmail.com",
         "minhquan": "quankophaiwibu@gmail.com",
+        "truongtoc_vo": "vo.danang@giapha.com",
+        "truongtoc_mai": "mai.phongdien@giapha.com",
     }
     if target_email in user_map:
         target_email = user_map[target_email]
