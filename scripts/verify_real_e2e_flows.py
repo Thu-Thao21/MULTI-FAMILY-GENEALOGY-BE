@@ -1,4 +1,7 @@
 import sys
+import asyncio
+if sys.platform.startswith("win"):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -59,8 +62,8 @@ def run_e2e_tests():
             tracking_code = reg_data.get("tracking_code")
             print(f"  ✓ 1.1 Khách hàng gửi đơn đăng ký thành công: ID={reg_id}, Email={real_gmail}")
 
-            # 1.3 System Admin logs in
-            sa_login = client.post("/api/v1/auth/dev-session", json={"email": "thangvo250904@gmail.com"})
+            # 1.3 System Admin logs in (thuthaor120608@gmail.com)
+            sa_login = client.post("/api/v1/auth/dev-session", json={"email": "thuthaor120608@gmail.com"})
             assert sa_login.status_code == 201, f"SA login failed: {sa_login.text}"
             sa_token = sa_login.json()["access_token"]
             sa_headers = {"Authorization": f"Bearer {sa_token}"}
