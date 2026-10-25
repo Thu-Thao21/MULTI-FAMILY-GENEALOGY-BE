@@ -92,12 +92,14 @@ async def dev_session(
 
     target_email = body.email.strip().lower()
     user_map = {
+        "admin": "thuthaor120608@gmail.com",
+        "thuthao": "thuthaor120608@gmail.com",
         "thangvo": "thangvo250904@gmail.com",
         "phuchau": "maiphuchau144@gmail.com",
         "giahuy": "huy13052005@gmail.com",
         "minhquan": "quankophaiwibu@gmail.com",
-        "truongtoc_vo": "vo.danang@giapha.com",
-        "truongtoc_mai": "mai.phongdien@giapha.com",
+        "truongtoc_vo": "thangvo250904@gmail.com",
+        "truongtoc_mai": "maiphuchau144@gmail.com",
     }
     if target_email in user_map:
         target_email = user_map[target_email]

@@ -53,6 +53,7 @@ async def check_db() -> None:
 
 async def init_db() -> None:
     """Startup connectivity check. Does not create tables or run migrations."""
+    await engine.dispose()
     await check_db()
 
 

@@ -76,7 +76,8 @@ async def startup_event():
         await init_db()
         logger.info("Database connectivity check passed.")
     except Exception as exc:
-        # Do not log exception text: SQLAlchemy often embeds DATABASE_URL.
+        import traceback
+        traceback.print_exc()
         logger.error(
             "Database connectivity check failed at startup (%s). "
             "App will keep running; /api/health/ready will return 503.",
